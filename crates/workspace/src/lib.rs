@@ -1,6 +1,7 @@
 //! The document window: a Markdown editor beside its live preview.
 
 mod document_file;
+mod scroll_metrics;
 mod workspace;
 
 use gpui_kit::{App, KeyBinding};
