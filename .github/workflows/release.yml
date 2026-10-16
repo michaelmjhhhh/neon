@@ -32,6 +32,10 @@ jobs:
             exit 1
           fi
 
+      - name: Check CHANGELOG.md has notes for this version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: script/release-notes "${GITHUB_REF_NAME#v}" > /dev/null
+
       - name: Install Rust from rust-toolchain.toml
         run: |
           rustup --version
@@ -63,13 +67,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cat > notes.md <<'NOTES'
-          Download `Neon-*-macos.dmg`, open it and drag Neon to Applications. It runs natively on Apple Silicon and Intel Macs, macOS 11 or later.
-
-          Neon is not signed with an Apple Developer ID yet, so macOS blocks the first launch. To open it: try to open Neon once, then go to System Settings → Privacy & Security and click "Open Anyway".
-          NOTES
+          {
+            script/release-notes "${GITHUB_REF_NAME#v}"
+            echo
+            echo "## Install"
+            echo
+            echo "Download \`Neon-${GITHUB_REF_NAME#v}-macos.dmg\`, open it and drag Neon to Applications. It runs natively on Apple Silicon and Intel Macs, macOS 11 or later."
+            echo
+            echo "Neon is not signed with an Apple Developer ID yet, so macOS blocks the first launch. Try to open Neon once, then go to System Settings → Privacy & Security and click **Open Anyway**."
+          } > notes.md
           gh release create "$GITHUB_REF_NAME" dist/Neon-*.dmg dist/Neon-*.zip \
             --title "Neon ${GITHUB_REF_NAME#v}" \
             --notes-file notes.md \
-            --generate-notes \
             --verify-tag
