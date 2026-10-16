@@ -10,8 +10,8 @@ use gpui_kit::{
     SystemMenuType, WeakEntity, WindowBounds, WindowOptions, size,
 };
 use workspace::{
-    CloseWindow, NewFile, Open, Quit, Save, SaveAs, ShowEditor, ShowPreview, ShowSplit,
-    ToggleTheme, Workspace,
+    CloseWindow, NewFile, Open, OpenFolder, Quit, RefreshFolder, Save, SaveAs, ShowEditor,
+    ShowPreview, ShowSplit, ToggleSidebar, ToggleTheme, TypographySettings, Workspace,
 };
 
 /// Every open document window, so files opened from Finder can reuse one.
@@ -118,7 +118,7 @@ fn open_window(path: Option<PathBuf>, cx: &mut App) {
     let bounds = Bounds::centered(None, size(gpui_kit::px(1200.), gpui_kit::px(800.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
-        window_min_size: Some(size(gpui_kit::px(480.), gpui_kit::px(320.))),
+        window_min_size: Some(size(gpui_kit::px(840.), gpui_kit::px(560.))),
         ..TitleBar::window_options()
     };
     let opened = gpui_kit::open_window(options, cx, |window, cx| {
@@ -175,8 +175,10 @@ fn set_menus(cx: &mut App) {
             MenuItem::action("Quit Neon", Quit),
         ]),
         Menu::new("File").items([
-            MenuItem::action("New", NewFile),
-            MenuItem::action("Open…", Open),
+            MenuItem::action("New File…", NewFile),
+            MenuItem::action("Open File…", Open),
+            MenuItem::action("Open Folder…", OpenFolder),
+            MenuItem::action("Refresh Folder", RefreshFolder),
             MenuItem::separator(),
             MenuItem::action("Save", Save),
             MenuItem::action("Save As…", SaveAs),
@@ -201,6 +203,8 @@ fn set_menus(cx: &mut App) {
             MenuItem::action("Split", ShowSplit),
             MenuItem::action("Preview", ShowPreview),
             MenuItem::separator(),
+            MenuItem::action("Toggle Sidebar", ToggleSidebar),
+            MenuItem::action("Typography…", TypographySettings),
             MenuItem::action("Toggle Dark Mode", ToggleTheme),
         ]),
     ]);

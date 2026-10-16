@@ -1,15 +1,21 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::folder::{is_markdown, scan_folder};
+use crate::typography::Typography;
 use gpui_kit::base::ResizeHandleState;
-use gpui_kit::component::button::ButtonVariant;
+use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::input::{Editor, EditorState, InputEvent};
+use gpui_kit::component::list::ListItem;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel, resize_handle_appearance};
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tab::{Tab, TabBar};
+use gpui_kit::component::tree::{Tree, TreeEvent, TreeState};
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode, TitleBar, WindowExt as _};
+use gpui_kit::component::{Disableable as _, IconName, Sizable as _};
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
     IntoElement, ParentElement as _, PathPromptOptions, Pixels, Render, SharedString, Styled as _,
@@ -25,6 +31,10 @@ gpui_kit::actions!(
     [
         NewFile,
         Open,
+        OpenFolder,
+        RefreshFolder,
+        TypographySettings,
+        ToggleSidebar,
         Save,
         SaveAs,
         ShowEditor,
@@ -64,6 +74,13 @@ impl LayoutMode {
 /// One document window: owns the open file, its editor, and its preview.
 pub struct Workspace {
     document: DocumentFile,
+    folder: Option<PathBuf>,
+    tree: Entity<TreeState>,
+    folder_task: Option<Task<()>>,
+    folder_empty: bool,
+    expanded_folders: HashSet<SharedString>,
+    sidebar_visible: bool,
+    typography: Entity<Typography>,
     editor: Entity<EditorState>,
     preview: Entity<MarkdownPreview>,
     layout: LayoutMode,
@@ -84,7 +101,40 @@ impl Workspace {
         });
         let preview = cx.new(MarkdownPreview::new);
 
+        let tree = cx.new(|cx| TreeState::new(cx));
+        let typography = cx.new(|cx| Typography::new(window, cx));
         let subscriptions = vec![
+            cx.subscribe(&tree, |this, _, event, _| match event {
+                TreeEvent::Expanded(id) => {
+                    this.expanded_folders.insert(id.clone());
+                }
+                TreeEvent::Collapsed(id) => {
+                    this.expanded_folders.remove(id);
+                }
+            }),
+            cx.observe_in(&tree, window, |this, tree, window, cx| {
+                let path = tree
+                    .read(cx)
+                    .selected_entry()
+                    .filter(|entry| !entry.is_folder())
+                    .map(|entry| PathBuf::from(entry.item().id.as_ref()));
+                if let Some(path) = path
+                    && this.document.path() != Some(path.as_path())
+                    && !this.is_busy()
+                {
+                    this.confirm_discard(window, cx, move |this, window, cx| {
+                        this.open_path(path.clone(), window, cx);
+                    });
+                }
+            }),
+            cx.subscribe(&typography, |this, state, _, cx| {
+                let state = state.read(cx);
+                let font = state.preview_font(cx);
+                let scale = state.preview_size(cx) / 16.;
+                this.preview
+                    .update(cx, |preview, cx| preview.set_typography(font, scale, cx));
+                cx.notify();
+            }),
             cx.subscribe_in(&editor, window, Self::on_editor_event),
             cx.observe_in(&editor, window, Self::on_editor_notified),
             cx.subscribe(&preview, |_, _, event, cx| match event {
@@ -97,6 +147,13 @@ impl Workspace {
 
         let workspace = Self {
             document: DocumentFile::default(),
+            folder: None,
+            tree,
+            folder_task: None,
+            folder_empty: true,
+            expanded_folders: HashSet::new(),
+            sidebar_visible: true,
+            typography,
             editor,
             preview,
             layout: LayoutMode::default(),
@@ -136,7 +193,8 @@ impl Workspace {
     /// Whether this is still the empty, untitled window a launch opens, so a
     /// file opened next can take it over instead of opening another window.
     pub fn is_pristine(&self, cx: &gpui_kit::App) -> bool {
-        self.document.path().is_none()
+        self.folder.is_none()
+            && self.document.path().is_none()
             && !self.document.is_dirty()
             && !self.is_loading()
             && self.editor.read(cx).text().len() == 0
@@ -155,16 +213,32 @@ impl Workspace {
 
     /// Read `path` on a background thread and show it.
     pub fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_busy() {
+            return;
+        }
+        if path.is_dir() {
+            self.load_folder(path, window, cx);
+            return;
+        }
         let read = cx.background_spawn({
             let path = path.clone();
-            async move { std::fs::read_to_string(&path) }
+            async move {
+                let path = std::fs::canonicalize(path)?;
+                std::fs::read_to_string(&path).map(|text| (path, text))
+            }
         });
         self.load_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = read.await;
             this.update_in(cx, |this, window, cx| {
                 this.load_task = None;
                 match result {
-                    Ok(text) => this.show_document(Some(path), &text, window, cx),
+                    Ok((path, text)) => {
+                        let previous_focus = window.focused(cx);
+                        this.show_document(Some(path), &text, window, cx);
+                        if let Some(focus) = previous_focus {
+                            focus.focus(window, cx);
+                        }
+                    }
                     Err(error) => {
                         let name = file_name(&path);
                         window.push_notification(
@@ -194,6 +268,7 @@ impl Workspace {
         self.preview
             .update(cx, |preview, cx| preview.load_source(source, base_dir, cx));
         self.document = path.map(DocumentFile::saved).unwrap_or_default();
+        self.sync_tree_selection(cx);
         self.revealed_cursor = None;
         self.update_window_title(window);
         self.focus_content(window, cx);
@@ -245,7 +320,11 @@ impl Workspace {
 
     fn new_file(&mut self, _: &NewFile, window: &mut Window, cx: &mut Context<Self>) {
         self.confirm_discard(window, cx, |this, window, cx| {
-            this.show_document(None, "", window, cx);
+            if this.folder.is_some() {
+                this.prompt_create_file(window, cx);
+            } else {
+                this.show_document(None, "", window, cx);
+            }
         });
     }
 
@@ -290,6 +369,7 @@ impl Workspace {
             .path()
             .and_then(Path::parent)
             .map(Path::to_path_buf)
+            .or_else(|| self.folder.clone())
             .or_else(home_dir)
             .unwrap_or_default();
         let suggested_name = match self.document.path() {
@@ -309,20 +389,30 @@ impl Workspace {
 
     /// Write the current text to `path` on a background thread.
     fn save_to(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_busy() {
+            return;
+        }
         let revision = self.document.edit_revision();
         let text = self.editor.read(cx).text().clone();
         let write = cx.background_spawn({
             let path = path.clone();
-            async move { std::fs::write(&path, text.to_string()) }
+            async move {
+                std::fs::write(&path, text.to_string())?;
+                std::fs::canonicalize(path)
+            }
         });
         self.save_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = write.await;
             this.update_in(cx, |this, window, cx| {
                 this.save_task = None;
                 match result {
-                    Ok(()) => {
+                    Ok(path) => {
                         this.document.record_save(path, revision);
                         this.update_window_title(window);
+                        let base_dir = this.document.path().and_then(Path::parent).map(Arc::from);
+                        this.preview
+                            .update(cx, |preview, cx| preview.set_base_dir(base_dir, cx));
+                        this.refresh_folder(&RefreshFolder, window, cx);
                     }
                     Err(error) => {
                         let name = file_name(&path);
@@ -336,6 +426,334 @@ impl Workspace {
             })
             .ok();
         }));
+        cx.notify();
+    }
+
+    fn sync_tree_selection(&self, cx: &mut Context<Self>) {
+        let id = self
+            .document
+            .path()
+            .map(|path| SharedString::from(path.to_string_lossy().into_owned()));
+        self.tree.update(cx, |tree, cx| {
+            if let Some(id) = id {
+                tree.reveal_item(&id, gpui_kit::ScrollStrategy::Center, cx);
+                tree.set_selected_index(tree.index_of(&id), cx);
+            } else {
+                tree.set_selected_index(None, cx);
+            }
+        });
+    }
+
+    fn is_busy(&self) -> bool {
+        self.load_task.is_some() || self.save_task.is_some()
+    }
+
+    fn open_folder(&mut self, _: &OpenFolder, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_busy() || self.folder_task.is_some() {
+            return;
+        }
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Open Folder".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = paths.await else {
+                return;
+            };
+            if let Some(path) = paths.into_iter().next() {
+                this.update_in(cx, |this, window, cx| this.load_folder(path, window, cx))
+                    .ok();
+            }
+        })
+        .detach();
+    }
+
+    fn load_folder(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let scan = cx.background_spawn({
+            let path = path.clone();
+            async move {
+                let path = std::fs::canonicalize(path)?;
+                scan_folder(&path).map(|entries| (path, entries))
+            }
+        });
+        self.folder_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = scan.await;
+            this.update_in(cx, |this, window, cx| {
+                this.folder_task = None;
+                match result {
+                    Ok((path, entries)) => {
+                        this.folder_empty = entries.is_empty();
+                        if this.folder.as_ref() != Some(&path) {
+                            this.expanded_folders.clear();
+                        }
+                        this.folder = Some(path);
+                        this.sidebar_visible = true;
+                        let selected = this
+                            .document
+                            .path()
+                            .map(|path| SharedString::from(path.to_string_lossy().into_owned()));
+                        this.tree.update(cx, |tree, cx| {
+                            tree.set_items(
+                                entries
+                                    .into_iter()
+                                    .map(|entry| entry.into_tree_item(&this.expanded_folders))
+                                    .collect::<Vec<_>>(),
+                                cx,
+                            );
+                            if let Some(id) = selected {
+                                tree.reveal_item(&id, gpui_kit::ScrollStrategy::Center, cx);
+                                tree.set_selected_index(tree.index_of(&id), cx);
+                            }
+                        });
+                    }
+                    Err(error) => window.push_notification(
+                        Notification::error(format!(
+                            "Couldn’t read folder “{}”. {error}",
+                            path.display()
+                        )),
+                        cx,
+                    ),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn refresh_folder(&mut self, _: &RefreshFolder, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = self.folder.clone() {
+            self.load_folder(path, window, cx);
+        }
+    }
+
+    fn prompt_create_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(folder) = self.folder.clone() else {
+            return;
+        };
+        let directory = self
+            .tree
+            .read(cx)
+            .selected_entry()
+            .map(|entry| {
+                let path = PathBuf::from(entry.item().id.as_ref());
+                if entry.is_folder() {
+                    path
+                } else {
+                    path.parent().unwrap_or(&folder).to_path_buf()
+                }
+            })
+            .unwrap_or(folder);
+        let path = cx.prompt_for_new_path(&directory, Some("Untitled.md"));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(mut path))) = path.await else {
+                return;
+            };
+            if !is_markdown(&path) {
+                let mut name = path.as_os_str().to_os_string();
+                name.push(".md");
+                path = name.into();
+            }
+            this.update_in(cx, |this, window, cx| {
+                if this.is_busy() {
+                    return;
+                }
+                let create = cx.background_spawn({
+                    let path = path.clone();
+                    async move {
+                        std::fs::OpenOptions::new()
+                            .write(true)
+                            .create_new(true)
+                            .open(&path)?;
+                        std::fs::canonicalize(path)
+                    }
+                });
+                this.load_task = Some(cx.spawn_in(window, async move |this, cx| {
+                    let result = create.await;
+                    this.update_in(cx, |this, window, cx| {
+                        this.load_task = None;
+                        match result {
+                            Ok(path) => {
+                                this.show_document(Some(path), "", window, cx);
+                                this.refresh_folder(&RefreshFolder, window, cx);
+                            }
+                            Err(error) => window.push_notification(
+                                Notification::error(format!(
+                                    "Couldn’t create “{}”. {error}",
+                                    path.display()
+                                )),
+                                cx,
+                            ),
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                }));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn toggle_sidebar(&mut self, _: &ToggleSidebar, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar_visible = !self.sidebar_visible;
+        if !self.sidebar_visible {
+            self.focus_content(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn typography_settings(
+        &mut self,
+        _: &TypographySettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let typography = self.typography.clone();
+        window.open_dialog(cx, move |dialog, window, _| {
+            dialog
+                .width(window.rem_size() * 28.)
+                .title("Typography")
+                .child(typography.clone())
+                .footer(
+                    div().flex().justify_end().child(
+                        Button::new("done")
+                            .label("Done")
+                            .small()
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    ),
+                )
+        });
+    }
+
+    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let active = self
+            .document
+            .path()
+            .map(|path| path.to_string_lossy().into_owned());
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .min_h_0()
+            .bg(cx.theme().sidebar)
+            .border_r_1()
+            .border_color(cx.theme().border)
+            .text_color(cx.theme().sidebar_foreground)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .h_12()
+                    .child(
+                        div().flex_1().truncate().text_sm().child(
+                            self.folder
+                                .as_deref()
+                                .map(file_name)
+                                .unwrap_or_else(|| "Files".into()),
+                        ),
+                    )
+                    .child(
+                        Button::new("new-file")
+                            .small()
+                            .ghost()
+                            .icon(IconName::Plus)
+                            .accessibility_label("New file…")
+                            .tooltip_with_action("New file…", &NewFile, Some(KEY_CONTEXT))
+                            .disabled(self.is_busy())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.new_file(&NewFile, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("refresh-folder")
+                            .small()
+                            .ghost()
+                            .icon(IconName::RefreshCw)
+                            .accessibility_label("Refresh folder")
+                            .disabled(self.folder.is_none() || self.folder_task.is_some())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.refresh_folder(&RefreshFolder, window, cx)
+                            })),
+                    ),
+            )
+            .when(self.folder_task.is_some(), |view| {
+                view.child(div().px_3().text_sm().child("Reading folder…"))
+            })
+            .when(self.folder.is_none(), |view| {
+                view.child(
+                    div()
+                        .px_4()
+                        .py_6()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Your Markdown files, in one place. Open a folder to get started."),
+                )
+            })
+            .when(
+                self.folder.is_some() && self.folder_empty && self.folder_task.is_none(),
+                |view| {
+                    view.child(
+                        div()
+                            .p_3()
+                            .text_sm()
+                            .child("No Markdown files. Choose New File to create one."),
+                    )
+                },
+            )
+            .child(div().flex_1().min_h_0().child(Tree::new(
+                &self.tree,
+                move |_, entry, _, window, _cx| {
+                    let item = entry.item();
+                    let icon = if entry.is_folder() {
+                        if entry.is_expanded() {
+                            IconName::FolderOpen
+                        } else {
+                            IconName::Folder
+                        }
+                    } else {
+                        IconName::FileText
+                    };
+                    ListItem::new(item.id.clone())
+                        .text_sm()
+                        .accessibility_label(item.label.clone())
+                        .pl(window.rem_size() * (0.75 + entry.depth() as f32))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(gpui_kit::component::Icon::new(icon).small())
+                                .child(div().truncate().child(item.label.clone()))
+                                .when(active.as_deref() == Some(item.id.as_ref()), |row| {
+                                    row.font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                                }),
+                        )
+                },
+            )))
+            .child(
+                div()
+                    .p_3()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        Button::new("open-folder")
+                            .small()
+                            .ghost()
+                            .icon(IconName::FolderOpen)
+                            .label("Open Folder…")
+                            .w_full()
+                            .disabled(self.folder_task.is_some() || self.is_busy())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_folder(&OpenFolder, window, cx)
+                            })),
+                    ),
+            )
     }
 
     fn show_editor(&mut self, _: &ShowEditor, window: &mut Window, cx: &mut Context<Self>) {
@@ -388,6 +806,9 @@ impl Workspace {
             let Some(this) = this.upgrade() else {
                 return true;
             };
+            if this.read(cx).is_busy() {
+                return false;
+            }
             if !this.read(cx).document.is_dirty() {
                 return true;
             }
@@ -405,6 +826,9 @@ impl Workspace {
         cx: &mut Context<Self>,
         then: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) {
+        if self.is_busy() {
+            return;
+        }
         if !self.document.is_dirty() {
             then(self, window, cx);
             return;
@@ -416,6 +840,7 @@ impl Workspace {
         window.open_alert_dialog(cx, move |alert, _, _| {
             let this = this.clone();
             let then = then.clone();
+            let cancel_view = this.clone();
             alert
                 .title(title.clone())
                 .description("Your unsaved edits will be lost.")
@@ -423,6 +848,12 @@ impl Workspace {
                 .ok_text("Discard changes")
                 .ok_variant(ButtonVariant::Danger)
                 .cancel_text("Cancel")
+                .on_cancel(move |_, _, cx| {
+                    cancel_view
+                        .update(cx, |this, cx| this.sync_tree_selection(cx))
+                        .ok();
+                    true
+                })
                 .on_ok(move |_, window, cx| {
                     let then = then.clone();
                     this.update(cx, |this, cx| then(this, window, cx)).ok();
@@ -441,34 +872,95 @@ impl Workspace {
             .iter()
             .position(|mode| *mode == self.layout)
             .unwrap_or_default();
-        let theme = cx.theme();
-
         TitleBar::new()
-            .border_b_0()
+            .border_b_1()
+            .border_color(cx.theme().border)
             .child(
                 div()
                     .flex()
-                    .flex_row()
                     .items_center()
                     .gap_2()
-                    .text_sm()
-                    .child(self.document.display_name())
-                    .when(self.document.is_dirty(), |this| {
-                        this.child(div().text_color(theme.muted_foreground).child("Edited"))
+                    .min_w_0()
+                    .child(
+                        Button::new("toggle-sidebar")
+                            .small()
+                            .ghost()
+                            .icon(if self.sidebar_visible {
+                                IconName::PanelLeftClose
+                            } else {
+                                IconName::PanelLeftOpen
+                            })
+                            .accessibility_label("Toggle sidebar")
+                            .tooltip_with_action(
+                                "Toggle sidebar",
+                                &ToggleSidebar,
+                                Some(KEY_CONTEXT),
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_sidebar(&ToggleSidebar, window, cx)
+                            })),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .truncate()
+                            .child(self.document.display_name()),
+                    )
+                    .when(self.document.is_dirty(), |view| {
+                        view.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Edited"),
+                        )
                     }),
             )
             .child(
-                div().pr_2().child(
-                    TabBar::new("layout")
-                        .segmented()
-                        .children(LayoutMode::ALL.map(|mode| Tab::new().label(mode.label())))
-                        .selected_index(selected)
-                        .on_click(cx.listener(|this, ix: &usize, window, cx| {
-                            if let Some(mode) = LayoutMode::ALL.get(*ix) {
-                                this.set_layout(*mode, window, cx);
-                            }
-                        })),
-                ),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .pr_2()
+                    .child(
+                        TabBar::new("layout")
+                            .segmented()
+                            .small()
+                            .children(LayoutMode::ALL.map(|mode| Tab::new().label(mode.label())))
+                            .selected_index(selected)
+                            .on_click(cx.listener(|this, ix: &usize, window, cx| {
+                                if let Some(mode) = LayoutMode::ALL.get(*ix) {
+                                    this.set_layout(*mode, window, cx);
+                                }
+                            })),
+                    )
+                    .child(div().h_4().border_l_1().border_color(cx.theme().border))
+                    .child(
+                        Button::new("typography")
+                            .small()
+                            .ghost()
+                            .label("Aa")
+                            .accessibility_label("Typography…")
+                            .tooltip_with_action(
+                                "Typography…",
+                                &TypographySettings,
+                                Some(KEY_CONTEXT),
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.typography_settings(&TypographySettings, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("save-file")
+                            .small()
+                            .ghost()
+                            .label("Save")
+                            .accessibility_label("Save file")
+                            .tooltip_with_action("Save", &Save, Some(KEY_CONTEXT))
+                            .disabled(self.is_busy())
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.save(&Save, window, cx)),
+                            ),
+                    ),
             )
     }
 
@@ -481,21 +973,52 @@ impl Workspace {
             div()
                 .size_full()
                 .min_w_0()
-                .p(cx.theme().spacing_tokens().xs)
+                .flex()
+                .flex_col()
+                .p_2()
                 .child(
-                    Editor::new(&self.editor)
-                        .bordered(true)
-                        .rounded(radius)
-                        .overflow_hidden()
-                        .size_full(),
+                    div()
+                        .h_8()
+                        .flex()
+                        .items_center()
+                        .px_3()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Markdown"),
+                )
+                .child(
+                    div().flex_1().min_h_0().child(
+                        Editor::new(&self.editor)
+                            .readonly(self.is_loading())
+                            .font_family(self.typography.read(cx).editor_font(cx))
+                            .text_size(gpui_kit::rems(
+                                self.typography.read(cx).editor_size(cx) / 16.,
+                            ))
+                            .bordered(true)
+                            .rounded(radius)
+                            .overflow_hidden()
+                            .size_full(),
+                    ),
                 )
         };
         let preview = || {
             div()
                 .size_full()
                 .min_w_0()
-                .p(cx.theme().spacing_tokens().xs)
-                .child(self.preview.clone())
+                .flex()
+                .flex_col()
+                .p_2()
+                .child(
+                    div()
+                        .h_8()
+                        .flex()
+                        .items_center()
+                        .px_3()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Preview"),
+                )
+                .child(div().flex_1().min_h_0().child(self.preview.clone()))
         };
 
         match self.layout {
@@ -538,7 +1061,8 @@ impl Workspace {
                             position.character + 1
                         ))
                     })
-                    .when(self.is_loading(), |this| this.child("Opening…")),
+                    .when(self.is_loading(), |this| this.child("Opening…"))
+                    .when(self.save_task.is_some(), |this| this.child("Saving…")),
             )
             .right(div().child(format!(
                 "{} {}",
@@ -563,6 +1087,10 @@ impl Render for Workspace {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::new_file))
             .on_action(cx.listener(Self::open))
+            .on_action(cx.listener(Self::open_folder))
+            .on_action(cx.listener(Self::refresh_folder))
+            .on_action(cx.listener(Self::typography_settings))
+            .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::save_as))
             .on_action(cx.listener(Self::show_editor))
@@ -584,7 +1112,24 @@ impl Render for Workspace {
                     .flex()
                     .flex_row()
                     .items_stretch()
-                    .child(self.render_content(window, cx)),
+                    .child(
+                        h_resizable("workspace-panes")
+                            .when(self.sidebar_visible, |panes| {
+                                panes.child(
+                                    resizable_panel()
+                                        .size(window.rem_size() * 14.)
+                                        .size_range(
+                                            window.rem_size() * 12. ..window.rem_size() * 20.,
+                                        )
+                                        .child(self.render_sidebar(cx)),
+                                )
+                            })
+                            .child(
+                                resizable_panel()
+                                    .size_range(window.rem_size() * 20. ..Pixels::MAX)
+                                    .child(self.render_content(window, cx)),
+                            ),
+                    ),
             )
             .child(self.render_status_bar(cx))
     }

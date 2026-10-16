@@ -1,14 +1,16 @@
 //! The document window: a Markdown editor beside its live preview.
 
 mod document_file;
+mod folder;
+mod typography;
 mod workspace;
 
 use gpui_kit::{App, KeyBinding};
 
 pub use document_file::DocumentFile;
 pub use workspace::{
-    CloseWindow, LayoutMode, NewFile, Open, Quit, Save, SaveAs, ShowEditor, ShowPreview, ShowSplit,
-    ToggleTheme, Workspace,
+    CloseWindow, LayoutMode, NewFile, Open, OpenFolder, Quit, RefreshFolder, Save, SaveAs,
+    ShowEditor, ShowPreview, ShowSplit, ToggleSidebar, ToggleTheme, TypographySettings, Workspace,
 };
 
 const KEY_CONTEXT: &str = "Workspace";
@@ -19,6 +21,9 @@ pub fn init(cx: &mut App) {
     markdown_preview::init(cx);
     cx.bind_keys([
         KeyBinding::new("secondary-n", NewFile, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-shift-o", OpenFolder, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-,", TypographySettings, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-b", ToggleSidebar, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-o", Open, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-s", Save, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-shift-s", SaveAs, Some(KEY_CONTEXT)),

@@ -44,6 +44,8 @@ pub enum MarkdownPreviewEvent {
 /// scroll position.
 pub struct MarkdownPreview {
     document: Arc<MarkdownDocument>,
+    font_family: Option<gpui_kit::SharedString>,
+    font_scale: f32,
     list_state: ListState,
     focus_handle: FocusHandle,
     /// Directory that relative image paths and links resolve against.
@@ -64,6 +66,8 @@ impl MarkdownPreview {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             document: Arc::default(),
+            font_family: None,
+            font_scale: 1.,
             list_state: ListState::new(0, ListAlignment::Top, OVERDRAW),
             focus_handle: cx.focus_handle(),
             base_dir: None,
@@ -72,6 +76,28 @@ impl MarkdownPreview {
             replace_on_next_parse: false,
             estimated_block_height: px(48.),
         }
+    }
+
+    /// Change document typography and invalidate cached block heights.
+    pub fn set_typography(
+        &mut self,
+        family: gpui_kit::SharedString,
+        scale: f32,
+        cx: &mut Context<Self>,
+    ) {
+        self.font_family = Some(family);
+        self.font_scale = scale.clamp(0.75, 1.5);
+        self.list_state
+            .remeasure_items(0..self.document.blocks().len());
+        cx.notify();
+    }
+
+    /// Update relative resources after Save As without moving the reader.
+    pub fn set_base_dir(&mut self, base_dir: Option<Arc<Path>>, cx: &mut Context<Self>) {
+        self.base_dir = base_dir;
+        self.list_state
+            .remeasure_items(0..self.document.blocks().len());
+        cx.notify();
     }
 
     /// The most recently applied parse.
@@ -210,6 +236,11 @@ impl Render for MarkdownPreview {
         self.estimated_block_height = window.rem_size() * 3.;
 
         let document = self.document.clone();
+        let font_family = self
+            .font_family
+            .clone()
+            .unwrap_or_else(|| cx.theme().font_family.clone());
+        let font_scale = self.font_scale;
         let base_dir = self.base_dir.clone();
         let is_empty = document.blocks().is_empty() && !self.is_parsing();
         let theme = cx.theme();
@@ -248,7 +279,14 @@ impl Render for MarkdownPreview {
             .when(!is_empty, |this| {
                 this.child(
                     list(self.list_state.clone(), move |ix, window, cx| {
-                        render_block(&document.blocks()[ix], base_dir.as_ref(), window, cx)
+                        render_block(
+                            &document.blocks()[ix],
+                            base_dir.as_ref(),
+                            font_family.clone(),
+                            font_scale,
+                            window,
+                            cx,
+                        )
                     })
                     .size_full()
                     .py_6(),
