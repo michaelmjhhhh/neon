@@ -2,10 +2,11 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use gpui_kit::base::ResizeHandleState;
 use gpui_kit::component::button::ButtonVariant;
 use gpui_kit::component::input::{Editor, EditorState, InputEvent};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::resizable::{h_resizable, resizable_panel};
+use gpui_kit::component::resizable::{h_resizable, resizable_panel, resize_handle_appearance};
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode, TitleBar, WindowExt as _};
@@ -443,6 +444,7 @@ impl Workspace {
         let theme = cx.theme();
 
         TitleBar::new()
+            .border_b_0()
             .child(
                 div()
                     .flex()
@@ -470,22 +472,43 @@ impl Workspace {
             )
     }
 
-    fn render_content(&self, window: &Window) -> AnyElement {
+    fn render_content(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
         // Below this a pane cannot show a readable line of either source or
         // prose; it follows the rem size so zoom keeps the proportion.
         let min_pane_width = window.rem_size() * 16.;
+        let radius = cx.theme().radius_tokens().lg;
         let editor = || {
             div()
                 .size_full()
                 .min_w_0()
-                .child(Editor::new(&self.editor).bordered(false).size_full())
+                .p(cx.theme().spacing_tokens().xs)
+                .child(
+                    Editor::new(&self.editor)
+                        .bordered(true)
+                        .rounded(radius)
+                        .overflow_hidden()
+                        .size_full(),
+                )
         };
-        let preview = || div().size_full().min_w_0().child(self.preview.clone());
+        let preview = || {
+            div()
+                .size_full()
+                .min_w_0()
+                .p(cx.theme().spacing_tokens().xs)
+                .child(self.preview.clone())
+        };
 
         match self.layout {
             LayoutMode::Editor => editor().into_any_element(),
             LayoutMode::Preview => preview().into_any_element(),
             LayoutMode::Split => h_resizable("split")
+                .with_handle_appearance(Rc::new(|handle, window, cx| {
+                    if handle.state() == ResizeHandleState::Idle {
+                        Some(div().into_any_element())
+                    } else {
+                        resize_handle_appearance()(handle, window, cx)
+                    }
+                }))
                 .child(
                     resizable_panel()
                         .size_range(min_pane_width..Pixels::MAX)
@@ -561,7 +584,7 @@ impl Render for Workspace {
                     .flex()
                     .flex_row()
                     .items_stretch()
-                    .child(self.render_content(window)),
+                    .child(self.render_content(window, cx)),
             )
             .child(self.render_status_bar(cx))
     }

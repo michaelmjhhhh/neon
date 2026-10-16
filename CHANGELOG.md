@@ -29,6 +29,12 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Changed
+
+- Give the editor and preview panels matching rounded corners and inset borders in every layout.
+- Remove the title bar divider above the rounded panels.
+- Show the split divider only while hovering or resizing the panels.
+
 ## [0.1.0] - 2026-10-16
 
 First release.

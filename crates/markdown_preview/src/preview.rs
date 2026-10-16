@@ -231,6 +231,10 @@ impl Render for MarkdownPreview {
             .relative()
             .size_full()
             .min_h_0()
+            .rounded(theme.radius_tokens().lg)
+            .border_1()
+            .border_color(theme.input)
+            .overflow_hidden()
             .bg(theme.background)
             .text_color(theme.foreground)
             .when(is_empty, |this| {
