@@ -29,6 +29,10 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Added
+
+- Show the percentage of the file viewed in the current panel and window FPS in the status bar.
+
 ### Changed
 
 - Give the editor and preview panels matching rounded corners and inset borders in every layout.

@@ -79,6 +79,45 @@ impl MarkdownPreview {
         &self.document
     }
 
+    /// Vertical scroll distance from the top, using the scrollbar's measured offset.
+    pub fn scroll_offset(&self) -> Pixels {
+        (-self.list_state.scroll_px_offset_for_scrollbar().y).max(px(0.))
+    }
+
+    /// Fraction of the source reached by the bottom of the viewport.
+    /// Source ranges keep progress independent of unmeasured block heights.
+    pub fn viewed_fraction(&self) -> f32 {
+        let blocks = self.document.blocks();
+        let Some(last) = blocks.last() else {
+            return 1.;
+        };
+        let total = last.source_range().end.max(1) as f32;
+        let viewport_bottom = self.list_state.viewport_bounds().bottom();
+        let first = self.list_state.logical_scroll_top().item_ix;
+        let mut viewed = blocks
+            .get(first)
+            .map_or(0., |block| block.source_range().start as f32);
+        for (ix, block) in blocks.iter().enumerate().skip(first) {
+            let Some(bounds) = self.list_state.bounds_for_item(ix) else {
+                break;
+            };
+            if bounds.top() >= viewport_bottom {
+                break;
+            }
+            let fraction = if bounds.size.height > px(0.) {
+                ((viewport_bottom - bounds.top()) / bounds.size.height).clamp(0., 1.)
+            } else {
+                1.
+            };
+            let range = block.source_range();
+            viewed = range.start as f32 + range.len() as f32 * fraction;
+            if fraction < 1. {
+                break;
+            }
+        }
+        (viewed / total).clamp(0., 1.)
+    }
+
     /// Whether source is still waiting to be parsed.
     pub fn is_parsing(&self) -> bool {
         self.parse_task.is_some()

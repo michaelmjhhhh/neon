@@ -6,7 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-gpui-kit.workspace = true
+gpui-kit = { workspace = true, features = ["profiler"] }
 markdown_preview.workspace = true
 
 [dev-dependencies]
