@@ -31,9 +31,15 @@ Groups, in this order:
 
 ### Added
 
+- Open folders and navigate nested Markdown files in a resizable sidebar, with folder refresh and keyboard navigation.
+- Create Markdown files in the selected folder and save from the workspace toolbar.
+- Choose installed fonts and text sizes independently for the editor and preview through Typography settings.
 - Show the percentage of the file viewed in the current panel and window FPS in the status bar.
 
 ### Changed
+
+- Simplify the workspace with a compact title bar, sidebar file actions, denser navigation, and labeled document panes.
+- Refine Typography settings with paired font and size controls and live samples.
 
 - Give the editor and preview panels matching rounded corners and inset borders in every layout.
 - Remove the title bar divider above the rounded panels.

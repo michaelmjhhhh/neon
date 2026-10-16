@@ -26,16 +26,21 @@ const MAX_READING_WIDTH_REMS: f32 = 46.;
 pub(crate) fn render_block(
     block: &Block,
     base_dir: Option<&Arc<Path>>,
+    font_family: SharedString,
+    font_scale: f32,
     _: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     let mut renderer = BlockRenderer::new(base_dir, cx);
+    renderer.font_scale = font_scale;
     let content = renderer.render_kind(block.kind());
 
     // The top-level block owns the id namespace for everything inside it, so
     // nested ids only need to be unique within this one block.
     div()
         .id(("block", block.id().as_u64()))
+        .font_family(font_family)
+        .text_size(rems(font_scale))
         .w_full()
         .flex()
         .justify_center()
@@ -69,6 +74,7 @@ struct BlockRenderer<'a> {
     /// Counter for element ids inside the block. The block's content is
     /// immutable, so the same content always yields the same ids.
     next_id: usize,
+    font_scale: f32,
 }
 
 impl<'a> BlockRenderer<'a> {
@@ -88,6 +94,7 @@ impl<'a> BlockRenderer<'a> {
                 mono_font_family: theme.mono_font_family.clone(),
             },
             next_id: 0,
+            font_scale: 1.,
         }
     }
 
@@ -140,12 +147,14 @@ impl<'a> BlockRenderer<'a> {
             })
             .line_height(relative(1.25))
             .map(|this| match level {
-                1 => this.text_3xl(),
-                2 => this.text_2xl(),
-                3 => this.text_xl(),
-                4 => this.text_lg(),
-                5 => this.text_base(),
-                _ => this.text_sm().text_color(self.palette.muted_foreground),
+                1 => this.text_size(rems(1.875 * self.font_scale)),
+                2 => this.text_size(rems(1.5 * self.font_scale)),
+                3 => this.text_size(rems(1.25 * self.font_scale)),
+                4 => this.text_size(rems(1.125 * self.font_scale)),
+                5 => this.text_size(rems(self.font_scale)),
+                _ => this
+                    .text_size(rems(0.875 * self.font_scale))
+                    .text_color(self.palette.muted_foreground),
             })
             .when(level <= 2, |this| {
                 this.pb_2().border_b_1().border_color(self.palette.border)
@@ -193,10 +202,11 @@ impl<'a> BlockRenderer<'a> {
     fn render_image(&mut self, image: &Image) -> AnyElement {
         let alt = SharedString::from(image.alt().clone());
         let muted_foreground = self.palette.muted_foreground;
+        let font_scale = self.font_scale;
         let fallback = move || {
             div()
                 .italic()
-                .text_sm()
+                .text_size(rems(0.875 * font_scale))
                 .text_color(muted_foreground)
                 .child(alt.clone())
                 .into_any_element()
@@ -237,7 +247,7 @@ impl<'a> BlockRenderer<'a> {
                     .px_4()
                     .py_3()
                     .font_family(palette.mono_font_family.clone())
-                    .text_sm()
+                    .text_size(rems(0.875 * self.font_scale))
                     .line_height(relative(1.5))
                     .whitespace_nowrap()
                     .child(SharedString::from(code.code().clone())),
@@ -384,7 +394,7 @@ impl<'a> BlockRenderer<'a> {
             .flex()
             .flex_row()
             .gap_2()
-            .text_sm()
+            .text_size(rems(0.875 * self.font_scale))
             .child(
                 div()
                     .flex_none()
@@ -398,7 +408,7 @@ impl<'a> BlockRenderer<'a> {
     fn render_html(&mut self, html: &Arc<str>) -> AnyElement {
         div()
             .font_family(self.palette.mono_font_family.clone())
-            .text_sm()
+            .text_size(rems(0.875 * self.font_scale))
             .text_color(self.palette.muted_foreground)
             .child(SharedString::from(html.clone()))
             .into_any_element()
