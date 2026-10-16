@@ -1,0 +1,75 @@
+# Push a tag such as v0.1.0 to test, package and publish a macOS release.
+# Running it by hand from the Actions tab builds the same packages and keeps
+# them as a workflow artifact, without publishing anything.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    name: macOS universal
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match version $version in Cargo.toml"
+            exit 1
+          fi
+
+      - name: Install Rust from rust-toolchain.toml
+        run: |
+          rustup --version
+          rustup toolchain install
+          rustc --version
+
+      # GPUI compiles its Metal shaders at build time.
+      - name: Make sure the Metal compiler is available
+        run: xcrun -f metal || xcodebuild -downloadComponent MetalToolchain
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Build Neon.app, DMG and ZIP
+        run: script/bundle-mac
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neon-macos
+          path: |
+            dist/Neon-*.dmg
+            dist/Neon-*.zip
+          if-no-files-found: error
+
+      - name: Publish the GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'NOTES'
+          Download `Neon-*-macos.dmg`, open it and drag Neon to Applications. It runs natively on Apple Silicon and Intel Macs, macOS 11 or later.
+
+          Neon is not signed with an Apple Developer ID yet, so macOS blocks the first launch. To open it: try to open Neon once, then go to System Settings → Privacy & Security and click "Open Anyway".
+          NOTES
+          gh release create "$GITHUB_REF_NAME" dist/Neon-*.dmg dist/Neon-*.zip \
+            --title "Neon ${GITHUB_REF_NAME#v}" \
+            --notes-file notes.md \
+            --generate-notes \
+            --verify-tag

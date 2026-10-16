@@ -4207,6 +4207,7 @@ name = "neon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures",
  "gpui-kit",
  "workspace",
 ]

@@ -132,6 +132,15 @@ impl Workspace {
         self.load_task.is_some()
     }
 
+    /// Whether this is still the empty, untitled window a launch opens, so a
+    /// file opened next can take it over instead of opening another window.
+    pub fn is_pristine(&self, cx: &gpui_kit::App) -> bool {
+        self.document.path().is_none()
+            && !self.document.is_dirty()
+            && !self.is_loading()
+            && self.editor.read(cx).text().len() == 0
+    }
+
     /// Focus the pane that takes keyboard input in the current layout.
     pub fn focus_content(&self, window: &mut Window, cx: &mut Context<Self>) {
         if self.layout.shows_editor() {

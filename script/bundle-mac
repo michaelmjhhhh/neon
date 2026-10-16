@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# Build Neon.app and package it as a .dmg and a .zip in dist/.
+#
+#   script/bundle-mac            universal binary (Apple Silicon + Intel)
+#   script/bundle-mac --native   this machine's architecture only, faster
+#
+# The app is ad-hoc signed, which lets it run but is not a Developer ID
+# signature: on another Mac, Gatekeeper asks the user to approve it once.
+# Set NEON_SIGNING_IDENTITY to a "Developer ID Application: …" identity in the
+# keychain to sign with it instead.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+native=false
+for arg in "$@"; do
+    case "$arg" in
+        --native) native=true ;;
+        *) echo "unknown option: $arg" >&2; exit 2 ;;
+    esac
+done
+
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+bundle_id="io.github.michaelmjhhhh.neon"
+dist="dist"
+app="$dist/Neon.app"
+
+echo "Building Neon $version"
+rm -rf "$dist"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+
+if $native; then
+    cargo build --release --locked -p neon
+    cp target/release/neon "$app/Contents/MacOS/neon"
+else
+    for target in aarch64-apple-darwin x86_64-apple-darwin; do
+        cargo build --release --locked -p neon --target "$target"
+    done
+    lipo -create \
+        target/aarch64-apple-darwin/release/neon \
+        target/x86_64-apple-darwin/release/neon \
+        -output "$app/Contents/MacOS/neon"
+fi
+
+cp assets/icon/Neon.icns "$app/Contents/Resources/Neon.icns"
+
+cat > "$app/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Neon</string>
+    <key>CFBundleDisplayName</key>
+    <string>Neon</string>
+    <key>CFBundleIdentifier</key>
+    <string>$bundle_id</string>
+    <key>CFBundleExecutable</key>
+    <string>neon</string>
+    <key>CFBundleIconFile</key>
+    <string>Neon</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$version</string>
+    <key>CFBundleVersion</key>
+    <string>$version</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Markdown Document</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>net.daringfireball.markdown</string>
+            </array>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>md</string>
+                <string>markdown</string>
+                <string>mdown</string>
+                <string>mkd</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>
+PLIST
+plutil -lint "$app/Contents/Info.plist" >/dev/null
+
+identity="${NEON_SIGNING_IDENTITY:--}"
+if [ "$identity" = "-" ]; then
+    codesign --force --sign - "$app"
+else
+    codesign --force --options runtime --timestamp --sign "$identity" "$app"
+fi
+codesign --verify --strict "$app"
+
+echo "Packaging"
+zip_name="Neon-$version-macos.zip"
+dmg_name="Neon-$version-macos.dmg"
+ditto -c -k --keepParent "$app" "$dist/$zip_name"
+
+staging=$(mktemp -d)
+trap 'rm -rf "$staging"' EXIT
+cp -R "$app" "$staging/"
+ln -s /Applications "$staging/Applications"
+hdiutil create -quiet -volname "Neon" -srcfolder "$staging" -ov -format UDZO "$dist/$dmg_name"
+
+echo
+echo "Done:"
+lipo -archs "$app/Contents/MacOS/neon" | sed 's/^/  architectures: /'
+ls -lh "$dist" | sed 1d | sed 's/^/  /'

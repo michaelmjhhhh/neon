@@ -9,3 +9,4 @@ publish.workspace = true
 gpui-kit.workspace = true
 workspace.workspace = true
 anyhow.workspace = true
+futures = "0.3"
