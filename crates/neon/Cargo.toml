@@ -1,0 +1,11 @@
+[package]
+name = "neon"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+gpui-kit.workspace = true
+workspace.workspace = true
+anyhow.workspace = true
