@@ -2,6 +2,7 @@
 
 mod document_file;
 mod folder;
+mod scroll_metrics;
 mod typography;
 mod workspace;
 

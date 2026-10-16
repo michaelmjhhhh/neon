@@ -34,6 +34,7 @@ Groups, in this order:
 - Open folders and navigate nested Markdown files in a resizable sidebar, with folder refresh and keyboard navigation.
 - Create Markdown files in the selected folder and save from the workspace toolbar.
 - Choose installed fonts and text sizes independently for the editor and preview through Typography settings.
+- Show the percentage of the file viewed in the current panel and window FPS in the status bar.
 
 ### Changed
 

@@ -25,6 +25,7 @@ use markdown_preview::{MarkdownPreview, MarkdownPreviewEvent};
 
 use crate::KEY_CONTEXT;
 use crate::document_file::DocumentFile;
+use crate::scroll_metrics::ScrollMetrics;
 
 gpui_kit::actions!(
     workspace,
@@ -83,6 +84,7 @@ pub struct Workspace {
     typography: Entity<Typography>,
     editor: Entity<EditorState>,
     preview: Entity<MarkdownPreview>,
+    scroll_metrics: Entity<ScrollMetrics>,
     layout: LayoutMode,
     focus_handle: FocusHandle,
     /// Cursor offset last revealed in the preview, to react to moves only.
@@ -100,6 +102,8 @@ impl Workspace {
                 .placeholder("Start writing, or open a Markdown file…")
         });
         let preview = cx.new(MarkdownPreview::new);
+        let scroll_metrics =
+            cx.new(|cx| ScrollMetrics::new(editor.clone(), preview.clone(), window, cx));
 
         let tree = cx.new(|cx| TreeState::new(cx));
         let typography = cx.new(|cx| Typography::new(window, cx));
@@ -156,6 +160,7 @@ impl Workspace {
             typography,
             editor,
             preview,
+            scroll_metrics,
             layout: LayoutMode::default(),
             focus_handle: cx.focus_handle(),
             revealed_cursor: None,
@@ -773,6 +778,8 @@ impl Workspace {
             return;
         }
         self.layout = layout;
+        self.scroll_metrics
+            .update(cx, |metrics, cx| metrics.set_layout(layout, cx));
         if layout != LayoutMode::Editor {
             let cursor = self.editor.read(cx).cursor();
             self.preview
@@ -1064,6 +1071,7 @@ impl Workspace {
                     .when(self.is_loading(), |this| this.child("Opening…"))
                     .when(self.save_task.is_some(), |this| this.child("Saving…")),
             )
+            .right(self.scroll_metrics.clone())
             .right(div().child(format!(
                 "{} {}",
                 format_count(words),
