@@ -4,14 +4,13 @@ use std::path::{Path, PathBuf};
 
 use futures::StreamExt as _;
 use futures::channel::mpsc;
-use gpui_kit::component::Theme;
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Bounds, Global, Menu, MenuItem, OsAction,
     SystemMenuType, WeakEntity, WindowBounds, WindowKind, WindowOptions, size,
 };
 use workspace::{
-    CloseWindow, LatencyBench, NewFile, Open, OpenFolder, Quit, RefreshFolder, Save, SaveAs,
-    ShowEditor, ShowPreview, ShowSplit, ToggleSidebar, ToggleTheme, TypographySettings, Workspace,
+    CloseWindow, LatencyBench, NewFile, Open, OpenFolder, OpenSettings, Quit, RefreshFolder, Save,
+    SaveAs, ShowEditor, ShowPreview, ShowSplit, ToggleSidebar, ToggleTheme, Workspace,
 };
 
 /// Every open document window, so files opened from Finder can reuse one.
@@ -125,7 +124,6 @@ fn open_window(path: Option<PathBuf>, kind: WindowKind, cx: &mut App) {
         ..workspace::window_options()
     };
     let opened = gpui_kit::open_window(options, cx, |window, cx| {
-        Theme::sync_system_appearance(Some(window), cx);
         cx.new(|cx| {
             let mut workspace = Workspace::new(window, cx);
             if let Some(path) = path {
@@ -197,6 +195,8 @@ fn path_from_file_url(url: &str) -> Option<PathBuf> {
 fn set_menus(cx: &mut App) {
     cx.set_menus([
         Menu::new("Neon").items([
+            MenuItem::action("Settings…", OpenSettings),
+            MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),
             MenuItem::action("Quit Neon", Quit),
@@ -231,7 +231,6 @@ fn set_menus(cx: &mut App) {
             MenuItem::action("Preview", ShowPreview),
             MenuItem::separator(),
             MenuItem::action("Toggle Sidebar", ToggleSidebar),
-            MenuItem::action("Typography…", TypographySettings),
             MenuItem::action("Toggle Dark Mode", ToggleTheme),
         ]),
     ]);

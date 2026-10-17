@@ -21,7 +21,7 @@ use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tree::{Tree, TreeEvent, TreeState};
-use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode, TitleBar, WindowExt as _};
+use gpui_kit::component::{ActiveTheme as _, TitleBar, WindowExt as _};
 use gpui_kit::component::{Disableable as _, IconName, Sizable as _};
 use gpui_kit::{
     Anchor, AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable, FontWeight,
@@ -36,6 +36,8 @@ use crate::document_file::DocumentFile;
 use crate::editor_pane::EditorPane;
 use crate::present_now::{self, NativeView};
 use crate::scroll_metrics::ScrollMetrics;
+use crate::settings::SettingsView;
+use crate::theme::{self, Appearance};
 
 gpui_kit::actions!(
     workspace,
@@ -44,7 +46,8 @@ gpui_kit::actions!(
         Open,
         OpenFolder,
         RefreshFolder,
-        TypographySettings,
+        OpenSettings,
+        CloseSettings,
         ToggleSidebar,
         Save,
         SaveAs,
@@ -62,9 +65,11 @@ gpui_kit::actions!(
 const MIN_EAGER_PRESENT_INTERVAL: Duration = Duration::from_micros(16_600);
 
 /// The chrome margin around the document sheet, in rems.
-const SHEET_INSET_REMS: f32 = 0.5;
+pub(crate) const SHEET_INSET_REMS: f32 = 0.5;
 /// The sheet header's height, in rems.
-const SHEET_HEADER_REMS: f32 = 2.5;
+pub(crate) const SHEET_HEADER_REMS: f32 = 2.5;
+/// The sidebar's default width, in rems.
+pub(crate) const SIDEBAR_WIDTH_REMS: f32 = 15.;
 /// Where content may start beside the macOS window controls, measured from
 /// the window's leading edge: three 16 px controls from 20 px, their gaps,
 /// and a small clearance. Platform geometry: it does not follow the rem size.
@@ -104,7 +109,9 @@ pub struct Workspace {
     folder_empty: bool,
     expanded_folders: HashSet<SharedString>,
     sidebar_visible: bool,
-    typography: Entity<Typography>,
+    /// Settings cover the window's content while open.
+    settings_open: bool,
+    settings: Entity<SettingsView>,
     sidebar: Entity<WorkspaceSidebar>,
     editor: Entity<EditorState>,
     editor_pane: Entity<EditorPane>,
@@ -139,6 +146,7 @@ impl Workspace {
         let tree = cx.new(|cx| TreeState::new(cx));
         let typography = cx.new(|cx| Typography::new(window, cx));
         let editor_pane = cx.new(|_| EditorPane::new(editor.clone(), typography.clone()));
+        let settings = cx.new(|cx| SettingsView::new(typography.clone(), cx));
         let sidebar = cx.new({
             let workspace = cx.weak_entity();
             |_| WorkspaceSidebar { workspace }
@@ -178,7 +186,7 @@ impl Workspace {
             cx.subscribe_in(&editor, window, Self::on_editor_event),
             cx.observe_in(&editor, window, Self::on_editor_notified),
             cx.observe_window_appearance(window, |_, window, cx| {
-                Theme::sync_system_appearance(Some(window), cx);
+                theme::apply_appearance(window, cx);
             }),
         ];
 
@@ -190,7 +198,8 @@ impl Workspace {
             folder_empty: true,
             expanded_folders: HashSet::new(),
             sidebar_visible: true,
-            typography,
+            settings_open: false,
+            settings,
             sidebar,
             editor,
             editor_pane,
@@ -205,6 +214,7 @@ impl Workspace {
             last_eager_present: None,
             _subscriptions: subscriptions,
         };
+        theme::apply_appearance(window, cx);
         workspace.install_close_guard(window, cx);
         workspace.update_window_title(window);
         // Focus can only land on an element that has been rendered.
@@ -242,9 +252,12 @@ impl Workspace {
             && self.editor.read(cx).text().len() == 0
     }
 
-    /// Focus the pane that takes keyboard input in the current layout.
+    /// Focus the pane that takes keyboard input in the current layout, or
+    /// Settings while they cover the window.
     pub fn focus_content(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.layout.shows_editor() {
+        if self.settings_open {
+            self.settings.read(cx).focus_handle(cx).focus(window, cx);
+        } else if self.layout.shows_editor() {
             self.editor
                 .update(cx, |editor, cx| editor.focus(window, cx));
         } else {
@@ -707,32 +720,23 @@ impl Workspace {
         cx.notify();
     }
 
-    fn typography_settings(
-        &mut self,
-        _: &TypographySettings,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let typography = self.typography.clone();
-        window.open_dialog(cx, move |dialog, window, _| {
-            let inset = window.rem_size();
-            dialog
-                // The content's width, its insets and the 1 px borders.
-                .width(
-                    window.rem_size() * Typography::WIDTH_REMS + inset * 2. + gpui_kit::px(2.),
-                )
-                .px(inset)
-                .title("Typography")
-                .child(typography.clone())
-                .footer(
-                    div().flex().justify_end().child(
-                        Button::new("done")
-                            .label("Done")
-                            .small()
-                            .on_click(|_, window, cx| window.close_dialog(cx)),
-                    ),
-                )
-        });
+    fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_settings_open(true, window, cx);
+    }
+
+    fn close_settings(&mut self, _: &CloseSettings, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_settings_open(false, window, cx);
+    }
+
+    fn set_settings_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_open == open {
+            return;
+        }
+        self.settings_open = open;
+        // Move focus now: the pane that held it is not rendered next frame,
+        // and keys sent to it would not reach the workspace.
+        self.focus_content(window, cx);
+        cx.notify();
     }
 
     /// The folder sidebar. It runs the full height of the window on the
@@ -784,11 +788,7 @@ impl Workspace {
                         .child(file_name(folder)),
                 )
                 .when(reading, |this| {
-                    this.child(
-                        Spinner::new()
-                            .xsmall()
-                            .color(theme.muted_foreground),
-                    )
+                    this.child(Spinner::new().xsmall().color(theme.muted_foreground))
                 })
                 .child(
                     Button::new("new-file")
@@ -849,9 +849,11 @@ impl Workspace {
                     .label("Open Folder…")
                     .tooltip_with_action("Open Folder…", &OpenFolder, Some(KEY_CONTEXT))
                     .disabled(!can_open_folder)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_folder(&OpenFolder, window, cx)
-                    })),
+                    .on_click(
+                        cx.listener(|this, _, window, cx| {
+                            this.open_folder(&OpenFolder, window, cx)
+                        }),
+                    ),
             )
             .into_any_element()
         } else if self.folder_empty && !reading {
@@ -988,12 +990,12 @@ impl Workspace {
     }
 
     fn toggle_theme(&mut self, _: &ToggleTheme, window: &mut Window, cx: &mut Context<Self>) {
-        let mode = if cx.theme().is_dark() {
-            ThemeMode::Light
+        let appearance = if cx.theme().is_dark() {
+            Appearance::Light
         } else {
-            ThemeMode::Dark
+            Appearance::Dark
         };
-        Theme::change(mode, Some(window), cx);
+        theme::set_appearance(appearance, window, cx);
     }
 
     fn close_window(&mut self, _: &CloseWindow, window: &mut Window, cx: &mut Context<Self>) {
@@ -1183,18 +1185,14 @@ impl Workspace {
                     .items_center()
                     .gap_2()
                     .child(
-                        Button::new("typography")
+                        Button::new("settings")
                             .small()
                             .ghost()
-                            .icon(IconName::ALargeSmall)
-                            .accessibility_label("Typography…")
-                            .tooltip_with_action(
-                                "Typography…",
-                                &TypographySettings,
-                                Some(KEY_CONTEXT),
-                            )
+                            .icon(IconName::Settings)
+                            .accessibility_label("Settings…")
+                            .tooltip_with_action("Settings…", &OpenSettings, Some(KEY_CONTEXT))
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.typography_settings(&TypographySettings, window, cx)
+                                this.open_settings(&OpenSettings, window, cx)
                             })),
                     )
                     .child(
@@ -1209,6 +1207,29 @@ impl Workspace {
                                 }
                             })),
                     ),
+            )
+    }
+
+    /// The folder sidebar beside the document sheet.
+    fn render_panes(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_resizable("workspace-panes")
+            .with_handle_appearance(quiet_resize_handle())
+            .when(self.sidebar_visible, |panes| {
+                panes.child(
+                    resizable_panel()
+                        .size(window.rem_size() * SIDEBAR_WIDTH_REMS)
+                        .size_range(window.rem_size() * 12. ..window.rem_size() * 22.)
+                        .child(
+                            self.sidebar
+                                .clone()
+                                .cached(StyleRefinement::default().size_full()),
+                        ),
+                )
+            })
+            .child(
+                resizable_panel()
+                    .size_range(window.rem_size() * 20. ..Pixels::MAX)
+                    .child(self.render_sheet(window, cx)),
             )
     }
 
@@ -1342,6 +1363,11 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let content = if self.settings_open {
+            self.settings.clone().into_any_element()
+        } else {
+            self.render_panes(window, cx).into_any_element()
+        };
         let theme = cx.theme();
         div()
             .id("workspace")
@@ -1351,7 +1377,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open))
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::refresh_folder))
-            .on_action(cx.listener(Self::typography_settings))
+            .on_action(cx.listener(Self::open_settings))
+            .on_action(cx.listener(Self::close_settings))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::save_as))
@@ -1364,27 +1391,7 @@ impl Render for Workspace {
             .size_full()
             .bg(theme.sidebar)
             .text_color(theme.foreground)
-            .child(
-                h_resizable("workspace-panes")
-                    .with_handle_appearance(quiet_resize_handle())
-                    .when(self.sidebar_visible, |panes| {
-                        panes.child(
-                            resizable_panel()
-                                .size(window.rem_size() * 15.)
-                                .size_range(window.rem_size() * 12. ..window.rem_size() * 22.)
-                                .child(
-                                    self.sidebar
-                                        .clone()
-                                        .cached(StyleRefinement::default().size_full()),
-                                ),
-                        )
-                    })
-                    .child(
-                        resizable_panel()
-                            .size_range(window.rem_size() * 20. ..Pixels::MAX)
-                            .child(self.render_sheet(window, cx)),
-                    ),
-            )
+            .child(content)
     }
 }
 
@@ -1402,9 +1409,9 @@ fn sidebar_toggle(sidebar_visible: bool, cx: &Context<Workspace>) -> Button {
         .icon(icon)
         .accessibility_label(label)
         .tooltip_with_action(label, &ToggleSidebar, Some(KEY_CONTEXT))
-        .on_click(cx.listener(|this, _, window, cx| {
-            this.toggle_sidebar(&ToggleSidebar, window, cx)
-        }))
+        .on_click(
+            cx.listener(|this, _, window, cx| this.toggle_sidebar(&ToggleSidebar, window, cx)),
+        )
 }
 
 /// A resize handle that stays out of sight until hovered or dragged, for
