@@ -4,9 +4,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::empty::{
+    Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
+};
 use gpui_kit::component::input::Rope;
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarHandle};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _};
 use gpui_kit::{
     App, AppContext as _, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ListAlignment, ListOffset, ListState, MouseButton,
@@ -141,13 +144,7 @@ impl MarkdownPreview {
             .size_full()
             .child(preview.clone().cached(style()))
             .when(show_scrollbar, |this| {
-                // Inset by the preview's border, as when it was a child.
-                this.child(
-                    div()
-                        .absolute()
-                        .inset(px(1.))
-                        .child(scrollbar.cached(style())),
-                )
+                this.child(div().absolute().inset_0().child(scrollbar.cached(style())))
             })
     }
 
@@ -386,19 +383,25 @@ impl Render for MarkdownPreview {
             .relative()
             .size_full()
             .min_h_0()
-            .rounded(theme.radius_tokens().lg)
-            .border_1()
-            .border_color(theme.input)
             .overflow_hidden()
             .bg(theme.background)
             .text_color(theme.foreground)
             .when(is_empty, |this| {
-                this.flex()
-                    .items_center()
-                    .justify_center()
-                    .text_sm()
-                    .text_color(theme.muted_foreground)
-                    .child("Nothing to preview")
+                this.flex().child(
+                    Empty::new().header(
+                        EmptyHeader::new()
+                            .media(
+                                EmptyMedia::new()
+                                    .with_variant(EmptyMediaVariant::Icon)
+                                    .child(Icon::new(IconName::BookOpen).small()),
+                            )
+                            .title(EmptyTitle::new().child("Nothing to preview"))
+                            .description(
+                                EmptyDescription::new()
+                                    .child("Markdown you write appears here as you type."),
+                            ),
+                    ),
+                )
             })
             .when(!is_empty, |this| {
                 this.child(
@@ -413,7 +416,8 @@ impl Render for MarkdownPreview {
                         )
                     })
                     .size_full()
-                    .py_6(),
+                    .pt_10()
+                    .pb_16(),
                 )
             })
     }
