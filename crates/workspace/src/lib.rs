@@ -1,8 +1,11 @@
 //! The document window: a Markdown editor beside its live preview.
 
 mod document_file;
+mod editor_pane;
 mod folder;
+mod highlighter;
 mod latency_bench;
+mod present_now;
 mod scroll_metrics;
 mod typography;
 mod workspace;

@@ -8,6 +8,11 @@ publish.workspace = true
 [dependencies]
 gpui-kit = { workspace = true, features = ["profiler"] }
 markdown_preview.workspace = true
+tree-sitter = "0.26"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+raw-window-handle = "0.6"
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }

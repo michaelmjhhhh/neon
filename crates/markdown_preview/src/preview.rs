@@ -1,13 +1,18 @@
+use std::cell::Cell;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::input::Rope;
-use gpui_kit::component::scroll::Scrollbar;
+use gpui_kit::component::scroll::{Scrollbar, ScrollbarHandle};
 use gpui_kit::{
-    App, AppContext as _, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, ListAlignment, ListOffset, ListState, MouseButton, ParentElement as _, Pixels,
-    Render, Styled as _, Task, Window, div, list, prelude::FluentBuilder as _, px,
+    App, AppContext as _, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ListAlignment, ListOffset, ListState, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render, Size,
+    StyleRefinement, Styled as _, Task, WeakEntity, Window, canvas, div, list,
+    prelude::FluentBuilder as _, px,
 };
 use markdown::{BlockSplice, MarkdownDocument};
 
@@ -31,6 +36,12 @@ gpui_kit::actions!(
 /// geometry, not design spacing.
 const OVERDRAW: Pixels = px(1200.);
 
+/// Minimum time between the starts of two parses while typing. An isolated
+/// edit parses at once; a burst parses at most this often, so preview frames
+/// do not compete with the editor's frames for every keystroke. Zed's
+/// Markdown preview waits 200 ms.
+const PARSE_INTERVAL: Duration = Duration::from_millis(200);
+
 /// Emitted after a parse result has been applied.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MarkdownPreviewEvent {
@@ -47,13 +58,16 @@ pub struct MarkdownPreview {
     font_family: Option<gpui_kit::SharedString>,
     font_scale: f32,
     list_state: ListState,
+    scrollbar: Entity<PreviewScrollbar>,
     focus_handle: FocusHandle,
     /// Directory that relative image paths and links resolve against.
     base_dir: Option<Arc<Path>>,
-    /// The parse in flight. At most one runs; newer source waits in
-    /// `pending_source` and only the latest is kept.
+    /// The parse in flight, or the wait before the next one. At most one
+    /// runs; newer source waits in `pending_source` and only the latest is
+    /// kept.
     parse_task: Option<Task<()>>,
     pending_source: Option<Rope>,
+    last_parse_at: Option<Instant>,
     /// The next applied parse replaces the document instead of patching it.
     replace_on_next_parse: bool,
     /// Height hint for blocks that have not been measured yet.
@@ -64,15 +78,26 @@ impl EventEmitter<MarkdownPreviewEvent> for MarkdownPreview {}
 
 impl MarkdownPreview {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let list_state = ListState::new(0, ListAlignment::Top, OVERDRAW);
+        let preview = cx.weak_entity();
+        let scrollbar = cx.new(|_| PreviewScrollbar {
+            handle: PreviewScrollHandle {
+                list_state: list_state.clone(),
+                moved: Rc::default(),
+            },
+            preview,
+        });
         Self {
             document: Arc::default(),
             font_family: None,
             font_scale: 1.,
-            list_state: ListState::new(0, ListAlignment::Top, OVERDRAW),
+            list_state,
+            scrollbar,
             focus_handle: cx.focus_handle(),
             base_dir: None,
             parse_task: None,
             pending_source: None,
+            last_parse_at: None,
             replace_on_next_parse: false,
             estimated_block_height: px(48.),
         }
@@ -98,6 +123,32 @@ impl MarkdownPreview {
         self.list_state
             .remeasure_items(0..self.document.blocks().len());
         cx.notify();
+    }
+
+    /// The preview with its scrollbar, both as cached views.
+    ///
+    /// The scrollbar notifies its view for hover, fades and idle timers.
+    /// Inside the preview, each of those would lay out the visible blocks
+    /// again; as a sibling view it redraws alone, and the blocks are laid
+    /// out only when the preview itself changes.
+    pub fn pane(preview: &Entity<Self>, cx: &App) -> impl IntoElement + use<> {
+        let style = || StyleRefinement::default().size_full();
+        let preview_ref = preview.read(cx);
+        let show_scrollbar = !preview_ref.document.blocks().is_empty();
+        let scrollbar = preview_ref.scrollbar.clone();
+        div()
+            .relative()
+            .size_full()
+            .child(preview.clone().cached(style()))
+            .when(show_scrollbar, |this| {
+                // Inset by the preview's border, as when it was a child.
+                this.child(
+                    div()
+                        .absolute()
+                        .inset(px(1.))
+                        .child(scrollbar.cached(style())),
+                )
+            })
     }
 
     /// The most recently applied parse.
@@ -146,16 +197,16 @@ impl MarkdownPreview {
 
     /// Whether source is still waiting to be parsed.
     pub fn is_parsing(&self) -> bool {
-        self.parse_task.is_some()
+        self.parse_task.is_some() || self.pending_source.is_some()
     }
 
     /// Update the preview after an edit. Unchanged blocks keep their layout
-    /// and the scroll position is preserved.
+    /// and the scroll position is preserved. During a burst of edits the
+    /// preview catches up at most every [`PARSE_INTERVAL`].
     pub fn set_source(&mut self, source: Rope, cx: &mut Context<Self>) {
-        if self.parse_task.is_some() {
-            self.pending_source = Some(source);
-        } else {
-            self.start_parse(source, cx);
+        self.pending_source = Some(source);
+        if self.parse_task.is_none() {
+            self.schedule_parse(cx);
         }
     }
 
@@ -168,18 +219,52 @@ impl MarkdownPreview {
     ) {
         self.base_dir = base_dir;
         self.replace_on_next_parse = true;
+        // A new document shows at once; only typing is throttled.
+        self.last_parse_at = None;
+        self.parse_task = None;
         self.set_source(source, cx);
     }
 
     /// Scroll so the block rendered from the source byte `offset` is visible.
     pub fn reveal_offset(&mut self, offset: usize, cx: &mut Context<Self>) {
-        if let Some(ix) = self.document.block_ix_for_offset(offset) {
-            self.list_state.scroll_to_reveal_item(ix);
+        let Some(ix) = self.document.block_ix_for_offset(offset) else {
+            return;
+        };
+        let before = self.list_state.logical_scroll_top();
+        self.list_state.scroll_to_reveal_item(ix);
+        let after = self.list_state.logical_scroll_top();
+        // Typing inside a visible block moves nothing; skip the re-render.
+        if (before.item_ix, before.offset_in_item) != (after.item_ix, after.offset_in_item) {
             cx.notify();
         }
     }
 
+    /// Parse `pending_source` now, or once [`PARSE_INTERVAL`] has passed
+    /// since the previous parse started.
+    fn schedule_parse(&mut self, cx: &mut Context<Self>) {
+        // The executor's clock, so tests can advance it.
+        let now = cx.background_executor().now();
+        let wait = self.last_parse_at.map_or(Duration::ZERO, |at| {
+            PARSE_INTERVAL.saturating_sub(now.saturating_duration_since(at))
+        });
+        if wait.is_zero() {
+            if let Some(source) = self.pending_source.take() {
+                self.start_parse(source, cx);
+            }
+            return;
+        }
+        self.parse_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            this.update(cx, |this, cx| {
+                this.parse_task = None;
+                this.schedule_parse(cx);
+            })
+            .ok();
+        }));
+    }
+
     fn start_parse(&mut self, source: Rope, cx: &mut Context<Self>) {
+        self.last_parse_at = Some(cx.background_executor().now());
         let parse = cx.background_spawn(async move {
             let text = source.to_string();
             MarkdownDocument::parse(&text)
@@ -189,8 +274,8 @@ impl MarkdownPreview {
             this.update(cx, |this, cx| {
                 this.parse_task = None;
                 this.apply_document(document, cx);
-                if let Some(source) = this.pending_source.take() {
-                    this.start_parse(source, cx);
+                if this.pending_source.is_some() {
+                    this.schedule_parse(cx);
                 }
             })
             .ok();
@@ -330,14 +415,88 @@ impl Render for MarkdownPreview {
                     .size_full()
                     .py_6(),
                 )
-                .child(
-                    div().absolute().inset_0().child(
-                        Scrollbar::vertical(&self.list_state)
-                            .id("markdown-preview-scrollbar")
-                            .viewport_from_layout(),
-                    ),
-                )
             })
+    }
+}
+
+/// The preview's scrollbar; see [`MarkdownPreview::pane`].
+pub struct PreviewScrollbar {
+    handle: PreviewScrollHandle,
+    preview: WeakEntity<MarkdownPreview>,
+}
+
+impl Render for PreviewScrollbar {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let moved = self.handle.moved.clone();
+        let preview = self.preview.clone();
+        div()
+            .size_full()
+            // The scrollbar notifies only this view when it scrolls the list.
+            // Redraw the blocks in the same event. Painted before the
+            // scrollbar, so these run after its own listeners.
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |_, _, window, _| {
+                        let notify_if_moved = {
+                            let moved = moved.clone();
+                            let preview = preview.clone();
+                            move |cx: &mut App| {
+                                if moved.take() {
+                                    preview.update(cx, |_, cx| cx.notify()).ok();
+                                }
+                            }
+                        };
+                        let on_move = notify_if_moved.clone();
+                        window.on_mouse_event(move |_: &MouseMoveEvent, _, _, cx| on_move(cx));
+                        let on_down = notify_if_moved.clone();
+                        window.on_mouse_event(move |_: &MouseDownEvent, _, _, cx| on_down(cx));
+                        window
+                            .on_mouse_event(move |_: &MouseUpEvent, _, _, cx| notify_if_moved(cx));
+                    },
+                )
+                .absolute()
+                .size_0(),
+            )
+            .child(
+                Scrollbar::vertical(&self.handle)
+                    .id("markdown-preview-scrollbar")
+                    .viewport_from_layout(),
+            )
+    }
+}
+
+/// The list's scroll handle, noting when the scrollbar moves it.
+#[derive(Clone)]
+struct PreviewScrollHandle {
+    list_state: ListState,
+    moved: Rc<Cell<bool>>,
+}
+
+impl ScrollbarHandle for PreviewScrollHandle {
+    fn viewport_bounds(&self) -> Bounds<Pixels> {
+        ScrollbarHandle::viewport_bounds(&self.list_state)
+    }
+
+    fn offset(&self) -> Point<Pixels> {
+        ScrollbarHandle::offset(&self.list_state)
+    }
+
+    fn set_offset(&self, offset: Point<Pixels>) {
+        ScrollbarHandle::set_offset(&self.list_state, offset);
+        self.moved.set(true);
+    }
+
+    fn content_size(&self) -> Size<Pixels> {
+        ScrollbarHandle::content_size(&self.list_state)
+    }
+
+    fn start_drag(&self) {
+        ScrollbarHandle::start_drag(&self.list_state);
+    }
+
+    fn end_drag(&self) {
+        ScrollbarHandle::end_drag(&self.list_state);
     }
 }
 
@@ -364,6 +523,10 @@ mod tests {
             preview.set_source(rope("# One\n\nbody\n\nmore\n\nlast"), cx);
         });
         cx.run_until_parked();
+        // Edits right after a parse wait out the throttle.
+        assert!(preview.read_with(cx, |preview, _| preview.is_parsing()));
+        cx.executor().advance_clock(PARSE_INTERVAL);
+        cx.run_until_parked();
 
         preview.read_with(cx, |preview, _| {
             assert!(!preview.is_parsing());
@@ -384,6 +547,7 @@ mod tests {
         });
         cx.run_until_parked();
         preview.update(cx, |preview, cx| preview.set_source(rope("a\n\nc"), cx));
+        cx.executor().advance_clock(PARSE_INTERVAL);
         cx.run_until_parked();
 
         preview.read_with(cx, |preview, _| {

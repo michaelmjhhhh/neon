@@ -73,6 +73,8 @@ async fn edits_flow_to_the_preview_and_save_to_disk(cx: &mut TestAppContext) {
         window.input("\nA *new* block.", cx);
     })
     .unwrap();
+    // The preview catches up with typing at most every 200 ms.
+    cx.executor().advance_clock(Duration::from_millis(200));
     cx.run_until_parked();
 
     assert_eq!(

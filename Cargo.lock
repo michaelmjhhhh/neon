@@ -8491,7 +8491,10 @@ dependencies = [
  "gpui-kit",
  "markdown 0.1.0",
  "markdown_preview",
+ "objc2 0.6.5",
+ "raw-window-handle",
  "tempfile",
+ "tree-sitter",
 ]
 
 [[package]]
