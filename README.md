@@ -6,7 +6,7 @@
 
 **A fast, native Markdown editor and live preview for macOS.**
 
-[![Release](https://img.shields.io/badge/release-v0.3.0-FF5A1F?style=for-the-badge)](https://github.com/michaelmjhhhh/neon/releases/latest)
+[![Release](https://img.shields.io/badge/release-v0.4.0-FF5A1F?style=for-the-badge)](https://github.com/michaelmjhhhh/neon/releases/latest)
 [![macOS 11+](https://img.shields.io/badge/macOS-11%2B-1C1C1E?style=for-the-badge&logo=apple&logoColor=white)](#install)
 [![Universal](https://img.shields.io/badge/Apple_Silicon_%7C_Intel-universal-7C3AED?style=for-the-badge)](#install)
 <br>
