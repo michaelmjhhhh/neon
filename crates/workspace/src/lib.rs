@@ -24,9 +24,9 @@ pub use latency_bench::LatencyBench;
 #[cfg(feature = "memory-bench")]
 pub use workspace::MemoryBench;
 pub use workspace::{
-    CloseSettings, CloseWindow, LayoutMode, NewFile, Open, OpenFolder, OpenSettings, Quit,
-    RefreshFolder, Save, SaveAs, ShowEditor, ShowPreview, ShowSplit, ToggleSidebar, ToggleTheme,
-    Workspace,
+    CloseSettings, CloseWindow, ExportDocx, ExportHtml, ExportPdf, LayoutMode, NewFile, Open,
+    OpenFolder, OpenSettings, Quit, RefreshFolder, Save, SaveAs, ShowEditor, ShowPreview,
+    ShowSplit, ToggleSidebar, ToggleTheme, Workspace,
 };
 
 const KEY_CONTEXT: &str = "Workspace";

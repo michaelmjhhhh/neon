@@ -11,8 +11,9 @@ use gpui_kit::{
 #[cfg(feature = "diagnostics")]
 use workspace::LatencyBench;
 use workspace::{
-    CloseWindow, NewFile, Open, OpenFolder, OpenSettings, Quit, RefreshFolder, Save, SaveAs,
-    ShowEditor, ShowPreview, ShowSplit, ToggleSidebar, ToggleTheme, Workspace,
+    CloseWindow, ExportDocx, ExportHtml, ExportPdf, NewFile, Open, OpenFolder, OpenSettings, Quit,
+    RefreshFolder, Save, SaveAs, ShowEditor, ShowPreview, ShowSplit, ToggleSidebar, ToggleTheme,
+    Workspace,
 };
 
 /// Every open document window, so files opened from Finder can reuse one.
@@ -22,6 +23,11 @@ struct OpenWorkspaces(Vec<(AnyWindowHandle, WeakEntity<Workspace>)>);
 impl Global for OpenWorkspaces {}
 
 fn main() {
+    // PDF export runs this executable again as a worker; see `export::pdf`.
+    #[cfg(target_os = "macos")]
+    if let Some(code) = export::pdf::run_worker_if_requested() {
+        std::process::exit(code);
+    }
     // Finder delivers "open file" requests outside the app context, possibly
     // before launch finishes; queue them and handle them once the app runs.
     let (open_requests, mut opened) = mpsc::unbounded::<Vec<PathBuf>>();
@@ -230,6 +236,11 @@ fn set_menus(cx: &mut App) {
             MenuItem::separator(),
             MenuItem::action("Save", Save),
             MenuItem::action("Save As…", SaveAs),
+            MenuItem::submenu(Menu::new("Export").items([
+                MenuItem::action("HTML…", ExportHtml),
+                MenuItem::action("PDF…", ExportPdf),
+                MenuItem::action("Word Document…", ExportDocx),
+            ])),
             MenuItem::separator(),
             MenuItem::action("Close Window", CloseWindow),
         ]),

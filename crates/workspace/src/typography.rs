@@ -231,6 +231,24 @@ impl Typography {
         self.size_value(pane).parse().unwrap_or(16.)
     }
 
+    /// The preview's typography, so an export reads like the preview: its
+    /// font and size for text, the theme's monospace font for code.
+    pub(crate) fn export_style(&self, cx: &App) -> export::ExportStyle {
+        // Families named with a leading dot are the system's own, which
+        // other apps can only reach by a generic name.
+        let named = |family: &SharedString| {
+            (!family.is_empty() && !family.starts_with('.')).then(|| family.to_string())
+        };
+        export::ExportStyle {
+            text_font: (self.preview_font.as_ref() != SYSTEM_DEFAULT)
+                .then(|| named(&self.preview_font))
+                .flatten(),
+            text_size_px: self.size(Pane::Preview, cx),
+            code_font: named(&cx.theme().mono_font_family),
+            ..export::ExportStyle::default()
+        }
+    }
+
     pub(crate) fn font_state(&self, pane: Pane) -> Option<&Entity<FontSelect>> {
         let pickers = self.pickers.as_ref()?;
         Some(match pane {

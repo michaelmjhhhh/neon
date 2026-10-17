@@ -17,6 +17,7 @@ gpui-kit = { version = "0.7.3", features = [
 markdown = { path = "crates/markdown" }
 workspace = { path = "crates/workspace" }
 markdown_preview = { path = "crates/markdown_preview" }
+export = { path = "crates/export" }
 pulldown-cmark = { version = "0.13", default-features = false }
 anyhow = "1"
 
