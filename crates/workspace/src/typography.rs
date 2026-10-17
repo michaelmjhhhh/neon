@@ -1,14 +1,55 @@
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _,
-    select::{SearchableVec, Select, SelectEvent, SelectState},
+    ActiveTheme as _,
+    select::{SearchableVec, SelectEvent, SelectItem, SelectState},
 };
 use gpui_kit::{
-    AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
-    SharedString, Styled as _, Subscription, Window, div, rems,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, IntoElement,
+    ParentElement as _, SharedString, Styled as _, Subscription, Window, div,
 };
 
-type FontSelect = SelectState<SearchableVec<SharedString>>;
-type SizeSelect = SelectState<Vec<SharedString>>;
+pub(crate) type FontSelect = SelectState<SearchableVec<FontItem>>;
+pub(crate) type SizeSelect = SelectState<Vec<SharedString>>;
+
+const SYSTEM_DEFAULT: &str = "System default";
+const EDITOR_DEFAULT_SIZE: &str = "14";
+const PREVIEW_DEFAULT_SIZE: &str = "16";
+
+/// One installed font, listed in its own typeface.
+#[derive(Clone)]
+pub(crate) struct FontItem {
+    name: SharedString,
+    family: SharedString,
+}
+
+impl SelectItem for FontItem {
+    type Value = SharedString;
+
+    fn title(&self) -> SharedString {
+        self.name.clone()
+    }
+
+    fn display_title(&self) -> Option<AnyElement> {
+        Some(self.render_name().into_any_element())
+    }
+
+    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        self.render_name()
+    }
+
+    fn value(&self) -> &SharedString {
+        &self.name
+    }
+}
+
+impl FontItem {
+    fn render_name(&self) -> impl IntoElement {
+        div()
+            .min_w_0()
+            .truncate()
+            .font_family(self.family.clone())
+            .child(self.name.clone())
+    }
+}
 
 /// Independent document typography; application chrome keeps the system font.
 pub(super) struct Typography {
@@ -16,21 +57,36 @@ pub(super) struct Typography {
     preview_font: Entity<FontSelect>,
     editor_size: Entity<SizeSelect>,
     preview_size: Entity<SizeSelect>,
+    /// The theme's monospace family when the window opened.
+    editor_default_font: SharedString,
     _subscriptions: Vec<Subscription>,
 }
 
 pub(super) struct TypographyChanged;
 
+/// A pane whose text the typography sets.
 #[derive(Clone, Copy)]
-enum Pane {
+pub(crate) enum Pane {
     Editor,
     Preview,
 }
+
+impl Pane {
+    pub(crate) const ALL: [Self; 2] = [Self::Editor, Self::Preview];
+
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            Self::Editor => "Editor",
+            Self::Preview => "Preview",
+        }
+    }
+}
+
 impl EventEmitter<TypographyChanged> for Typography {}
 
 impl Typography {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let mut fonts: Vec<SharedString> = cx
+        let mut names: Vec<SharedString> = cx
             .text_system()
             .all_font_names()
             .into_iter()
@@ -38,10 +94,22 @@ impl Typography {
             .map(Into::into)
             .collect();
         let editor_default = cx.theme().mono_font_family.clone();
-        let preview_default: SharedString = "System default".into();
-        fonts.extend([editor_default.clone(), preview_default.clone()]);
-        fonts.sort();
-        fonts.dedup();
+        let preview_default: SharedString = SYSTEM_DEFAULT.into();
+        names.extend([editor_default.clone(), preview_default.clone()]);
+        names.sort();
+        names.dedup();
+        let system_family = cx.theme().font_family.clone();
+        let fonts: Vec<FontItem> = names
+            .into_iter()
+            .map(|name| FontItem {
+                family: if name.as_ref() == SYSTEM_DEFAULT {
+                    system_family.clone()
+                } else {
+                    name.clone()
+                },
+                name,
+            })
+            .collect();
         let editor_font = cx.new(|cx| {
             SelectState::new(SearchableVec::new(fonts.clone()), None, window, cx).searchable(true)
         });
@@ -61,10 +129,10 @@ impl Typography {
         let editor_size = cx.new(|cx| SelectState::new(sizes.clone(), None, window, cx));
         let preview_size = cx.new(|cx| SelectState::new(sizes, None, window, cx));
         editor_size.update(cx, |state, cx| {
-            state.set_selected_value(&"14".into(), window, cx)
+            state.set_selected_value(&EDITOR_DEFAULT_SIZE.into(), window, cx)
         });
         preview_size.update(cx, |state, cx| {
-            state.set_selected_value(&"16".into(), window, cx)
+            state.set_selected_value(&PREVIEW_DEFAULT_SIZE.into(), window, cx)
         });
         let mut subscriptions = Vec::new();
         for font in [&editor_font, &preview_font] {
@@ -88,135 +156,81 @@ impl Typography {
             preview_font,
             editor_size,
             preview_size,
+            editor_default_font: editor_default,
             _subscriptions: subscriptions,
         }
     }
 
-    pub(super) fn editor_font(&self, cx: &gpui_kit::App) -> SharedString {
-        match self.editor_font.read(cx).selected_value() {
-            Some(value) if value.as_ref() != "System default" => value.clone(),
+    pub(super) fn editor_font(&self, cx: &App) -> SharedString {
+        self.font(Pane::Editor, cx)
+    }
+    pub(super) fn preview_font(&self, cx: &App) -> SharedString {
+        self.font(Pane::Preview, cx)
+    }
+    pub(super) fn editor_size(&self, cx: &App) -> f32 {
+        self.size(Pane::Editor, cx)
+    }
+    pub(super) fn preview_size(&self, cx: &App) -> f32 {
+        self.size(Pane::Preview, cx)
+    }
+
+    /// The family the pane draws its text in.
+    pub(crate) fn font(&self, pane: Pane, cx: &App) -> SharedString {
+        match self.font_state(pane).read(cx).selected_value() {
+            Some(value) if value.as_ref() != SYSTEM_DEFAULT => value.clone(),
             _ => cx.theme().font_family.clone(),
         }
     }
-    pub(super) fn preview_font(&self, cx: &gpui_kit::App) -> SharedString {
-        match self.preview_font.read(cx).selected_value() {
-            Some(value) if value.as_ref() != "System default" => value.clone(),
-            _ => cx.theme().font_family.clone(),
-        }
-    }
-    pub(super) fn editor_size(&self, cx: &gpui_kit::App) -> f32 {
-        Self::size(&self.editor_size, cx)
-    }
-    pub(super) fn preview_size(&self, cx: &gpui_kit::App) -> f32 {
-        Self::size(&self.preview_size, cx)
-    }
-    fn size(state: &Entity<SizeSelect>, cx: &gpui_kit::App) -> f32 {
-        state
+    /// The pane's text size in pixels at the default rem size.
+    pub(crate) fn size(&self, pane: Pane, cx: &App) -> f32 {
+        self.size_state(pane)
             .read(cx)
             .selected_value()
             .and_then(|value| value.parse().ok())
             .unwrap_or(16.)
     }
-}
 
-impl Typography {
-    /// The settings' width, so the dialog can be sized around it.
-    pub(super) const WIDTH_REMS: f32 = 25.;
-    const SIZE_SELECT_REMS: f32 = 5.;
-    const GAP_REMS: f32 = 0.5;
-
-    /// One pane's font and size, with a sample drawn on the document surface
-    /// so it previews the change where it will land.
-    fn render_section(&self, pane: Pane, cx: &Context<Self>) -> impl IntoElement {
-        let (title, font, size, sample_font, sample_size, sample) = match pane {
-            Pane::Editor => (
-                "Editor",
-                &self.editor_font,
-                &self.editor_size,
-                self.editor_font(cx),
-                self.editor_size(cx),
-                "# A place for your ideas",
-            ),
-            Pane::Preview => (
-                "Preview",
-                &self.preview_font,
-                &self.preview_size,
-                self.preview_font(cx),
-                self.preview_size(cx),
-                "A place for your ideas",
-            ),
-        };
-        let theme = cx.theme();
-        div()
-            .flex()
-            .w_full()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(gpui_kit::FontWeight::MEDIUM)
-                    .child(title),
-            )
-            .child(
-                // A Select sizes against an auto-width wrapper, so it takes
-                // a definite width: the font fills what the size leaves, and
-                // the row ends on the sample's edge.
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(rems(Self::GAP_REMS))
-                    .child(
-                        Select::new(font)
-                            .small()
-                            .accessibility_label(format!("{title} font"))
-                            .w(rems(
-                                Self::WIDTH_REMS - Self::SIZE_SELECT_REMS - Self::GAP_REMS,
-                            )),
-                    )
-                    .child(
-                        Select::new(size)
-                            .small()
-                            .accessibility_label(format!("{title} size"))
-                            .w(rems(Self::SIZE_SELECT_REMS)),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .min_h_12()
-                    .px_4()
-                    .py_2()
-                    .rounded(theme.radius_lg)
-                    .border_1()
-                    .border_color(theme.border)
-                    .bg(theme.background)
-                    .font_family(sample_font)
-                    .text_size(gpui_kit::rems(sample_size / 16.))
-                    .child(sample),
-            )
+    pub(crate) fn font_state(&self, pane: Pane) -> &Entity<FontSelect> {
+        match pane {
+            Pane::Editor => &self.editor_font,
+            Pane::Preview => &self.preview_font,
+        }
     }
-}
+    pub(crate) fn size_state(&self, pane: Pane) -> &Entity<SizeSelect> {
+        match pane {
+            Pane::Editor => &self.editor_size,
+            Pane::Preview => &self.preview_size,
+        }
+    }
 
-impl Render for Typography {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
-        div()
-            .flex()
-            .w(rems(Self::WIDTH_REMS))
-            .flex_col()
-            .gap_6()
-            // Separates the first section from the dialog title by more than
-            // a section's label from its controls.
-            .pt_2()
-            .child(self.render_section(Pane::Editor, cx))
-            .child(self.render_section(Pane::Preview, cx))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(muted)
-                    .child("Changes apply to this window. Code keeps its monospace font."),
-            )
+    fn default_font(&self, pane: Pane) -> SharedString {
+        match pane {
+            Pane::Editor => self.editor_default_font.clone(),
+            Pane::Preview => SYSTEM_DEFAULT.into(),
+        }
+    }
+    fn default_size(pane: Pane) -> SharedString {
+        match pane {
+            Pane::Editor => EDITOR_DEFAULT_SIZE.into(),
+            Pane::Preview => PREVIEW_DEFAULT_SIZE.into(),
+        }
+    }
+
+    /// Whether the pane uses its default font and size.
+    pub(crate) fn is_default(&self, pane: Pane, cx: &App) -> bool {
+        self.font_state(pane).read(cx).selected_value() == Some(&self.default_font(pane))
+            && self.size_state(pane).read(cx).selected_value() == Some(&Self::default_size(pane))
+    }
+
+    /// Return the pane to its default font and size.
+    pub(crate) fn reset(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
+        let font = self.default_font(pane);
+        let size = Self::default_size(pane);
+        self.font_state(pane)
+            .update(cx, |state, cx| state.set_selected_value(&font, window, cx));
+        self.size_state(pane)
+            .update(cx, |state, cx| state.set_selected_value(&size, window, cx));
+        cx.emit(TypographyChanged);
+        cx.notify();
     }
 }

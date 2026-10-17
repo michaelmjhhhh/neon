@@ -27,8 +27,8 @@ Neon is a Markdown editor built on [GPUI](https://github.com/zed-industries/zed/
 - **Live preview**: headings, emphasis, links, task lists, nested and numbered lists, block quotes, code blocks, tables with column alignment, images, footnotes and YAML front matter.
 - **Three layouts**: Editor, Split and Preview. In Split, the preview follows the cursor.
 - **Folder sidebar** to browse nested Markdown files, create new ones and refresh the tree.
-- **Typography settings**: separate fonts and sizes for the editor and the preview.
-- **Light and dark appearance** that follows the system, with a manual toggle.
+- **Settings**: separate fonts and sizes for the editor and the preview, in light and dark mode.
+- **Light and dark appearance**: follow the system, or pick Light or Dark in Settings.
 - **Status bar** with cursor position, word count, how much of the file is in view, and FPS.
 
 ## Install
@@ -48,7 +48,7 @@ Neon runs natively on Apple Silicon and Intel Macs, macOS 11 or later. It is not
 | Save / Save As | <kbd>⌘</kbd> <kbd>S</kbd> / <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>S</kbd> |
 | Editor / Split / Preview | <kbd>⌘</kbd> <kbd>1</kbd> / <kbd>⌘</kbd> <kbd>2</kbd> / <kbd>⌘</kbd> <kbd>3</kbd> |
 | Toggle sidebar | <kbd>⌘</kbd> <kbd>B</kbd> |
-| Typography settings | <kbd>⌘</kbd> <kbd>,</kbd> |
+| Settings | <kbd>⌘</kbd> <kbd>,</kbd> |
 | Close window | <kbd>⌘</kbd> <kbd>W</kbd> |
 
 In the preview, <kbd>Space</kbd> and <kbd>⇧</kbd> <kbd>Space</kbd> page down and up, and <kbd>⌘</kbd> <kbd>↑</kbd> / <kbd>⌘</kbd> <kbd>↓</kbd> jump to the top and bottom.

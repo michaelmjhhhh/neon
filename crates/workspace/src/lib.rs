@@ -7,6 +7,7 @@ mod highlighter;
 mod latency_bench;
 mod present_now;
 mod scroll_metrics;
+mod settings;
 mod theme;
 mod typography;
 mod workspace;
@@ -17,11 +18,13 @@ use gpui_kit::{App, KeyBinding, TitlebarOptions, WindowOptions, point, px};
 pub use document_file::DocumentFile;
 pub use latency_bench::LatencyBench;
 pub use workspace::{
-    CloseWindow, LayoutMode, NewFile, Open, OpenFolder, Quit, RefreshFolder, Save, SaveAs,
-    ShowEditor, ShowPreview, ShowSplit, ToggleSidebar, ToggleTheme, TypographySettings, Workspace,
+    CloseSettings, CloseWindow, LayoutMode, NewFile, Open, OpenFolder, OpenSettings, Quit,
+    RefreshFolder, Save, SaveAs, ShowEditor, ShowPreview, ShowSplit, ToggleSidebar, ToggleTheme,
+    Workspace,
 };
 
 const KEY_CONTEXT: &str = "Workspace";
+const SETTINGS_KEY_CONTEXT: &str = "Settings";
 
 /// The base options for a document window. The workspace draws its own title
 /// bar, and macOS centers its window controls on the document sheet's header
@@ -45,7 +48,8 @@ pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("secondary-n", NewFile, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-shift-o", OpenFolder, Some(KEY_CONTEXT)),
-        KeyBinding::new("secondary-,", TypographySettings, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-,", OpenSettings, Some(KEY_CONTEXT)),
+        KeyBinding::new("escape", CloseSettings, Some(SETTINGS_KEY_CONTEXT)),
         KeyBinding::new("secondary-b", ToggleSidebar, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-o", Open, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-s", Save, Some(KEY_CONTEXT)),

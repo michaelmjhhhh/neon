@@ -34,6 +34,9 @@ Groups, in this order:
 - Neon light and dark themes: graphite surfaces with the icon's orange reserved for the caret, selection, unsaved state and checked tasks.
 - Markdown syntax colors in the editor that match the theme, with heading and list markers in the accent color.
 - Guidance when the sidebar has no folder or no Markdown files, and when the preview has nothing to show.
+- Settings page, opened with Cmd+, or Neon > Settings…, with Appearance and Typography sections. Escape or Done returns to the document.
+- Choose System, Light or Dark appearance in Settings. System follows the macOS setting as it changes.
+- List each font in the font picker in its own typeface, and reset the editor or preview typography to its defaults.
 
 ### Changed
 
@@ -42,15 +45,11 @@ Groups, in this order:
 - Show the folder name in the title bar only while the sidebar is hidden.
 - Give sidebar rows rounded selection, disclosure chevrons and aligned icons, and highlight the open file.
 - Tighten preview typography: a 40 rem reading column, headings spaced closer to the text they introduce, no heading underlines, framed code blocks and tables, accent-underlined links, and dimmed completed tasks.
-- Show Typography samples on the document surface and replace the "Aa" button with an icon.
 - Run the sidebar the full height of the window, with the window controls and the sidebar button in its top row.
 - Give the document sheet its own header and footer: the file name and view controls above the text, the cursor position, reading progress and word count below it.
 - Move Open Folder and Refresh Folder into a folder menu in the sidebar header, which shows a spinner while the folder is read.
 - Name the sidebar button by what it does: Hide sidebar or Show sidebar.
-
-### Fixed
-
-- Line up the font and size controls in Typography settings with the samples below them.
+- Replace the Typography dialog and its View menu item with the Settings page, opened from the gear button in the document header; font samples render on the document surface.
 
 ## [0.2.0] - 2026-10-17
 
