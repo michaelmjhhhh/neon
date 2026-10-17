@@ -10,7 +10,7 @@ use std::sync::Arc;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _};
 use gpui_kit::{
     AnyElement, App, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla,
-    InteractiveElement as _, InteractiveText, IntoElement, ObjectFit, ParentElement as _,
+    InteractiveElement as _, InteractiveText, IntoElement, ObjectFit, ParentElement as _, Pixels,
     SharedString, StatefulInteractiveElement as _, StrikethroughStyle, Styled as _,
     StyledImage as _, StyledText, UnderlineStyle, Window, div, img, prelude::FluentBuilder as _,
     px, relative, rems,
@@ -20,8 +20,9 @@ use markdown::{
     MarkdownList, Table,
 };
 
-/// Width of the reading column. Long lines are harder to read than short ones.
-const MAX_READING_WIDTH_REMS: f32 = 46.;
+/// Width of the reading column, about 75 characters of body text. Long lines
+/// are harder to read than short ones.
+const MAX_READING_WIDTH_REMS: f32 = 40.;
 
 pub(crate) fn render_block(
     block: &Block,
@@ -34,6 +35,9 @@ pub(crate) fn render_block(
     let mut renderer = BlockRenderer::new(base_dir, cx);
     renderer.font_scale = font_scale;
     let content = renderer.render_kind(block.kind());
+    // A heading sits closer to the text it introduces than to the text
+    // before it, so each section reads as one group.
+    let is_heading = matches!(block.kind(), BlockKind::Heading(_));
 
     // The top-level block owns the id namespace for everything inside it, so
     // nested ids only need to be unique within this one block.
@@ -49,7 +53,7 @@ pub(crate) fn render_block(
             div()
                 .w_full()
                 .max_w(rems(MAX_READING_WIDTH_REMS))
-                .pb_4()
+                .map(|this| if is_heading { this.pb_2() } else { this.pb_4() })
                 .child(content),
         )
         .into_any_element()
@@ -65,6 +69,10 @@ struct Palette {
     primary: Hsla,
     primary_foreground: Hsla,
     table_head: Hsla,
+    code_background: Hsla,
+    quote_border: Hsla,
+    radius: Pixels,
+    radius_lg: Pixels,
     mono_font_family: SharedString,
 }
 
@@ -91,6 +99,10 @@ impl<'a> BlockRenderer<'a> {
                 primary: theme.primary,
                 primary_foreground: theme.primary_foreground,
                 table_head: theme.table_head,
+                code_background: theme.group_box,
+                quote_border: theme.muted_foreground.opacity(0.4),
+                radius: theme.radius,
+                radius_lg: theme.radius_lg,
                 mono_font_family: theme.mono_font_family.clone(),
             },
             next_id: 0,
@@ -116,7 +128,7 @@ impl<'a> BlockRenderer<'a> {
             BlockKind::Html(html) => self.render_html(html),
             BlockKind::Rule => div()
                 .w_full()
-                .my_2()
+                .my_4()
                 .border_b_1()
                 .border_color(self.palette.border)
                 .into_any_element(),
@@ -138,26 +150,39 @@ impl<'a> BlockRenderer<'a> {
     fn render_heading(&mut self, heading: &Heading) -> AnyElement {
         let text = self.render_inline(heading.text());
         let level = heading.level();
+        let scale = self.font_scale;
         div()
-            .pt_2()
-            .font_weight(if level <= 2 {
-                FontWeight::BOLD
-            } else {
-                FontWeight::SEMIBOLD
+            .font_weight(match level {
+                1 => FontWeight::BOLD,
+                2 | 3 => FontWeight::SEMIBOLD,
+                _ => FontWeight::MEDIUM,
             })
-            .line_height(relative(1.25))
             .map(|this| match level {
-                1 => this.text_size(rems(1.875 * self.font_scale)),
-                2 => this.text_size(rems(1.5 * self.font_scale)),
-                3 => this.text_size(rems(1.25 * self.font_scale)),
-                4 => this.text_size(rems(1.125 * self.font_scale)),
-                5 => this.text_size(rems(self.font_scale)),
+                1 => this
+                    .pt_2()
+                    .line_height(relative(1.15))
+                    .text_size(rems(2. * scale)),
+                2 => this
+                    .pt_6()
+                    .line_height(relative(1.25))
+                    .text_size(rems(1.5 * scale)),
+                3 => this
+                    .pt_4()
+                    .line_height(relative(1.3))
+                    .text_size(rems(1.25 * scale)),
+                4 => this
+                    .pt_2()
+                    .line_height(relative(1.4))
+                    .text_size(rems(1.0625 * scale)),
+                5 => this
+                    .pt_2()
+                    .line_height(relative(1.4))
+                    .text_size(rems(scale)),
                 _ => this
-                    .text_size(rems(0.875 * self.font_scale))
+                    .pt_2()
+                    .line_height(relative(1.4))
+                    .text_size(rems(0.875 * scale))
                     .text_color(self.palette.muted_foreground),
-            })
-            .when(level <= 2, |this| {
-                this.pb_2().border_b_1().border_color(self.palette.border)
             })
             .child(text)
             .into_any_element()
@@ -165,7 +190,7 @@ impl<'a> BlockRenderer<'a> {
 
     fn render_paragraph(&mut self, text: &InlineText) -> AnyElement {
         div()
-            .line_height(relative(1.6))
+            .line_height(relative(1.65))
             .child(self.render_inline(text))
             .into_any_element()
     }
@@ -227,14 +252,16 @@ impl<'a> BlockRenderer<'a> {
         div()
             .flex()
             .flex_col()
-            .gap_1()
-            .rounded_md()
-            .bg(palette.muted)
+            .rounded(palette.radius_lg)
+            .border_1()
+            .border_color(palette.border)
+            .bg(palette.code_background)
+            .overflow_hidden()
             .when_some(code.language(), |this, language| {
                 this.child(
                     div()
                         .px_4()
-                        .pt_2()
+                        .pt_2p5()
                         .text_xs()
                         .text_color(palette.muted_foreground)
                         .child(SharedString::from(language.clone())),
@@ -247,8 +274,8 @@ impl<'a> BlockRenderer<'a> {
                     .px_4()
                     .py_3()
                     .font_family(palette.mono_font_family.clone())
-                    .text_size(rems(0.875 * self.font_scale))
-                    .line_height(relative(1.5))
+                    .text_size(rems(0.8125 * self.font_scale))
+                    .line_height(relative(1.6))
                     .whitespace_nowrap()
                     .child(SharedString::from(code.code().clone())),
             )
@@ -259,8 +286,8 @@ impl<'a> BlockRenderer<'a> {
         let children = self.render_children(children);
         div()
             .pl_4()
-            .border_l_4()
-            .border_color(self.palette.border)
+            .border_l_2()
+            .border_color(self.palette.quote_border)
             .text_color(self.palette.muted_foreground)
             .child(children)
             .into_any_element()
@@ -283,13 +310,15 @@ impl<'a> BlockRenderer<'a> {
                         .child("•")
                         .into_any_element(),
                 };
+                let done = item.task() == Some(true);
                 let content = self.render_children(item.children());
                 div()
                     .flex()
                     .flex_row()
                     .items_start()
                     .gap_2()
-                    .line_height(relative(1.6))
+                    .line_height(relative(1.65))
+                    .when(done, |this| this.text_color(self.palette.muted_foreground))
                     // A fixed lane keeps item text aligned whatever the marker.
                     .child(div().flex_none().w_6().flex().justify_end().child(marker))
                     .child(div().flex_1().min_w_0().child(content))
@@ -314,12 +343,12 @@ impl<'a> BlockRenderer<'a> {
             .flex()
             .items_center()
             .justify_center()
-            .rounded_sm()
+            .rounded(palette.radius * 0.75)
             .border_1()
             .border_color(if checked {
                 palette.primary
             } else {
-                palette.border
+                palette.quote_border
             })
             .when(checked, |this| {
                 this.bg(palette.primary).child(
@@ -342,7 +371,7 @@ impl<'a> BlockRenderer<'a> {
         div()
             .id(self.next_id("table"))
             .overflow_x_scroll()
-            .rounded_md()
+            .rounded(self.palette.radius_lg)
             .border_1()
             .border_color(self.palette.border)
             .child(header)
@@ -365,7 +394,7 @@ impl<'a> BlockRenderer<'a> {
                     .flex_1()
                     .min_w_24()
                     .px_3()
-                    .py_1p5()
+                    .py_2()
                     .map(|this| match alignment {
                         ColumnAlignment::Center => this.text_center(),
                         ColumnAlignment::Right => this.text_right(),
@@ -379,7 +408,7 @@ impl<'a> BlockRenderer<'a> {
             .flex_row()
             .when(is_header, |this| {
                 this.bg(self.palette.table_head)
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .font_weight(FontWeight::MEDIUM)
             })
             .when(!is_header, |this| {
                 this.border_t_1().border_color(self.palette.border)
@@ -434,10 +463,10 @@ fn highlight_style(style: InlineStyle, palette: &Palette) -> HighlightStyle {
         highlight.background_color = Some(palette.muted);
     }
     if style.contains(InlineStyle::LINK) {
-        highlight.color = Some(palette.link);
+        // The text keeps the reading color; the accent underline marks it.
         highlight.underline = Some(UnderlineStyle {
             thickness: px(1.),
-            color: Some(palette.link),
+            color: Some(palette.primary),
             wavy: false,
         });
     }

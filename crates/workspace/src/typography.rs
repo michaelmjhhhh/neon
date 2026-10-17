@@ -20,6 +20,12 @@ pub(super) struct Typography {
 }
 
 pub(super) struct TypographyChanged;
+
+#[derive(Clone, Copy)]
+enum Pane {
+    Editor,
+    Preview,
+}
 impl EventEmitter<TypographyChanged> for Typography {}
 
 impl Typography {
@@ -113,6 +119,82 @@ impl Typography {
     }
 }
 
+impl Typography {
+    /// One pane's font and size, with a sample drawn on the document surface
+    /// so it previews the change where it will land.
+    fn render_section(&self, pane: Pane, cx: &Context<Self>) -> impl IntoElement {
+        let (title, font, size, sample_font, sample_size, sample) = match pane {
+            Pane::Editor => (
+                "Editor",
+                &self.editor_font,
+                &self.editor_size,
+                self.editor_font(cx),
+                self.editor_size(cx),
+                "# A place for your ideas",
+            ),
+            Pane::Preview => (
+                "Preview",
+                &self.preview_font,
+                &self.preview_size,
+                self.preview_font(cx),
+                self.preview_size(cx),
+                "A place for your ideas",
+            ),
+        };
+        let theme = cx.theme();
+        div()
+            .flex()
+            .w_full()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(gpui_kit::FontWeight::MEDIUM)
+                    .child(title),
+            )
+            .child(
+                div()
+                    .flex()
+                    .w_full()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        // A preferred width that may shrink: a dialog lays out
+                        // at content size, so a zero-basis flex child collapses.
+                        div().w_80().flex_shrink_1().min_w_0().child(
+                            Select::new(font)
+                                .small()
+                                .accessibility_label(format!("{title} font"))
+                                .w_full(),
+                        ),
+                    )
+                    .child(
+                        Select::new(size)
+                            .small()
+                            .accessibility_label(format!("{title} size"))
+                            .w_20(),
+                    ),
+            )
+            .child(
+                div()
+                    .mt_1()
+                    .flex()
+                    .items_center()
+                    .min_h_16()
+                    .px_4()
+                    .py_3()
+                    .rounded(theme.radius_lg)
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.background)
+                    .font_family(sample_font)
+                    .text_size(gpui_kit::rems(sample_size / 16.))
+                    .child(sample),
+            )
+    }
+}
+
 impl Render for Typography {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
@@ -121,96 +203,8 @@ impl Render for Typography {
             .w_full()
             .flex_col()
             .gap_6()
-            .child(
-                div()
-                    .flex()
-                    .w_full()
-                    .flex_col()
-                    .gap_3()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(gpui_kit::FontWeight::MEDIUM)
-                            .child("Editor"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .w_full()
-                            .items_center()
-                            .gap_4()
-                            .child(
-                                div().w_80().flex_shrink_1().min_w_0().child(
-                                    Select::new(&self.editor_font)
-                                        .small()
-                                        .accessibility_label("Editor font")
-                                        .w_full(),
-                                ),
-                            )
-                            .child(
-                                Select::new(&self.editor_size)
-                                    .small()
-                                    .accessibility_label("Editor size")
-                                    .w_20(),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .min_h_12()
-                            .px_3()
-                            .py_2()
-                            .rounded(cx.theme().radius_tokens().md)
-                            .bg(cx.theme().muted)
-                            .font_family(self.editor_font(cx))
-                            .text_size(gpui_kit::rems(self.editor_size(cx) / 16.))
-                            .child("# A place for your ideas"),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .w_full()
-                    .flex_col()
-                    .gap_3()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(gpui_kit::FontWeight::MEDIUM)
-                            .child("Preview"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .w_full()
-                            .items_center()
-                            .gap_4()
-                            .child(
-                                div().w_80().flex_shrink_1().min_w_0().child(
-                                    Select::new(&self.preview_font)
-                                        .small()
-                                        .accessibility_label("Preview font")
-                                        .w_full(),
-                                ),
-                            )
-                            .child(
-                                Select::new(&self.preview_size)
-                                    .small()
-                                    .accessibility_label("Preview size")
-                                    .w_20(),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .min_h_12()
-                            .px_3()
-                            .py_2()
-                            .rounded(cx.theme().radius_tokens().md)
-                            .bg(cx.theme().muted)
-                            .font_family(self.preview_font(cx))
-                            .text_size(gpui_kit::rems(self.preview_size(cx) / 16.))
-                            .child("A place for your ideas"),
-                    ),
-            )
+            .child(self.render_section(Pane::Editor, cx))
+            .child(self.render_section(Pane::Preview, cx))
             .child(
                 div()
                     .text_xs()

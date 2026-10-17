@@ -7,21 +7,26 @@ use std::time::{Duration, Instant};
 
 use crate::folder::{is_markdown, scan_folder};
 use crate::typography::Typography;
-use gpui_kit::base::ResizeHandleState;
+use gpui_kit::base::{ResizeHandleRenderer, ResizeHandleState};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::empty::{
+    Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
+};
 use gpui_kit::component::input::{EditorState, InputEvent};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel, resize_handle_appearance};
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tree::{Tree, TreeEvent, TreeState};
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode, TitleBar, WindowExt as _};
 use gpui_kit::component::{Disableable as _, IconName, Sizable as _};
 use gpui_kit::{
-    AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, ParentElement as _, PathPromptOptions, Pixels, Render, SharedString,
-    StyleRefinement, Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
+    AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable, FontWeight,
+    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Pixels, Render,
+    SharedString, StyleRefinement, Styled as _, Subscription, Task, Window, div,
+    prelude::FluentBuilder as _,
 };
 use markdown_preview::MarkdownPreview;
 
@@ -715,131 +720,212 @@ impl Workspace {
         });
     }
 
+    /// The folder sidebar. It shares the window chrome's surface, so the
+    /// document sheet beside it is the only raised region.
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
         let active = self
             .document
             .path()
             .map(|path| path.to_string_lossy().into_owned());
+        let reading = self.folder_task.is_some();
+        let can_open_folder = !reading && !self.is_busy();
+
+        let header = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_1()
+            .h_10()
+            .pl_4()
+            .pr_2()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .when(self.folder.is_none(), |this| {
+                        this.text_color(theme.muted_foreground)
+                    })
+                    .child(
+                        self.folder
+                            .as_deref()
+                            .map(file_name)
+                            .unwrap_or_else(|| "Files".into()),
+                    ),
+            )
+            .child(
+                Button::new("new-file")
+                    .small()
+                    .ghost()
+                    .icon(IconName::Plus)
+                    .accessibility_label("New file…")
+                    .tooltip_with_action("New file…", &NewFile, Some(KEY_CONTEXT))
+                    .disabled(self.is_busy())
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.new_file(&NewFile, window, cx)),
+                    ),
+            )
+            .when(self.folder.is_some(), |this| {
+                this.child(
+                    Button::new("refresh-folder")
+                        .small()
+                        .ghost()
+                        .icon(IconName::RefreshCw)
+                        .accessibility_label("Refresh folder")
+                        .tooltip("Refresh folder")
+                        .loading(reading)
+                        .disabled(reading)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.refresh_folder(&RefreshFolder, window, cx)
+                        })),
+                )
+            });
+
+        let open_folder_button = |id: &'static str| {
+            Button::new(id)
+                .small()
+                .icon(IconName::FolderOpen)
+                .label("Open Folder…")
+                .disabled(!can_open_folder)
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.open_folder(&OpenFolder, window, cx)),
+                )
+        };
+
+        let body = if self.folder.is_none() && reading {
+            Empty::new()
+                .flex_none()
+                .justify_start()
+                .px_4()
+                .pt_10()
+                .header(
+                    EmptyHeader::new()
+                        .media(EmptyMedia::new().child(Spinner::new().small()))
+                        .title(EmptyTitle::new().child("Opening folder…")),
+                )
+                .into_any_element()
+        } else if self.folder.is_none() {
+            sidebar_empty_state(
+                IconName::FolderOpen,
+                "No folder open",
+                "Open a folder to browse its Markdown files here.",
+            )
+            .child(open_folder_button("open-folder-empty").outline())
+            .into_any_element()
+        } else if self.folder_empty && !reading {
+            sidebar_empty_state(
+                IconName::FileText,
+                "No Markdown files",
+                "Files ending in .md in this folder appear here.",
+            )
+            .child(
+                Button::new("new-file-empty")
+                    .small()
+                    .outline()
+                    .icon(IconName::Plus)
+                    .label("New File…")
+                    .disabled(self.is_busy())
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.new_file(&NewFile, window, cx)),
+                    ),
+            )
+            .into_any_element()
+        } else {
+            let folder_icon = theme.muted_foreground;
+            let active_icon = theme.primary;
+            let row_radius = theme.radius;
+            div()
+                .flex_1()
+                .min_h_0()
+                .child(Tree::new(&self.tree, move |_, entry, _, window, _| {
+                    let item = entry.item();
+                    let is_active = active.as_deref() == Some(item.id.as_ref());
+                    let (chevron, icon) = if entry.is_folder() {
+                        if entry.is_expanded() {
+                            (Some(IconName::ChevronDown), IconName::FolderOpen)
+                        } else {
+                            (Some(IconName::ChevronRight), IconName::Folder)
+                        }
+                    } else {
+                        (None, IconName::FileText)
+                    };
+                    let rem = window.rem_size();
+                    ListItem::new(item.id.clone())
+                        .h_7()
+                        .mx_2()
+                        .px_0()
+                        .py_0()
+                        // Each level indents by one icon slot, so a child's
+                        // chevron sits under its parent's folder icon.
+                        .pl(rem * (0.25 + entry.depth() as f32 * 1.25))
+                        .pr_2()
+                        .rounded(row_radius)
+                        .text_sm()
+                        .accessibility_label(item.label.clone())
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .min_w_0()
+                                // Fixed slots keep labels on one spine whether
+                                // or not a row has a disclosure chevron.
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .size_4()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_color(folder_icon)
+                                        .children(chevron.map(|chevron| {
+                                            gpui_kit::component::Icon::new(chevron).xsmall()
+                                        })),
+                                )
+                                .child(
+                                    gpui_kit::component::Icon::new(icon)
+                                        .small()
+                                        .flex_none()
+                                        .text_color(if is_active {
+                                            active_icon
+                                        } else {
+                                            folder_icon
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .ml_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .when(is_active, |row| row.font_weight(FontWeight::MEDIUM))
+                                        .child(item.label.clone()),
+                                ),
+                        )
+                }))
+                .into_any_element()
+        };
+
         div()
             .flex()
             .flex_col()
             .size_full()
             .min_h_0()
-            .bg(cx.theme().sidebar)
-            .border_r_1()
-            .border_color(cx.theme().border)
-            .text_color(cx.theme().sidebar_foreground)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .h_12()
-                    .child(
-                        div().flex_1().truncate().text_sm().child(
-                            self.folder
-                                .as_deref()
-                                .map(file_name)
-                                .unwrap_or_else(|| "Files".into()),
-                        ),
-                    )
-                    .child(
-                        Button::new("new-file")
-                            .small()
-                            .ghost()
-                            .icon(IconName::Plus)
-                            .accessibility_label("New file…")
-                            .tooltip_with_action("New file…", &NewFile, Some(KEY_CONTEXT))
-                            .disabled(self.is_busy())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.new_file(&NewFile, window, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new("refresh-folder")
-                            .small()
-                            .ghost()
-                            .icon(IconName::RefreshCw)
-                            .accessibility_label("Refresh folder")
-                            .disabled(self.folder.is_none() || self.folder_task.is_some())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.refresh_folder(&RefreshFolder, window, cx)
-                            })),
-                    ),
-            )
-            .when(self.folder_task.is_some(), |view| {
-                view.child(div().px_3().text_sm().child("Reading folder…"))
-            })
-            .when(self.folder.is_none(), |view| {
-                view.child(
+            .text_color(theme.sidebar_foreground)
+            .child(header)
+            .child(body)
+            .when(self.folder.is_some(), |this| {
+                this.child(
                     div()
-                        .px_4()
-                        .py_6()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("Your Markdown files, in one place. Open a folder to get started."),
+                        .flex_none()
+                        .flex()
+                        .px_2()
+                        .py_2()
+                        .child(open_folder_button("open-folder").ghost()),
                 )
             })
-            .when(
-                self.folder.is_some() && self.folder_empty && self.folder_task.is_none(),
-                |view| {
-                    view.child(
-                        div()
-                            .p_3()
-                            .text_sm()
-                            .child("No Markdown files. Choose New File to create one."),
-                    )
-                },
-            )
-            .child(div().flex_1().min_h_0().child(Tree::new(
-                &self.tree,
-                move |_, entry, _, window, _cx| {
-                    let item = entry.item();
-                    let icon = if entry.is_folder() {
-                        if entry.is_expanded() {
-                            IconName::FolderOpen
-                        } else {
-                            IconName::Folder
-                        }
-                    } else {
-                        IconName::FileText
-                    };
-                    ListItem::new(item.id.clone())
-                        .text_sm()
-                        .accessibility_label(item.label.clone())
-                        .pl(window.rem_size() * (0.75 + entry.depth() as f32))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(gpui_kit::component::Icon::new(icon).small())
-                                .child(div().truncate().child(item.label.clone()))
-                                .when(active.as_deref() == Some(item.id.as_ref()), |row| {
-                                    row.font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                                }),
-                        )
-                },
-            )))
-            .child(
-                div()
-                    .p_3()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        Button::new("open-folder")
-                            .small()
-                            .ghost()
-                            .icon(IconName::FolderOpen)
-                            .label("Open Folder…")
-                            .w_full()
-                            .disabled(self.folder_task.is_some() || self.is_busy())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_folder(&OpenFolder, window, cx)
-                            })),
-                    ),
-            )
     }
 
     fn show_editor(&mut self, _: &ShowEditor, window: &mut Window, cx: &mut Context<Self>) {
@@ -956,16 +1042,20 @@ impl Workspace {
     }
 
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
         let selected = LayoutMode::ALL
             .iter()
             .position(|mode| *mode == self.layout)
             .unwrap_or_default();
+        let is_dirty = self.document.is_dirty();
         TitleBar::new()
-            .border_b_1()
-            .border_color(cx.theme().border)
+            // One flat chrome color with the sidebar and status bar, so the
+            // document sheet is the only raised surface in the window.
+            .bg(theme.title_bar)
             .child(
                 div()
                     .flex()
+                    .flex_1()
                     .items_center()
                     .gap_2()
                     .min_w_0()
@@ -990,15 +1080,50 @@ impl Workspace {
                     )
                     .child(
                         div()
+                            .flex()
+                            .items_center()
+                            .gap_1p5()
+                            .min_w_0()
                             .text_sm()
-                            .truncate()
-                            .child(self.document.display_name()),
+                            .when_some(
+                                self.folder.as_deref().filter(|_| !self.sidebar_visible),
+                                |this, folder| {
+                                    this.child(
+                                        div()
+                                            .flex_shrink_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_color(theme.muted_foreground)
+                                            .child(file_name(folder)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .text_color(theme.muted_foreground)
+                                            .child("/"),
+                                    )
+                                },
+                            )
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .max_w_80()
+                                    .truncate()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(self.document.display_name()),
+                            ),
                     )
-                    .when(self.document.is_dirty(), |view| {
-                        view.child(
+                    .when(is_dirty, |this| {
+                        // A dot and a word: the state does not rely on color.
+                        this.child(
                             div()
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap_1p5()
                                 .text_xs()
-                                .text_color(cx.theme().muted_foreground)
+                                .text_color(theme.muted_foreground)
+                                .child(div().size_1p5().rounded_full().bg(theme.primary))
                                 .child("Edited"),
                         )
                     }),
@@ -1006,8 +1131,9 @@ impl Workspace {
             .child(
                 div()
                     .flex()
+                    .flex_none()
                     .items_center()
-                    .gap_2()
+                    .gap_1()
                     .pr_2()
                     .child(
                         TabBar::new("layout")
@@ -1021,12 +1147,12 @@ impl Workspace {
                                 }
                             })),
                     )
-                    .child(div().h_4().border_l_1().border_color(cx.theme().border))
+                    .child(div().mx_1().h_4().border_l_1().border_color(theme.border))
                     .child(
                         Button::new("typography")
                             .small()
                             .ghost()
-                            .label("Aa")
+                            .icon(IconName::ALargeSmall)
                             .accessibility_label("Typography…")
                             .tooltip_with_action(
                                 "Typography…",
@@ -1044,7 +1170,8 @@ impl Workspace {
                             .label("Save")
                             .accessibility_label("Save file")
                             .tooltip_with_action("Save", &Save, Some(KEY_CONTEXT))
-                            .disabled(self.is_busy())
+                            .loading(self.save_task.is_some())
+                            .disabled(self.is_busy() || !is_dirty)
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.save(&Save, window, cx)),
                             ),
@@ -1052,7 +1179,10 @@ impl Workspace {
             )
     }
 
+    /// The editor and preview on one rounded sheet. Split mode divides the
+    /// sheet with a single hairline that the preview owns.
     fn render_content(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
+        let theme = cx.theme();
         // Below this a pane cannot show a readable line of either source or
         // prose; it follows the rem size so zoom keeps the proportion.
         let min_pane_width = window.rem_size() * 16.;
@@ -1063,62 +1193,21 @@ impl Workspace {
             div()
                 .size_full()
                 .min_w_0()
-                .flex()
-                .flex_col()
-                .p_2()
-                .child(
-                    div()
-                        .h_8()
-                        .flex()
-                        .items_center()
-                        .px_3()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("Markdown"),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .child(self.editor_pane.clone().cached(pane_style())),
-                )
+                .child(self.editor_pane.clone().cached(pane_style()))
         };
-        let preview = || {
+        let preview = |divided: bool| {
             div()
                 .size_full()
                 .min_w_0()
-                .flex()
-                .flex_col()
-                .p_2()
-                .child(
-                    div()
-                        .h_8()
-                        .flex()
-                        .items_center()
-                        .px_3()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("Preview"),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .child(MarkdownPreview::pane(&self.preview, cx)),
-                )
+                .when(divided, |this| this.border_l_1().border_color(theme.border))
+                .child(MarkdownPreview::pane(&self.preview, cx))
         };
 
-        match self.layout {
+        let panes = match self.layout {
             LayoutMode::Editor => editor().into_any_element(),
-            LayoutMode::Preview => preview().into_any_element(),
+            LayoutMode::Preview => preview(false).into_any_element(),
             LayoutMode::Split => h_resizable("split")
-                .with_handle_appearance(Rc::new(|handle, window, cx| {
-                    if handle.state() == ResizeHandleState::Idle {
-                        Some(div().into_any_element())
-                    } else {
-                        resize_handle_appearance()(handle, window, cx)
-                    }
-                }))
+                .with_handle_appearance(quiet_resize_handle())
                 .child(
                     resizable_panel()
                         .size_range(min_pane_width..Pixels::MAX)
@@ -1127,10 +1216,27 @@ impl Workspace {
                 .child(
                     resizable_panel()
                         .size_range(min_pane_width..Pixels::MAX)
-                        .child(preview()),
+                        .child(preview(true)),
                 )
                 .into_any_element(),
-        }
+        };
+
+        div()
+            .size_full()
+            .min_w_0()
+            .pr_2()
+            .when(!self.sidebar_visible, |this| this.pl_2())
+            .child(
+                div()
+                    .size_full()
+                    .rounded(theme.radius_lg)
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.background)
+                    .overflow_hidden()
+                    .child(panes),
+            )
+            .into_any_element()
     }
 
     fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1139,8 +1245,16 @@ impl Workspace {
         let words = stats.words();
 
         StatusBar::new()
+            .bg(cx.theme().status_bar)
+            .h_7()
+            .py_0()
+            .px_4()
+            .gap_4()
             .left(
                 div()
+                    .flex()
+                    .items_center()
+                    .gap_4()
                     .when(self.layout.shows_editor(), |this| {
                         this.child(format!(
                             "Ln {}, Col {}",
@@ -1206,7 +1320,7 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             .size_full()
-            .bg(theme.background)
+            .bg(theme.sidebar)
             .text_color(theme.foreground)
             .child(self.render_title_bar(cx))
             .child(
@@ -1218,6 +1332,7 @@ impl Render for Workspace {
                     .items_stretch()
                     .child(
                         h_resizable("workspace-panes")
+                            .with_handle_appearance(quiet_resize_handle())
                             .when(self.sidebar_visible, |panes| {
                                 panes.child(
                                     resizable_panel()
@@ -1241,6 +1356,38 @@ impl Render for Workspace {
             )
             .child(self.render_status_bar(cx))
     }
+}
+
+/// A resize handle that stays out of sight until hovered or dragged, for
+/// panes whose boundary is already drawn by a hairline or a gap.
+fn quiet_resize_handle() -> ResizeHandleRenderer {
+    Rc::new(|handle, window, cx| {
+        if handle.state() == ResizeHandleState::Idle {
+            Some(div().into_any_element())
+        } else {
+            resize_handle_appearance()(handle, window, cx)
+        }
+    })
+}
+
+/// A sidebar placeholder that names what is missing and offers the action
+/// that fills it.
+fn sidebar_empty_state(icon: IconName, title: &'static str, description: &'static str) -> Empty {
+    Empty::new()
+        .flex_none()
+        .justify_start()
+        .px_4()
+        .pt_10()
+        .header(
+            EmptyHeader::new()
+                .media(
+                    EmptyMedia::new()
+                        .with_variant(EmptyMediaVariant::Icon)
+                        .child(gpui_kit::component::Icon::new(icon).small()),
+                )
+                .title(EmptyTitle::new().child(title))
+                .description(EmptyDescription::new().child(description)),
+        )
 }
 
 fn file_name(path: &Path) -> String {

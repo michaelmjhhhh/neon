@@ -7,6 +7,7 @@ mod highlighter;
 mod latency_bench;
 mod present_now;
 mod scroll_metrics;
+mod theme;
 mod typography;
 mod workspace;
 
@@ -24,6 +25,7 @@ const KEY_CONTEXT: &str = "Workspace";
 /// Register the workspace's key bindings and those of its views. Call once at
 /// startup, before building menus, so the menus show the shortcuts.
 pub fn init(cx: &mut App) {
+    theme::install(cx);
     markdown_preview::init(cx);
     cx.bind_keys([
         KeyBinding::new("secondary-n", NewFile, Some(KEY_CONTEXT)),

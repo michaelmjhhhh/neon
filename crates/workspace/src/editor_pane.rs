@@ -1,4 +1,3 @@
-use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::input::{Editor, EditorState};
 use gpui_kit::{Context, Entity, IntoElement, Render, Styled as _, Window};
 
@@ -37,9 +36,8 @@ impl Render for EditorPane {
             .readonly(self.readonly)
             .font_family(typography.editor_font(cx))
             .text_size(gpui_kit::rems(typography.editor_size(cx) / 16.))
-            .bordered(true)
-            .rounded(cx.theme().radius_tokens().lg)
-            .overflow_hidden()
+            // The workspace sheet draws the boundary; the editor stays flat.
+            .bordered(false)
             .size_full()
     }
 }

@@ -29,6 +29,21 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Added
+
+- Neon light and dark themes: graphite surfaces with the icon's orange reserved for the caret, selection, unsaved state and checked tasks.
+- Markdown syntax colors in the editor that match the theme, with heading and list markers in the accent color.
+- Guidance when the sidebar has no folder or no Markdown files, and when the preview has nothing to show.
+
+### Changed
+
+- Show the editor and preview on one rounded sheet inside a single window frame, with one divider in Split instead of two bordered panels and their labels.
+- Mark unsaved changes in the title bar with a dot and "Edited", and enable Save only when there is something to save.
+- Show the folder name in the title bar only while the sidebar is hidden.
+- Give sidebar rows rounded selection, disclosure chevrons and aligned icons, and highlight the open file.
+- Tighten preview typography: a 40 rem reading column, headings spaced closer to the text they introduce, no heading underlines, framed code blocks and tables, accent-underlined links, and dimmed completed tasks.
+- Show Typography samples on the document surface and replace the "Aa" button with an icon.
+
 ## [0.2.0] - 2026-10-17
 
 ### Added
