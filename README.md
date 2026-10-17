@@ -28,6 +28,7 @@ Neon is a Markdown editor built on [GPUI](https://github.com/zed-industries/zed/
 - **Live preview**: headings, emphasis, links, task lists, nested and numbered lists, block quotes, code blocks, tables with column alignment, images, footnotes and YAML front matter.
 - **Three layouts**: Editor, Split and Preview. In Split, the preview follows the cursor.
 - **Folder sidebar** to browse nested Markdown files, create new ones and refresh the tree.
+- **Export** to HTML, PDF or Word from File > Export, set in the preview's font and size. Local images are embedded; a failed export never leaves a partial file.
 - **Settings**: separate fonts and sizes for the editor and the preview, in light and dark mode.
 - **Light and dark appearance**: follow the system, or pick Light or Dark in Settings.
 - **Status bar** with cursor position, word count and how much of the file is in view. Builds with `--features diagnostics` also show FPS.
@@ -104,6 +105,7 @@ If the build cannot find the Metal compiler, install it with `xcodebuild -downlo
 | `crates/workspace` | Document window: editor, sidebar, status bar, file handling |
 | `crates/markdown_preview` | Virtualized, incrementally updated preview |
 | `crates/markdown` | Markdown parsing into blocks, with source ranges |
+| `crates/export` | HTML, PDF and Word export |
 
 Release notes live in [CHANGELOG.md](CHANGELOG.md).
 

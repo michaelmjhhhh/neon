@@ -13,6 +13,7 @@ diagnostics = ["gpui-kit/profiler"]
 gpui-kit.workspace = true
 lsp-types = { version = "0.97", features = ["proposed"] }
 markdown_preview.workspace = true
+export.workspace = true
 tree-sitter = "0.26"
 anyhow = { workspace = true, optional = true }
 

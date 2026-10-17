@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::folder::{is_markdown, scan_folder};
 use crate::typography::Typography;
+use export::ExportFormat;
 use gpui_kit::base::{ResizeHandleRenderer, ResizeHandleState};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::empty::{
@@ -59,6 +60,9 @@ gpui_kit::actions!(
         ToggleSidebar,
         Save,
         SaveAs,
+        ExportHtml,
+        ExportPdf,
+        ExportDocx,
         ShowEditor,
         ShowSplit,
         ShowPreview,
@@ -123,6 +127,7 @@ pub struct Workspace {
     sidebar: Entity<WorkspaceSidebar>,
     editor: Entity<EditorState>,
     editor_pane: Entity<EditorPane>,
+    typography: Entity<Typography>,
     preview: Entity<MarkdownPreview>,
     scroll_metrics: Entity<ScrollMetrics>,
     word_count: Entity<WordCount>,
@@ -134,6 +139,7 @@ pub struct Workspace {
     revealed_cursor: Option<usize>,
     load_task: Option<Task<()>>,
     save_task: Option<Task<()>>,
+    export_task: Option<Task<()>>,
     /// An editor change waiting to be drawn ahead of the next display refresh.
     eager_draw: Option<Task<()>>,
     /// When a frame was last presented ahead of the display refresh.
@@ -217,6 +223,7 @@ impl Workspace {
             sidebar,
             editor,
             editor_pane,
+            typography,
             preview,
             scroll_metrics,
             word_count,
@@ -226,6 +233,7 @@ impl Workspace {
             revealed_cursor: None,
             load_task: None,
             save_task: None,
+            export_task: None,
             eager_draw: None,
             last_eager_present: None,
             _subscriptions: subscriptions,
@@ -513,15 +521,20 @@ impl Workspace {
         self.prompt_save_as(window, cx);
     }
 
-    fn prompt_save_as(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let directory = self
-            .document
+    /// Where save panels open: beside the document, else in the open
+    /// folder, else at home.
+    fn default_directory(&self) -> PathBuf {
+        self.document
             .path()
             .and_then(Path::parent)
             .map(Path::to_path_buf)
             .or_else(|| self.folder.clone())
             .or_else(home_dir)
-            .unwrap_or_default();
+            .unwrap_or_default()
+    }
+
+    fn prompt_save_as(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let directory = self.default_directory();
         let suggested_name = match self.document.path() {
             Some(_) => self.document.display_name(),
             None => "Untitled.md".to_string(),
@@ -535,6 +548,91 @@ impl Workspace {
                 .ok();
         })
         .detach();
+    }
+
+    fn prompt_export(&mut self, format: ExportFormat, window: &mut Window, cx: &mut Context<Self>) {
+        if self.export_task.is_some() || self.is_loading() {
+            return;
+        }
+        let directory = self.default_directory();
+        let stem = self
+            .document
+            .path()
+            .and_then(Path::file_stem)
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Untitled".to_string());
+        let suggested_name = format!("{stem}.{}", format.extension());
+        let path = cx.prompt_for_new_path(&directory, Some(&suggested_name));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(path))) = path.await else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| {
+                this.export_to(format, path, window, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Export the text as it is now, set in the preview's typography, on a
+    /// background thread.
+    fn export_to(
+        &mut self,
+        format: ExportFormat,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.export_task.is_some() {
+            return;
+        }
+        let markdown = self.editor.read(cx).text().to_string();
+        let title = self
+            .document
+            .path()
+            .and_then(Path::file_stem)
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Untitled".to_string());
+        let base_dir = self
+            .document
+            .path()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf);
+        let mut style = self.typography.read(cx).export_style(cx);
+        #[cfg(target_os = "macos")]
+        if let Some(paper) = export::pdf::default_paper() {
+            style.paper = paper;
+        }
+        let run = cx.background_spawn({
+            let path = path.clone();
+            async move {
+                let source = export::ExportSource {
+                    markdown: &markdown,
+                    title: &title,
+                    base_dir: base_dir.as_deref(),
+                };
+                export::export(format, &source, &style, &path)
+            }
+        });
+        self.export_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = run.await;
+            this.update_in(cx, |this, window, cx| {
+                this.export_task = None;
+                let name = file_name(&path);
+                let notification = match result {
+                    Ok(()) => Notification::success(format!("Exported “{name}”.")),
+                    Err(error) => Notification::error(format!(
+                        "Couldn’t export “{name}”. {}",
+                        sentence(&format!("{error:#}"))
+                    )),
+                };
+                window.push_notification(notification, cx);
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
     }
 
     /// Write the current text to `path` on a background thread.
@@ -1439,6 +1537,15 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::save_as))
+            .on_action(cx.listener(|this, _: &ExportHtml, window, cx| {
+                this.prompt_export(ExportFormat::Html, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ExportPdf, window, cx| {
+                this.prompt_export(ExportFormat::Pdf, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ExportDocx, window, cx| {
+                this.prompt_export(ExportFormat::Docx, window, cx)
+            }))
             .on_action(cx.listener(Self::show_editor))
             .on_action(cx.listener(Self::show_split))
             .on_action(cx.listener(Self::show_preview))
@@ -1516,6 +1623,16 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 /// `12345` as `12,345`.
+/// An error message as a sentence: capitalized, ending in one period.
+fn sentence(message: &str) -> String {
+    let message = message.trim().trim_end_matches('.');
+    let mut chars = message.chars();
+    match chars.next() {
+        Some(first) => format!("{}{}.", first.to_uppercase(), chars.as_str()),
+        None => String::new(),
+    }
+}
+
 pub(super) fn format_count(count: usize) -> String {
     let digits = count.to_string();
     let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
