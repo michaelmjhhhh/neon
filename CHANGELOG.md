@@ -32,6 +32,7 @@ Groups, in this order:
 ### Added
 
 - Install instructions for allowing the first launch with one Terminal command instead of System Settings.
+- Tab in the slash command menu completes the highlighted command, such as `/table `, so you can add an argument before inserting it.
 
 ### Changed
 
