@@ -11,7 +11,8 @@ mod theme;
 mod typography;
 mod workspace;
 
-use gpui_kit::{App, KeyBinding};
+use gpui_kit::component::TitleBar;
+use gpui_kit::{App, KeyBinding, TitlebarOptions, WindowOptions, point, px};
 
 pub use document_file::DocumentFile;
 pub use latency_bench::LatencyBench;
@@ -21,6 +22,20 @@ pub use workspace::{
 };
 
 const KEY_CONTEXT: &str = "Workspace";
+
+/// The base options for a document window. The workspace draws its own title
+/// bar, and macOS centers its window controls on the document sheet's header
+/// row. The 16 px controls center at 20 + 8 = 28 px: one sheet inset plus
+/// half the header height at the default rem size.
+pub fn window_options() -> WindowOptions {
+    WindowOptions {
+        titlebar: Some(TitlebarOptions {
+            traffic_light_position: Some(point(px(20.), px(20.))),
+            ..TitleBar::title_bar_options()
+        }),
+        ..TitleBar::window_options()
+    }
+}
 
 /// Register the workspace's key bindings and those of its views. Call once at
 /// startup, before building menus, so the menus show the shortcuts.

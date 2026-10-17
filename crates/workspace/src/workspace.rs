@@ -14,6 +14,7 @@ use gpui_kit::component::empty::{
 };
 use gpui_kit::component::input::{EditorState, InputEvent};
 use gpui_kit::component::list::ListItem;
+use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel, resize_handle_appearance};
 use gpui_kit::component::spinner::Spinner;
@@ -23,7 +24,7 @@ use gpui_kit::component::tree::{Tree, TreeEvent, TreeState};
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode, TitleBar, WindowExt as _};
 use gpui_kit::component::{Disableable as _, IconName, Sizable as _};
 use gpui_kit::{
-    AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable, FontWeight,
+    Anchor, AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable, FontWeight,
     InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Pixels, Render,
     SharedString, StyleRefinement, Styled as _, Subscription, Task, Window, div,
     prelude::FluentBuilder as _,
@@ -59,6 +60,15 @@ gpui_kit::actions!(
 /// At most one frame per 60 Hz refresh is presented ahead of the display
 /// link; see [`Workspace::draw_soon`].
 const MIN_EAGER_PRESENT_INTERVAL: Duration = Duration::from_micros(16_600);
+
+/// The chrome margin around the document sheet, in rems.
+const SHEET_INSET_REMS: f32 = 0.5;
+/// The sheet header's height, in rems.
+const SHEET_HEADER_REMS: f32 = 2.5;
+/// Where content may start beside the macOS window controls, measured from
+/// the window's leading edge: three 16 px controls from 20 px, their gaps,
+/// and a small clearance. Platform geometry: it does not follow the rem size.
+const WINDOW_CONTROLS_END: Pixels = gpui_kit::px(88.);
 
 /// Which panes the window shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -705,8 +715,13 @@ impl Workspace {
     ) {
         let typography = self.typography.clone();
         window.open_dialog(cx, move |dialog, window, _| {
+            let inset = window.rem_size();
             dialog
-                .width(window.rem_size() * 28.)
+                // The content's width, its insets and the 1 px borders.
+                .width(
+                    window.rem_size() * Typography::WIDTH_REMS + inset * 2. + gpui_kit::px(2.),
+                )
+                .px(inset)
                 .title("Typography")
                 .child(typography.clone())
                 .footer(
@@ -720,9 +735,10 @@ impl Workspace {
         });
     }
 
-    /// The folder sidebar. It shares the window chrome's surface, so the
+    /// The folder sidebar. It runs the full height of the window on the
+    /// chrome surface, with the window controls in its top row, so the
     /// document sheet beside it is the only raised region.
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let active = self
             .document
@@ -731,69 +747,81 @@ impl Workspace {
         let reading = self.folder_task.is_some();
         let can_open_folder = !reading && !self.is_busy();
 
-        let header = div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap_1()
-            .h_10()
-            .pl_4()
-            .pr_2()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_sm()
-                    .font_weight(FontWeight::MEDIUM)
-                    .when(self.folder.is_none(), |this| {
-                        this.text_color(theme.muted_foreground)
-                    })
-                    .child(
-                        self.folder
-                            .as_deref()
-                            .map(file_name)
-                            .unwrap_or_else(|| "Files".into()),
-                    ),
-            )
-            .child(
-                Button::new("new-file")
-                    .small()
-                    .ghost()
-                    .icon(IconName::Plus)
-                    .accessibility_label("New file…")
-                    .tooltip_with_action("New file…", &NewFile, Some(KEY_CONTEXT))
-                    .disabled(self.is_busy())
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.new_file(&NewFile, window, cx)),
-                    ),
-            )
-            .when(self.folder.is_some(), |this| {
-                this.child(
-                    Button::new("refresh-folder")
+        // The window controls' row. It matches the sheet's margin, header
+        // and margin, so the controls and this toggle share the header's
+        // center line.
+        let controls_row = div().id("sidebar-title-bar").child(
+            TitleBar::new()
+                .h(window.rem_size() * (2. * SHEET_INSET_REMS + SHEET_HEADER_REMS))
+                .bg(theme.sidebar)
+                .border_color(gpui_kit::transparent_black())
+                .child(
+                    div()
+                        .flex()
+                        .flex_1()
+                        .justify_end()
+                        .pr_2()
+                        .child(sidebar_toggle(true, cx)),
+                ),
+        );
+
+        let header = self.folder.as_deref().map(|folder| {
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap_1()
+                .h_8()
+                .mx_2()
+                .pl_1()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(file_name(folder)),
+                )
+                .when(reading, |this| {
+                    this.child(
+                        Spinner::new()
+                            .xsmall()
+                            .color(theme.muted_foreground),
+                    )
+                })
+                .child(
+                    Button::new("new-file")
                         .small()
                         .ghost()
-                        .icon(IconName::RefreshCw)
-                        .accessibility_label("Refresh folder")
-                        .tooltip("Refresh folder")
-                        .loading(reading)
-                        .disabled(reading)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.refresh_folder(&RefreshFolder, window, cx)
-                        })),
+                        .icon(IconName::Plus)
+                        .accessibility_label("New file…")
+                        .tooltip_with_action("New file…", &NewFile, Some(KEY_CONTEXT))
+                        .disabled(self.is_busy())
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.new_file(&NewFile, window, cx)),
+                        ),
                 )
-            });
-
-        let open_folder_button = |id: &'static str| {
-            Button::new(id)
-                .small()
-                .icon(IconName::FolderOpen)
-                .label("Open Folder…")
-                .disabled(!can_open_folder)
-                .on_click(
-                    cx.listener(|this, _, window, cx| this.open_folder(&OpenFolder, window, cx)),
+                .child(
+                    Button::new("folder-actions")
+                        .small()
+                        .ghost()
+                        .icon(IconName::Ellipsis)
+                        .accessibility_label("Folder actions")
+                        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                            menu.menu_with_disabled(
+                                "Open Folder…",
+                                Box::new(OpenFolder),
+                                !can_open_folder,
+                            )
+                            .menu_with_disabled(
+                                "Refresh Folder",
+                                Box::new(RefreshFolder),
+                                reading,
+                            )
+                        }),
                 )
-        };
+        });
 
         let body = if self.folder.is_none() && reading {
             Empty::new()
@@ -813,7 +841,18 @@ impl Workspace {
                 "No folder open",
                 "Open a folder to browse its Markdown files here.",
             )
-            .child(open_folder_button("open-folder-empty").outline())
+            .child(
+                Button::new("open-folder-empty")
+                    .small()
+                    .outline()
+                    .icon(IconName::FolderOpen)
+                    .label("Open Folder…")
+                    .tooltip_with_action("Open Folder…", &OpenFolder, Some(KEY_CONTEXT))
+                    .disabled(!can_open_folder)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_folder(&OpenFolder, window, cx)
+                    })),
+            )
             .into_any_element()
         } else if self.folder_empty && !reading {
             sidebar_empty_state(
@@ -913,19 +952,11 @@ impl Workspace {
             .flex_col()
             .size_full()
             .min_h_0()
+            .bg(theme.sidebar)
             .text_color(theme.sidebar_foreground)
-            .child(header)
+            .child(controls_row)
+            .children(header)
             .child(body)
-            .when(self.folder.is_some(), |this| {
-                this.child(
-                    div()
-                        .flex_none()
-                        .flex()
-                        .px_2()
-                        .py_2()
-                        .child(open_folder_button("open-folder").ghost()),
-                )
-            })
     }
 
     fn show_editor(&mut self, _: &ShowEditor, window: &mut Window, cx: &mut Context<Self>) {
@@ -1041,17 +1072,72 @@ impl Workspace {
         window.set_window_edited(self.document.is_dirty());
     }
 
-    fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The sheet's header doubles as the window's title bar: it names the
+    /// document, shows whether it has unsaved edits next to the command that
+    /// saves them, and holds the view controls.
+    fn render_sheet_header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let selected = LayoutMode::ALL
             .iter()
             .position(|mode| *mode == self.layout)
             .unwrap_or_default();
         let is_dirty = self.document.is_dirty();
+        // Without the sidebar, the window controls sit on this header, so its
+        // content starts after them. They do not follow the rem size.
+        let clears_window_controls = !self.sidebar_visible && !window.is_fullscreen();
+        let save_label = if self.document.path().is_some() {
+            "Save"
+        } else {
+            "Save…"
+        };
+
+        let title = div()
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .min_w_0()
+            .text_sm()
+            .when_some(
+                self.folder.as_deref().filter(|_| !self.sidebar_visible),
+                |this, folder| {
+                    this.child(
+                        div()
+                            .flex_shrink_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(theme.muted_foreground)
+                            .child(file_name(folder)),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_color(theme.muted_foreground)
+                            .child("/"),
+                    )
+                },
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .max_w_80()
+                    .truncate()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(self.document.display_name()),
+            );
+
         TitleBar::new()
-            // One flat chrome color with the sidebar and status bar, so the
-            // document sheet is the only raised surface in the window.
-            .bg(theme.title_bar)
+            .h(window.rem_size() * SHEET_HEADER_REMS)
+            .map(|this| {
+                if clears_window_controls {
+                    this.pl(WINDOW_CONTROLS_END - window.rem_size() * SHEET_INSET_REMS)
+                } else {
+                    this.pl_4()
+                }
+            })
+            .pr_2()
+            // The sheet paints the surface, so its rounded corners stay clean.
+            .bg(gpui_kit::transparent_black())
+            .border_color(theme.border)
             .child(
                 div()
                     .flex()
@@ -1059,60 +1145,10 @@ impl Workspace {
                     .items_center()
                     .gap_2()
                     .min_w_0()
-                    .child(
-                        Button::new("toggle-sidebar")
-                            .small()
-                            .ghost()
-                            .icon(if self.sidebar_visible {
-                                IconName::PanelLeftClose
-                            } else {
-                                IconName::PanelLeftOpen
-                            })
-                            .accessibility_label("Toggle sidebar")
-                            .tooltip_with_action(
-                                "Toggle sidebar",
-                                &ToggleSidebar,
-                                Some(KEY_CONTEXT),
-                            )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_sidebar(&ToggleSidebar, window, cx)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1p5()
-                            .min_w_0()
-                            .text_sm()
-                            .when_some(
-                                self.folder.as_deref().filter(|_| !self.sidebar_visible),
-                                |this, folder| {
-                                    this.child(
-                                        div()
-                                            .flex_shrink_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_color(theme.muted_foreground)
-                                            .child(file_name(folder)),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .text_color(theme.muted_foreground)
-                                            .child("/"),
-                                    )
-                                },
-                            )
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .max_w_80()
-                                    .truncate()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(self.document.display_name()),
-                            ),
-                    )
+                    .when(!self.sidebar_visible, |this| {
+                        this.child(sidebar_toggle(false, cx))
+                    })
+                    .child(title)
                     .when(is_dirty, |this| {
                         // A dot and a word: the state does not rely on color.
                         this.child(
@@ -1126,6 +1162,18 @@ impl Workspace {
                                 .child(div().size_1p5().rounded_full().bg(theme.primary))
                                 .child("Edited"),
                         )
+                        .child(
+                            Button::new("save-file")
+                                .xsmall()
+                                .outline()
+                                .label(save_label)
+                                .tooltip_with_action(save_label, &Save, Some(KEY_CONTEXT))
+                                .loading(self.save_task.is_some())
+                                .disabled(self.is_busy())
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.save(&Save, window, cx)),
+                                ),
+                        )
                     }),
             )
             .child(
@@ -1133,21 +1181,7 @@ impl Workspace {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap_1()
-                    .pr_2()
-                    .child(
-                        TabBar::new("layout")
-                            .segmented()
-                            .small()
-                            .children(LayoutMode::ALL.map(|mode| Tab::new().label(mode.label())))
-                            .selected_index(selected)
-                            .on_click(cx.listener(|this, ix: &usize, window, cx| {
-                                if let Some(mode) = LayoutMode::ALL.get(*ix) {
-                                    this.set_layout(*mode, window, cx);
-                                }
-                            })),
-                    )
-                    .child(div().mx_1().h_4().border_l_1().border_color(theme.border))
+                    .gap_2()
                     .child(
                         Button::new("typography")
                             .small()
@@ -1164,25 +1198,24 @@ impl Workspace {
                             })),
                     )
                     .child(
-                        Button::new("save-file")
+                        TabBar::new("layout")
+                            .segmented()
                             .small()
-                            .ghost()
-                            .label("Save")
-                            .accessibility_label("Save file")
-                            .tooltip_with_action("Save", &Save, Some(KEY_CONTEXT))
-                            .loading(self.save_task.is_some())
-                            .disabled(self.is_busy() || !is_dirty)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.save(&Save, window, cx)),
-                            ),
+                            .children(LayoutMode::ALL.map(|mode| Tab::new().label(mode.label())))
+                            .selected_index(selected)
+                            .on_click(cx.listener(|this, ix: &usize, window, cx| {
+                                if let Some(mode) = LayoutMode::ALL.get(*ix) {
+                                    this.set_layout(*mode, window, cx);
+                                }
+                            })),
                     ),
             )
     }
 
-    /// The editor and preview on one rounded sheet. Split mode divides the
-    /// sheet with a single hairline that the preview owns.
-    fn render_content(&self, window: &Window, cx: &Context<Self>) -> AnyElement {
-        let theme = cx.theme();
+    /// The document as one sheet: its header, the editor and preview, and
+    /// a footer with facts about the text. Split mode divides the panes with
+    /// a single hairline that the preview owns.
+    fn render_sheet(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         // Below this a pane cannot show a readable line of either source or
         // prose; it follows the rem size so zoom keeps the proportion.
         let min_pane_width = window.rem_size() * 16.;
@@ -1195,11 +1228,12 @@ impl Workspace {
                 .min_w_0()
                 .child(self.editor_pane.clone().cached(pane_style()))
         };
+        let border = cx.theme().border;
         let preview = |divided: bool| {
             div()
                 .size_full()
                 .min_w_0()
-                .when(divided, |this| this.border_l_1().border_color(theme.border))
+                .when(divided, |this| this.border_l_1().border_color(border))
                 .child(MarkdownPreview::pane(&self.preview, cx))
         };
 
@@ -1221,31 +1255,41 @@ impl Workspace {
                 .into_any_element(),
         };
 
+        let header = self.render_sheet_header(window, cx).into_any_element();
+        let footer = self.render_sheet_footer(cx).into_any_element();
+        let theme = cx.theme();
         div()
             .size_full()
             .min_w_0()
-            .pr_2()
-            .when(!self.sidebar_visible, |this| this.pl_2())
+            .p(window.rem_size() * SHEET_INSET_REMS)
+            // The sidebar's rows already end one inset short of its edge.
+            .when(self.sidebar_visible, |this| this.pl_0())
             .child(
                 div()
+                    .flex()
+                    .flex_col()
                     .size_full()
                     .rounded(theme.radius_lg)
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.background)
                     .overflow_hidden()
-                    .child(panes),
+                    .child(header)
+                    .child(div().flex_1().min_h_0().child(panes))
+                    .child(footer),
             )
             .into_any_element()
     }
 
-    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_sheet_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let position = self.editor.read(cx).cursor_position();
         let stats = self.preview.read(cx).document().stats();
         let words = stats.words();
+        let theme = cx.theme();
 
         StatusBar::new()
-            .bg(cx.theme().status_bar)
+            .bg(gpui_kit::transparent_black())
+            .border_color(theme.border)
             .h_7()
             .py_0()
             .px_4()
@@ -1281,10 +1325,10 @@ struct WorkspaceSidebar {
 }
 
 impl Render for WorkspaceSidebar {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.workspace
             .update(cx, |workspace, cx| {
-                workspace.render_sidebar(cx).into_any_element()
+                workspace.render_sidebar(window, cx).into_any_element()
             })
             .unwrap_or_else(|_| div().into_any_element())
     }
@@ -1317,45 +1361,50 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_theme))
             .on_action(cx.listener(Self::close_window))
             .on_action(cx.listener(Self::quit))
-            .flex()
-            .flex_col()
             .size_full()
             .bg(theme.sidebar)
             .text_color(theme.foreground)
-            .child(self.render_title_bar(cx))
             .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_row()
-                    .items_stretch()
+                h_resizable("workspace-panes")
+                    .with_handle_appearance(quiet_resize_handle())
+                    .when(self.sidebar_visible, |panes| {
+                        panes.child(
+                            resizable_panel()
+                                .size(window.rem_size() * 15.)
+                                .size_range(window.rem_size() * 12. ..window.rem_size() * 22.)
+                                .child(
+                                    self.sidebar
+                                        .clone()
+                                        .cached(StyleRefinement::default().size_full()),
+                                ),
+                        )
+                    })
                     .child(
-                        h_resizable("workspace-panes")
-                            .with_handle_appearance(quiet_resize_handle())
-                            .when(self.sidebar_visible, |panes| {
-                                panes.child(
-                                    resizable_panel()
-                                        .size(window.rem_size() * 14.)
-                                        .size_range(
-                                            window.rem_size() * 12. ..window.rem_size() * 20.,
-                                        )
-                                        .child(
-                                            self.sidebar
-                                                .clone()
-                                                .cached(StyleRefinement::default().size_full()),
-                                        ),
-                                )
-                            })
-                            .child(
-                                resizable_panel()
-                                    .size_range(window.rem_size() * 20. ..Pixels::MAX)
-                                    .child(self.render_content(window, cx)),
-                            ),
+                        resizable_panel()
+                            .size_range(window.rem_size() * 20. ..Pixels::MAX)
+                            .child(self.render_sheet(window, cx)),
                     ),
             )
-            .child(self.render_status_bar(cx))
     }
+}
+
+/// The sidebar's show/hide control. It sits at the sidebar's top trailing
+/// corner while the sidebar shows, and in the sheet's header otherwise.
+fn sidebar_toggle(sidebar_visible: bool, cx: &Context<Workspace>) -> Button {
+    let (id, icon, label) = if sidebar_visible {
+        ("hide-sidebar", IconName::PanelLeftClose, "Hide sidebar")
+    } else {
+        ("show-sidebar", IconName::PanelLeftOpen, "Show sidebar")
+    };
+    Button::new(id)
+        .small()
+        .ghost()
+        .icon(icon)
+        .accessibility_label(label)
+        .tooltip_with_action(label, &ToggleSidebar, Some(KEY_CONTEXT))
+        .on_click(cx.listener(|this, _, window, cx| {
+            this.toggle_sidebar(&ToggleSidebar, window, cx)
+        }))
 }
 
 /// A resize handle that stays out of sight until hovered or dragged, for

@@ -4,7 +4,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
-    SharedString, Styled as _, Subscription, Window, div,
+    SharedString, Styled as _, Subscription, Window, div, rems,
 };
 
 type FontSelect = SelectState<SearchableVec<SharedString>>;
@@ -120,6 +120,11 @@ impl Typography {
 }
 
 impl Typography {
+    /// The settings' width, so the dialog can be sized around it.
+    pub(super) const WIDTH_REMS: f32 = 25.;
+    const SIZE_SELECT_REMS: f32 = 5.;
+    const GAP_REMS: f32 = 0.5;
+
     /// One pane's font and size, with a sample drawn on the document surface
     /// so it previews the change where it will land.
     fn render_section(&self, pane: Pane, cx: &Context<Self>) -> impl IntoElement {
@@ -154,36 +159,35 @@ impl Typography {
                     .child(title),
             )
             .child(
+                // A Select sizes against an auto-width wrapper, so it takes
+                // a definite width: the font fills what the size leaves, and
+                // the row ends on the sample's edge.
                 div()
                     .flex()
-                    .w_full()
                     .items_center()
-                    .gap_2()
+                    .gap(rems(Self::GAP_REMS))
                     .child(
-                        // A preferred width that may shrink: a dialog lays out
-                        // at content size, so a zero-basis flex child collapses.
-                        div().w_80().flex_shrink_1().min_w_0().child(
-                            Select::new(font)
-                                .small()
-                                .accessibility_label(format!("{title} font"))
-                                .w_full(),
-                        ),
+                        Select::new(font)
+                            .small()
+                            .accessibility_label(format!("{title} font"))
+                            .w(rems(
+                                Self::WIDTH_REMS - Self::SIZE_SELECT_REMS - Self::GAP_REMS,
+                            )),
                     )
                     .child(
                         Select::new(size)
                             .small()
                             .accessibility_label(format!("{title} size"))
-                            .w_20(),
+                            .w(rems(Self::SIZE_SELECT_REMS)),
                     ),
             )
             .child(
                 div()
-                    .mt_1()
                     .flex()
                     .items_center()
-                    .min_h_16()
+                    .min_h_12()
                     .px_4()
-                    .py_3()
+                    .py_2()
                     .rounded(theme.radius_lg)
                     .border_1()
                     .border_color(theme.border)
@@ -200,9 +204,12 @@ impl Render for Typography {
         let muted = cx.theme().muted_foreground;
         div()
             .flex()
-            .w_full()
+            .w(rems(Self::WIDTH_REMS))
             .flex_col()
             .gap_6()
+            // Separates the first section from the dialog title by more than
+            // a section's label from its controls.
+            .pt_2()
             .child(self.render_section(Pane::Editor, cx))
             .child(self.render_section(Pane::Preview, cx))
             .child(

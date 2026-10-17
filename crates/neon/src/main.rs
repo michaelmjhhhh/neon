@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use futures::StreamExt as _;
 use futures::channel::mpsc;
-use gpui_kit::component::{Theme, TitleBar};
+use gpui_kit::component::Theme;
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Bounds, Global, Menu, MenuItem, OsAction,
     SystemMenuType, WeakEntity, WindowBounds, WindowKind, WindowOptions, size,
@@ -122,7 +122,7 @@ fn open_window(path: Option<PathBuf>, kind: WindowKind, cx: &mut App) {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(size(gpui_kit::px(840.), gpui_kit::px(560.))),
         kind,
-        ..TitleBar::window_options()
+        ..workspace::window_options()
     };
     let opened = gpui_kit::open_window(options, cx, |window, cx| {
         Theme::sync_system_appearance(Some(window), cx);
