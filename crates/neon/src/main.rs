@@ -7,11 +7,11 @@ use futures::channel::mpsc;
 use gpui_kit::component::{Theme, TitleBar};
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Bounds, Global, Menu, MenuItem, OsAction,
-    SystemMenuType, WeakEntity, WindowBounds, WindowOptions, size,
+    SystemMenuType, WeakEntity, WindowBounds, WindowKind, WindowOptions, size,
 };
 use workspace::{
-    CloseWindow, NewFile, Open, OpenFolder, Quit, RefreshFolder, Save, SaveAs, ShowEditor,
-    ShowPreview, ShowSplit, ToggleSidebar, ToggleTheme, TypographySettings, Workspace,
+    CloseWindow, LatencyBench, NewFile, Open, OpenFolder, Quit, RefreshFolder, Save, SaveAs,
+    ShowEditor, ShowPreview, ShowSplit, ToggleSidebar, ToggleTheme, TypographySettings, Workspace,
 };
 
 /// Every open document window, so files opened from Finder can reuse one.
@@ -41,7 +41,7 @@ fn main() {
     .on_reopen(|cx| {
         // Clicking the Dock icon with no windows open starts a new document.
         if cx.windows().is_empty() {
-            open_window(None, cx);
+            open_window(None, WindowKind::Normal, cx);
         }
     });
 
@@ -54,8 +54,10 @@ fn main() {
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.activate(true);
 
-        if launch_paths.is_empty() {
-            open_window(None, cx);
+        if let Some(bench) = LatencyBench::from_env() {
+            start_latency_bench(bench, cx);
+        } else if launch_paths.is_empty() {
+            open_window(None, WindowKind::Normal, cx);
         } else {
             open_paths(launch_paths, cx);
         }
@@ -109,16 +111,17 @@ fn open_paths(paths: Vec<PathBuf>, cx: &mut App) {
                     })
                     .ok();
             }
-            None => open_window(Some(path), cx),
+            None => open_window(Some(path), WindowKind::Normal, cx),
         }
     }
 }
 
-fn open_window(path: Option<PathBuf>, cx: &mut App) {
+fn open_window(path: Option<PathBuf>, kind: WindowKind, cx: &mut App) {
     let bounds = Bounds::centered(None, size(gpui_kit::px(1200.), gpui_kit::px(800.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(size(gpui_kit::px(840.), gpui_kit::px(560.))),
+        kind,
         ..TitleBar::window_options()
     };
     let opened = gpui_kit::open_window(options, cx, |window, cx| {
@@ -138,6 +141,30 @@ fn open_window(path: Option<PathBuf>, cx: &mut App) {
             .push((window, workspace.downgrade())),
         Err(error) => eprintln!("Couldn’t open a window: {error}"),
     }
+}
+
+/// Open the benchmark fixture in a window and type into it.
+fn start_latency_bench(bench: LatencyBench, cx: &mut App) {
+    let path = match bench.fixture_path() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("Couldn’t write the latency fixture: {error}");
+            cx.quit();
+            return;
+        }
+    };
+    // Stay above other windows: an occluded window stops receiving frames.
+    open_window(Some(path), WindowKind::PopUp, cx);
+    let Some((window, workspace)) = cx.global::<OpenWorkspaces>().0.last().cloned() else {
+        return;
+    };
+    window
+        .update(cx, |_, window, cx| {
+            if let Some(workspace) = workspace.upgrade() {
+                bench.start(workspace, window, cx);
+            }
+        })
+        .ok();
 }
 
 /// `file:///Users/me/My%20Notes.md` as a path; `None` for other schemes.

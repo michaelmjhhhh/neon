@@ -1,13 +1,15 @@
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::folder::{is_markdown, scan_folder};
 use crate::typography::Typography;
 use gpui_kit::base::ResizeHandleState;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
-use gpui_kit::component::input::{Editor, EditorState, InputEvent};
+use gpui_kit::component::input::{EditorState, InputEvent};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel, resize_handle_appearance};
@@ -18,13 +20,15 @@ use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode, TitleBar, WindowEx
 use gpui_kit::component::{Disableable as _, IconName, Sizable as _};
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, ParentElement as _, PathPromptOptions, Pixels, Render, SharedString, Styled as _,
-    Subscription, Task, Window, div, prelude::FluentBuilder as _,
+    IntoElement, ParentElement as _, PathPromptOptions, Pixels, Render, SharedString,
+    StyleRefinement, Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
 };
-use markdown_preview::{MarkdownPreview, MarkdownPreviewEvent};
+use markdown_preview::MarkdownPreview;
 
 use crate::KEY_CONTEXT;
 use crate::document_file::DocumentFile;
+use crate::editor_pane::EditorPane;
+use crate::present_now::{self, NativeView};
 use crate::scroll_metrics::ScrollMetrics;
 
 gpui_kit::actions!(
@@ -46,6 +50,10 @@ gpui_kit::actions!(
         Quit
     ]
 );
+
+/// At most one frame per 60 Hz refresh is presented ahead of the display
+/// link; see [`Workspace::draw_soon`].
+const MIN_EAGER_PRESENT_INTERVAL: Duration = Duration::from_micros(16_600);
 
 /// Which panes the window shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -82,7 +90,9 @@ pub struct Workspace {
     expanded_folders: HashSet<SharedString>,
     sidebar_visible: bool,
     typography: Entity<Typography>,
+    sidebar: Entity<WorkspaceSidebar>,
     editor: Entity<EditorState>,
+    editor_pane: Entity<EditorPane>,
     preview: Entity<MarkdownPreview>,
     scroll_metrics: Entity<ScrollMetrics>,
     layout: LayoutMode,
@@ -91,15 +101,21 @@ pub struct Workspace {
     revealed_cursor: Option<usize>,
     load_task: Option<Task<()>>,
     save_task: Option<Task<()>>,
+    /// An editor change waiting to be drawn ahead of the next display refresh.
+    eager_draw: Option<Task<()>>,
+    /// When a frame was last presented ahead of the display refresh.
+    last_eager_present: Option<Instant>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| {
-            EditorState::new(window, cx)
+            let mut editor = EditorState::new(window, cx)
                 .language("markdown")
-                .placeholder("Start writing, or open a Markdown file…")
+                .placeholder("Start writing, or open a Markdown file…");
+            editor.set_highlighter_factory(crate::highlighter::factory(), cx);
+            editor
         });
         let preview = cx.new(MarkdownPreview::new);
         let scroll_metrics =
@@ -107,6 +123,11 @@ impl Workspace {
 
         let tree = cx.new(|cx| TreeState::new(cx));
         let typography = cx.new(|cx| Typography::new(window, cx));
+        let editor_pane = cx.new(|_| EditorPane::new(editor.clone(), typography.clone()));
+        let sidebar = cx.new({
+            let workspace = cx.weak_entity();
+            |_| WorkspaceSidebar { workspace }
+        });
         let subscriptions = vec![
             cx.subscribe(&tree, |this, _, event, _| match event {
                 TreeEvent::Expanded(id) => {
@@ -141,9 +162,6 @@ impl Workspace {
             }),
             cx.subscribe_in(&editor, window, Self::on_editor_event),
             cx.observe_in(&editor, window, Self::on_editor_notified),
-            cx.subscribe(&preview, |_, _, event, cx| match event {
-                MarkdownPreviewEvent::DocumentChanged => cx.notify(),
-            }),
             cx.observe_window_appearance(window, |_, window, cx| {
                 Theme::sync_system_appearance(Some(window), cx);
             }),
@@ -158,7 +176,9 @@ impl Workspace {
             expanded_folders: HashSet::new(),
             sidebar_visible: true,
             typography,
+            sidebar,
             editor,
+            editor_pane,
             preview,
             scroll_metrics,
             layout: LayoutMode::default(),
@@ -166,6 +186,8 @@ impl Workspace {
             revealed_cursor: None,
             load_task: None,
             save_task: None,
+            eager_draw: None,
+            last_eager_present: None,
             _subscriptions: subscriptions,
         };
         workspace.install_close_guard(window, cx);
@@ -232,10 +254,12 @@ impl Workspace {
                 std::fs::read_to_string(&path).map(|text| (path, text))
             }
         });
+        self.set_editor_readonly(true, cx);
         self.load_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = read.await;
             this.update_in(cx, |this, window, cx| {
                 this.load_task = None;
+                this.set_editor_readonly(false, cx);
                 match result {
                     Ok((path, text)) => {
                         let previous_focus = window.focused(cx);
@@ -257,6 +281,11 @@ impl Workspace {
             .ok();
         }));
         cx.notify();
+    }
+
+    fn set_editor_readonly(&self, readonly: bool, cx: &mut Context<Self>) {
+        self.editor_pane
+            .update(cx, |pane, cx| pane.set_readonly(readonly, cx));
     }
 
     fn show_document(
@@ -296,6 +325,7 @@ impl Workspace {
         let source = editor.read(cx).text().clone();
         self.preview
             .update(cx, |preview, cx| preview.set_source(source, cx));
+        self.draw_soon(window, cx);
         // Only the first edit changes this view; the cursor position and word
         // count notify through their own paths, so typing stays cheap.
         if !was_dirty {
@@ -308,7 +338,7 @@ impl Workspace {
     fn on_editor_notified(
         &mut self,
         editor: Entity<EditorState>,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let cursor = editor.read(cx).cursor();
@@ -316,11 +346,60 @@ impl Workspace {
             return;
         }
         self.revealed_cursor = Some(cursor);
+        self.draw_soon(window, cx);
         if self.layout == LayoutMode::Split {
             self.preview
                 .update(cx, |preview, cx| preview.reveal_offset(cursor, cx));
         }
-        cx.notify();
+        // No notify: the status bar reads the cursor during this view's
+        // render, so the editor's own notification already redraws it.
+        // Notifying here would also invalidate the cached sidebar.
+    }
+
+    /// Draw and present an edit or cursor move as soon as the input event
+    /// returns, instead of at the next display refresh.
+    ///
+    /// GPUI draws on display-link ticks: a keystroke waits for the next tick,
+    /// is drawn, and reaches the screen a refresh after that tick. Presenting
+    /// right away lets the frame make the next refresh instead; see
+    /// [`present_now`](crate::present_now).
+    ///
+    /// Only input takes this path. A second synchronous present within one
+    /// refresh blocks the main thread until that refresh, so animations and
+    /// other notifications stay on the display link, and input arriving
+    /// within a refresh of the last early present waits for the tick too. If
+    /// a tick comes first, it draws the change and this is skipped.
+    fn draw_soon(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.eager_draw.is_some()
+            || self
+                .last_eager_present
+                .is_some_and(|at| at.elapsed() < MIN_EAGER_PRESENT_INTERVAL)
+        {
+            return;
+        }
+        let ticked = Rc::new(Cell::new(false));
+        window.on_next_frame({
+            let ticked = ticked.clone();
+            move |_, _| ticked.set(true)
+        });
+        self.eager_draw = Some(cx.spawn_in(window, async move |this, cx| {
+            this.update(cx, |this, _| this.eager_draw = None).ok();
+            if ticked.get() {
+                return;
+            }
+            // Fails once the window has closed, so the view is still alive.
+            let Ok(view) = cx.update(|window, _| NativeView::of(window)) else {
+                return;
+            };
+            let Some(view) = view else {
+                cx.update(|window, cx| window.draw(cx).clear(cx)).ok();
+                return;
+            };
+            this.update(cx, |this, _| this.last_eager_present = Some(Instant::now()))
+                .ok();
+            // Outside any update: GPUI's frame callback updates the app.
+            present_now::present(view);
+        }));
     }
 
     fn new_file(&mut self, _: &NewFile, window: &mut Window, cx: &mut Context<Self>) {
@@ -575,10 +654,12 @@ impl Workspace {
                         std::fs::canonicalize(path)
                     }
                 });
+                this.set_editor_readonly(true, cx);
                 this.load_task = Some(cx.spawn_in(window, async move |this, cx| {
                     let result = create.await;
                     this.update_in(cx, |this, window, cx| {
                         this.load_task = None;
+                        this.set_editor_readonly(false, cx);
                         match result {
                             Ok(path) => {
                                 this.show_document(Some(path), "", window, cx);
@@ -975,7 +1056,9 @@ impl Workspace {
         // Below this a pane cannot show a readable line of either source or
         // prose; it follows the rem size so zoom keeps the proportion.
         let min_pane_width = window.rem_size() * 16.;
-        let radius = cx.theme().radius_tokens().lg;
+        // Cached views keep their last frame until notified, so typing does
+        // not re-render the preview, and preview updates skip the editor.
+        let pane_style = || StyleRefinement::default().size_full();
         let editor = || {
             div()
                 .size_full()
@@ -994,18 +1077,10 @@ impl Workspace {
                         .child("Markdown"),
                 )
                 .child(
-                    div().flex_1().min_h_0().child(
-                        Editor::new(&self.editor)
-                            .readonly(self.is_loading())
-                            .font_family(self.typography.read(cx).editor_font(cx))
-                            .text_size(gpui_kit::rems(
-                                self.typography.read(cx).editor_size(cx) / 16.,
-                            ))
-                            .bordered(true)
-                            .rounded(radius)
-                            .overflow_hidden()
-                            .size_full(),
-                    ),
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .child(self.editor_pane.clone().cached(pane_style())),
                 )
         };
         let preview = || {
@@ -1025,7 +1100,12 @@ impl Workspace {
                         .text_color(cx.theme().muted_foreground)
                         .child("Preview"),
                 )
-                .child(div().flex_1().min_h_0().child(self.preview.clone()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .child(MarkdownPreview::pane(&self.preview, cx)),
+                )
         };
 
         match self.layout {
@@ -1080,6 +1160,22 @@ impl Workspace {
     }
 }
 
+/// The sidebar as a cached view: it re-renders only when the workspace or
+/// the file tree notifies, not on every keystroke's frame.
+struct WorkspaceSidebar {
+    workspace: gpui_kit::WeakEntity<Workspace>,
+}
+
+impl Render for WorkspaceSidebar {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.workspace
+            .update(cx, |workspace, cx| {
+                workspace.render_sidebar(cx).into_any_element()
+            })
+            .unwrap_or_else(|_| div().into_any_element())
+    }
+}
+
 impl Focusable for Workspace {
     fn focus_handle(&self, _: &gpui_kit::App) -> FocusHandle {
         self.focus_handle.clone()
@@ -1129,7 +1225,11 @@ impl Render for Workspace {
                                         .size_range(
                                             window.rem_size() * 12. ..window.rem_size() * 20.,
                                         )
-                                        .child(self.render_sidebar(cx)),
+                                        .child(
+                                            self.sidebar
+                                                .clone()
+                                                .cached(StyleRefinement::default().size_full()),
+                                        ),
                                 )
                             })
                             .child(

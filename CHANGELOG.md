@@ -44,6 +44,13 @@ Groups, in this order:
 - Give the editor and preview panels matching rounded corners and inset borders in every layout.
 - Remove the title bar divider above the rounded panels.
 - Show the split divider only while hovering or resizing the panels.
+- Update the preview at most every 200 ms while typing; a single edit still shows at once.
+
+### Performance
+
+- Show typed characters a full display refresh sooner by presenting the frame right after each keystroke instead of waiting for the next refresh.
+- Keep syntax highlighting off the keystroke path: long documents reparse in the background while typing stays under 2 ms per key.
+- Redraw only the editor while typing; the preview, its scrollbar and the sidebar reuse their last frame.
 
 ## [0.1.0] - 2026-10-16
 

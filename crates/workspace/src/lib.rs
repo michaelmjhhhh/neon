@@ -1,7 +1,11 @@
 //! The document window: a Markdown editor beside its live preview.
 
 mod document_file;
+mod editor_pane;
 mod folder;
+mod highlighter;
+mod latency_bench;
+mod present_now;
 mod scroll_metrics;
 mod typography;
 mod workspace;
@@ -9,6 +13,7 @@ mod workspace;
 use gpui_kit::{App, KeyBinding};
 
 pub use document_file::DocumentFile;
+pub use latency_bench::LatencyBench;
 pub use workspace::{
     CloseWindow, LayoutMode, NewFile, Open, OpenFolder, Quit, RefreshFolder, Save, SaveAs,
     ShowEditor, ShowPreview, ShowSplit, ToggleSidebar, ToggleTheme, TypographySettings, Workspace,

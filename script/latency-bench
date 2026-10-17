@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Measure keystroke-to-frame latency in the release build.
+#
+#   script/latency-bench <label> [runs]
+#
+# Builds Neon, runs the in-app benchmark <runs> times (default 3), and writes
+# one JSON report per run to output/latency/<label>-<n>.json. Keep the Neon
+# window frontmost and the machine idle while it runs; the benchmark pauses
+# while the window is in the background.
+set -euo pipefail
+
+label=${1:?usage: script/latency-bench <label> [runs]}
+runs=${2:-3}
+root=$(cd "$(dirname "$0")/.." && pwd)
+out="$root/output/latency"
+mkdir -p "$out"
+
+cargo build --release --manifest-path "$root/Cargo.toml" >&2
+
+for run in $(seq 1 "$runs"); do
+  NEON_LATENCY_BENCH=1 \
+    NEON_LATENCY_LABEL="$label-$run" \
+    NEON_LATENCY_OUT="$out/$label-$run.json" \
+    "$root/target/release/neon" &
+  pid=$!
+  # The benchmark quits on its own within about 90 seconds.
+  for _ in $(seq 1 150); do
+    sleep 1
+    kill -0 "$pid" 2>/dev/null || break
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid"
+    echo "run $run timed out" >&2
+  fi
+  wait "$pid" || true
+done
