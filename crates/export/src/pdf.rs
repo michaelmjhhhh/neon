@@ -402,7 +402,12 @@ mod tests {
             base_dir: None,
         };
         let path = dir.path().join("out.pdf");
-        let result = export(&source, &ExportStyle::default(), &path, Path::new(executable));
+        let result = export(
+            &source,
+            &ExportStyle::default(),
+            &path,
+            Path::new(executable),
+        );
         (result, dir)
     }
 

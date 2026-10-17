@@ -342,7 +342,10 @@ pub(crate) enum Insertion {
     Select(Range<usize>),
     /// Accepted with Tab: replace the template at `range` with `command` and
     /// open the menu again.
-    Complete { range: Range<usize>, command: String },
+    Complete {
+        range: Range<usize>,
+        command: String,
+    },
 }
 
 /// The completion provider behind the slash menu.
