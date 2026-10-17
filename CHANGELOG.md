@@ -29,6 +29,8 @@ Groups, in this order:
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-17
+
 ### Added
 
 - Open folders and navigate nested Markdown files in a resizable sidebar, with folder refresh and keyboard navigation.
@@ -40,7 +42,6 @@ Groups, in this order:
 
 - Simplify the workspace with a compact title bar, sidebar file actions, denser navigation, and labeled document panes.
 - Refine Typography settings with paired font and size controls and live samples.
-
 - Give the editor and preview panels matching rounded corners and inset borders in every layout.
 - Remove the title bar divider above the rounded panels.
 - Show the split divider only while hovering or resizing the panels.
