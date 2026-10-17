@@ -12,7 +12,7 @@ use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::empty::{
     Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
 };
-use gpui_kit::component::input::{EditorState, InputEvent};
+use gpui_kit::component::input::{EditorState, Escape, InputEvent};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::notification::Notification;
@@ -37,6 +37,7 @@ use crate::editor_pane::EditorPane;
 use crate::present_now::{self, NativeView};
 use crate::scroll_metrics::ScrollMetrics;
 use crate::settings::SettingsView;
+use crate::slash_commands::SlashCommands;
 use crate::theme::{self, Appearance};
 use crate::word_count::WordCount;
 
@@ -125,6 +126,8 @@ pub struct Workspace {
     preview: Entity<MarkdownPreview>,
     scroll_metrics: Entity<ScrollMetrics>,
     word_count: Entity<WordCount>,
+    /// The `/` template menu, kept to place the cursor in what it inserts.
+    slash_commands: Rc<SlashCommands>,
     layout: LayoutMode,
     focus_handle: FocusHandle,
     /// Cursor offset last revealed in the preview, to react to moves only.
@@ -140,11 +143,13 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let slash_commands = Rc::new(SlashCommands::default());
         let editor = cx.new(|cx| {
             let mut editor = EditorState::new(window, cx)
                 .language("markdown")
                 .placeholder("Start writing, or open a Markdown file…");
             editor.set_highlighter_factory(crate::highlighter::factory(), cx);
+            editor.lsp_mut().completion_provider = Some(slash_commands.clone());
             editor
         });
         let preview = cx.new(MarkdownPreview::new);
@@ -215,6 +220,7 @@ impl Workspace {
             preview,
             scroll_metrics,
             word_count,
+            slash_commands,
             layout: LayoutMode::default(),
             focus_handle: cx.focus_handle(),
             revealed_cursor: None,
@@ -363,6 +369,13 @@ impl Workspace {
         self.document.record_edit();
         // Cloning the rope is O(1); the preview flattens it off the UI thread.
         let source = editor.read(cx).text().clone();
+        let cursor = editor.read(cx).cursor();
+        if let Some(selection) = self.slash_commands.take_selection(&source, cursor) {
+            editor.update(cx, |editor, cx| editor.set_selected_range(selection, cx));
+        } else if self.slash_commands.needs_refresh(cursor) {
+            // A deletion closes the menu without asking for a new one.
+            editor.update(cx, |editor, cx| editor.show_completions(window, cx));
+        }
         self.word_count
             .update(cx, |count, cx| count.set_source(source.clone(), cx));
         self.preview
@@ -1389,6 +1402,9 @@ impl Render for Workspace {
             .id("workspace")
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus_handle)
+            .capture_action(cx.listener(|this, _: &Escape, _, _| {
+                this.slash_commands.dismiss();
+            }))
             .on_action(cx.listener(Self::new_file))
             .on_action(cx.listener(Self::open))
             .on_action(cx.listener(Self::open_folder))

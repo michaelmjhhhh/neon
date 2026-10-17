@@ -9,6 +9,7 @@ mod latency_bench;
 mod present_now;
 mod scroll_metrics;
 mod settings;
+mod slash_commands;
 mod theme;
 mod typography;
 mod word_count;

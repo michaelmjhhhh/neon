@@ -38,6 +38,7 @@ Groups, in this order:
 - Choose System, Light or Dark appearance in Settings. System follows the macOS setting as it changes.
 - List each font in the font picker in its own typeface, and reset the editor or preview typography to its defaults.
 - Add a reproducible macOS memory benchmark covering startup, editing, images, large blocks, folders and document release.
+- Slash commands: type `/` on an empty line to insert a bulleted, numbered or task list, a code block, a link, an image or a table, with a preview of the Markdown in the menu. Add a size after the command, such as `/bullet 5` or `/table 4x5` (columns x rows), or a language, such as `/code rust`. Escape closes the menu until you type `/` again.
 
 ### Changed
 
