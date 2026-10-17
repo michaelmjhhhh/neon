@@ -38,11 +38,19 @@ Groups, in this order:
 ### Changed
 
 - Show the editor and preview on one rounded sheet inside a single window frame, with one divider in Split instead of two bordered panels and their labels.
-- Mark unsaved changes in the title bar with a dot and "Edited", and enable Save only when there is something to save.
+- Mark unsaved changes next to the file name with a dot and "Edited", followed by a Save button that shows only while there is something to save.
 - Show the folder name in the title bar only while the sidebar is hidden.
 - Give sidebar rows rounded selection, disclosure chevrons and aligned icons, and highlight the open file.
 - Tighten preview typography: a 40 rem reading column, headings spaced closer to the text they introduce, no heading underlines, framed code blocks and tables, accent-underlined links, and dimmed completed tasks.
 - Show Typography samples on the document surface and replace the "Aa" button with an icon.
+- Run the sidebar the full height of the window, with the window controls and the sidebar button in its top row.
+- Give the document sheet its own header and footer: the file name and view controls above the text, the cursor position, reading progress and word count below it.
+- Move Open Folder and Refresh Folder into a folder menu in the sidebar header, which shows a spinner while the folder is read.
+- Name the sidebar button by what it does: Hide sidebar or Show sidebar.
+
+### Fixed
+
+- Line up the font and size controls in Typography settings with the samples below them.
 
 ## [0.2.0] - 2026-10-17
 
