@@ -61,6 +61,17 @@ impl SettingsView {
         }
     }
 
+    /// Keep picker entities only while their settings section is visible.
+    pub(crate) fn set_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.typography.update(cx, |typography, cx| {
+            if open && self.section == Section::Typography {
+                typography.show_pickers(window, cx);
+            } else {
+                typography.hide_pickers();
+            }
+        });
+    }
+
     /// The window controls' row on the chrome, then one row per section.
     fn render_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
@@ -130,8 +141,9 @@ impl SettingsView {
                                             .child(section.title()),
                                     ),
                             )
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                            .on_click(cx.listener(move |this, _, window, cx| {
                                 this.section = section;
+                                this.set_open(true, window, cx);
                                 cx.notify();
                             }))
                     })),
@@ -279,20 +291,20 @@ impl SettingsView {
     }
 
     fn render_typography(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap_8()
-            .children(Pane::ALL.map(|pane| self.render_pane(pane, cx)))
+        div().flex().flex_col().gap_8().children(
+            Pane::ALL
+                .into_iter()
+                .filter_map(|pane| self.render_pane(pane, cx)),
+        )
     }
 
     /// One pane's sample, font and size, as a card of rows.
-    fn render_pane(&self, pane: Pane, cx: &mut Context<Self>) -> AnyElement {
+    fn render_pane(&self, pane: Pane, cx: &mut Context<Self>) -> Option<AnyElement> {
         let typography = self.typography.read(cx);
         let font = typography.font(pane, cx);
         let size = typography.size(pane, cx);
-        let font_state = typography.font_state(pane).clone();
-        let size_state = typography.size_state(pane).clone();
+        let font_state = typography.font_state(pane)?.clone();
+        let size_state = typography.size_state(pane)?.clone();
         let is_default = typography.is_default(pane, cx);
         let title = pane.title();
         let (description, sample) = match pane {
@@ -328,7 +340,7 @@ impl SettingsView {
                 .child(div().flex_none().w(rems(14.)).child(control))
         };
 
-        section(
+        let pane = section(
             title,
             description,
             reset,
@@ -380,7 +392,8 @@ impl SettingsView {
                         )),
                 ),
         )
-        .into_any_element()
+        .into_any_element();
+        Some(pane)
     }
 }
 

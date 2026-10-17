@@ -5,10 +5,15 @@ version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+memory-bench = ["dep:anyhow"]
+diagnostics = ["gpui-kit/profiler"]
+
 [dependencies]
-gpui-kit = { workspace = true, features = ["profiler"] }
+gpui-kit.workspace = true
 markdown_preview.workspace = true
 tree-sitter = "0.26"
+anyhow = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

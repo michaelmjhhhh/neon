@@ -1,0 +1,530 @@
+#!/usr/bin/env python3
+"""Run deterministic Neon workloads and sample macOS physical footprint."""
+
+import argparse
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import queue
+import re
+import statistics
+import struct
+import subprocess
+import sys
+import threading
+import time
+import zlib
+
+
+ROOT = Path(__file__).resolve().parent.parent
+OUTPUT = ROOT / "output" / "memory"
+FIXTURES = OUTPUT / "fixtures"
+FORMAT_VERSION = 2
+FIXTURE_VERSION = 1
+TIMEOUT = 90
+MIB = 1024 * 1024
+CHECKPOINTS = {
+    "startup": ["empty", "settings", "settings_closed", "closed"],
+    "small": ["loaded", "typed_split", "typed_editor", "preview", "released", "closed"],
+    "large": ["loaded", "typed_split", "typed_editor", "preview", "released", "closed"],
+    "images": ["image_0", "image_1", "image_2", "released", "closed"],
+    "blocks": ["list", "table", "code", "released", "closed"],
+    "folder": ["loaded", "closed"],
+}
+METRICS = ["physical_footprint_bytes", "live_heap_bytes", "physical_footprint_peak_bytes"]
+PARAGRAPH = (
+    "A paragraph with **bold**, *emphasis*, and `inline code`. "
+    "This is a representative Markdown document for a memory experiment."
+)
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_json(path, value):
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+def manifest_digest(manifest):
+    return hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+
+
+def fixture_files():
+    return {
+        path.relative_to(FIXTURES).as_posix(): {
+            "bytes": path.stat().st_size,
+            "sha256": sha256(path),
+        }
+        for path in sorted(FIXTURES.rglob("*"))
+        if path.is_file() and path.name != "manifest.json"
+    }
+
+
+def png_chunk(stream, kind, data):
+    stream.write(struct.pack(">I", len(data)))
+    stream.write(kind)
+    stream.write(data)
+    stream.write(struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF))
+
+
+def generate_png(path, seed):
+    """Stream RGB gradient/noise rows; never allocate the 36 MB decoded image."""
+    width, height = 4000, 3000
+    compressor = zlib.compressobj(6)
+    with path.open("wb") as stream:
+        stream.write(b"\x89PNG\r\n\x1a\n")
+        png_chunk(stream, b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        for y in range(height):
+            tile = bytearray()
+            for x in range(256):
+                noise = ((x * 1103515245 + y * 12345 + seed * 2654435761) >> 16) & 255
+                tile.extend(((x + y + seed * 37) & 255, (y // 3 + noise) & 255, noise))
+            row = b"\0" + bytes(tile) * (width // 256) + bytes(tile[:(width % 256) * 3])
+            compressed = compressor.compress(row)
+            if compressed:
+                png_chunk(stream, b"IDAT", compressed)
+        png_chunk(stream, b"IDAT", compressor.flush())
+        png_chunk(stream, b"IEND", b"")
+
+
+def verify_png(path):
+    decompressor = zlib.decompressobj()
+    decoded_bytes = 0
+    with path.open("rb") as stream:
+        require(stream.read(8) == b"\x89PNG\r\n\x1a\n", f"invalid PNG: {path}")
+        dimensions = None
+        while True:
+            length_bytes = stream.read(4)
+            require(len(length_bytes) == 4, f"truncated PNG: {path}")
+            length = struct.unpack(">I", length_bytes)[0]
+            require(length <= 1024 * 1024, f"unexpected PNG chunk size: {path}")
+            kind, data, checksum = stream.read(4), stream.read(length), stream.read(4)
+            require(len(checksum) == 4 and len(data) == length, f"truncated PNG: {path}")
+            require(struct.unpack(">I", checksum)[0] == zlib.crc32(kind + data) & 0xFFFFFFFF,
+                    f"PNG checksum mismatch: {path}")
+            if kind == b"IHDR":
+                dimensions = struct.unpack(">IIBBBBB", data)
+            elif kind == b"IDAT":
+                pending = data
+                while pending:
+                    decoded_bytes += len(decompressor.decompress(pending, 65536))
+                    pending = decompressor.unconsumed_tail
+            elif kind == b"IEND":
+                require(not stream.read(1), f"trailing PNG data: {path}")
+                break
+    require(dimensions == (4000, 3000, 8, 2, 0, 0, 0), f"wrong PNG dimensions: {path}")
+    require(decompressor.eof and decoded_bytes == (4000 * 3 + 1) * 3000,
+            f"incomplete PNG pixels: {path}")
+
+
+def ensure_fixtures(verify_only=False):
+    manifest_path = FIXTURES / "manifest.json"
+    if not manifest_path.exists():
+        require(not verify_only, "fixture manifest is missing; run script/memory-bench fixtures")
+        FIXTURES.mkdir(parents=True, exist_ok=True)
+        for name, count in [("small", 300), ("large", 8000)]:
+            with (FIXTURES / f"{name}.md").open("w") as stream:
+                for ix in range(count):
+                    stream.write(f"## Section {ix}\n\n{PARAGRAPH}\n\n- First item\n- Second item\n\n")
+        for ix in range(3):
+            generate_png(FIXTURES / f"image-{ix}.png", ix + 1)
+            (FIXTURES / f"image-{ix}.md").write_text(f"# Image {ix}\n\n![Memory image {ix}](image-{ix}.png)\n")
+        (FIXTURES / "list.md").write_text("".join(f"- Item {ix}: **bold** and `code`\n" for ix in range(2000)))
+        (FIXTURES / "table.md").write_text(
+            "| Index | Name | Value |\n| --- | --- | --- |\n"
+            + "".join(f"| {ix} | Row {ix} | **{ix * 3}** |\n" for ix in range(1000))
+        )
+        (FIXTURES / "code.md").write_text(
+            "```rust\n" + "".join(f"let value_{ix} = {ix};\n" for ix in range(5000)) + "```\n"
+        )
+        for directory in range(20):
+            folder = FIXTURES / "folder" / f"group-{directory:02}"
+            folder.mkdir(parents=True, exist_ok=True)
+            for ix in range(50):
+                (folder / f"note-{ix:02}.md").write_text(f"# Note {directory}/{ix}\n\n{PARAGRAPH}\n")
+        write_json(manifest_path, {"version": FIXTURE_VERSION, "files": fixture_files()})
+    manifest = json.loads(manifest_path.read_text())
+    require(manifest.get("version") == FIXTURE_VERSION, "fixture generator version mismatch")
+    require(manifest.get("files") == fixture_files(), "fixture files differ from manifest")
+    for name, sections in [("small", 300), ("large", 8000)]:
+        require((FIXTURES / f"{name}.md").read_text().count("\n") == sections * 7,
+                f"wrong line count in {name}.md")
+    require(len(list((FIXTURES / "folder").glob("*/*.md"))) == 1000, "wrong folder fixture count")
+    for ix in range(3):
+        verify_png(FIXTURES / f"image-{ix}.png")
+    require(len({manifest["files"][f"image-{ix}.png"]["sha256"] for ix in range(3)}) == 3,
+            "image fixtures are not distinct")
+    return manifest
+
+
+def memory_bytes(value):
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([KMGT]?)(?:i?B)?", value.strip(), re.I)
+    require(match is not None, f"invalid memory size: {value!r}")
+    return round(float(match[1]) * 1024 ** (" KMGT".index(match[2].upper()) if match[2] else 0))
+
+
+def parse_vmmap(source):
+    values = {}
+    for line in source.splitlines():
+        if line.startswith("Physical footprint (peak):"):
+            values["physical_footprint_peak_bytes"] = memory_bytes(line.split(":", 1)[1])
+        elif line.startswith("Physical footprint:"):
+            values["physical_footprint_bytes"] = memory_bytes(line.split(":", 1)[1])
+        elif line.startswith("DefaultMallocZone_"):
+            fields = line.split()
+            require(len(fields) >= 7, "incomplete DefaultMallocZone row")
+            require("live_heap_bytes" not in values, "multiple DefaultMallocZone rows")
+            # Zone, virtual, resident, dirty, swapped, regions, bytes allocated.
+            values["live_heap_bytes"] = memory_bytes(fields[6])
+    require(set(values) == set(METRICS), "vmmap is missing footprint, peak, or DefaultMallocZone allocated bytes")
+    return values
+
+
+def git_metadata(source):
+    def git(*args):
+        result = subprocess.run(["git", "-C", str(source), *args], capture_output=True, text=True, timeout=10)
+        require(result.returncode == 0, f"cannot inspect source revision: {result.stderr.strip()}")
+        return result.stdout.strip()
+    diff = git("diff", "HEAD", "--binary")
+    untracked = {}
+    for name in git("ls-files", "--others", "--exclude-standard", "-z").split("\0"):
+        if name:
+            path = source / name
+            untracked[name] = ({"symlink": os.readlink(path)} if path.is_symlink()
+                               else {"sha256": sha256(path)})
+    return {"source": str(source), "revision": git("rev-parse", "HEAD"),
+            "status": git("status", "--porcelain"), "diff_sha256": hashlib.sha256(diff.encode()).hexdigest(),
+            "untracked_files": untracked}
+
+
+def hardware_metadata():
+    def sysctl(name):
+        result = subprocess.run(["/usr/sbin/sysctl", "-n", name], capture_output=True,
+                                text=True, check=True, timeout=10)
+        return result.stdout.strip()
+    return {"model": sysctl("hw.model"), "memory_bytes": int(sysctl("hw.memsize"))}
+
+
+def rustc_version():
+    try:
+        result = subprocess.run(["rustc", "--version"], capture_output=True, text=True, timeout=10)
+        return result.stdout.strip() if result.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def validate_checkpoint(scenario, checkpoint, manifest):
+    require(checkpoint["window_active"] is False,
+            f"{scenario}/{checkpoint['checkpoint']}: benchmark window became active")
+    name = checkpoint["checkpoint"]
+    if name == "closed":
+        require(checkpoint["document_bytes"] == 0 and checkpoint["layout"] == "closed",
+                "invalid closed checkpoint")
+        return
+    require(checkpoint["scale"] > 0, "window display scale must be positive")
+    expected_bytes, layout = 0, "Split"
+    if scenario in ("small", "large") and name != "released":
+        expected_bytes = manifest["files"][f"{scenario}.md"]["bytes"]
+        expected_bytes += {"loaded": 0, "typed_split": 40, "typed_editor": 80, "preview": 80}[name]
+        layout = {"typed_editor": "Editor", "preview": "Preview"}.get(name, "Split")
+    elif scenario == "images" and name != "released":
+        expected_bytes = manifest["files"][f"image-{name[-1]}.md"]["bytes"]
+    elif scenario == "blocks" and name != "released":
+        expected_bytes = manifest["files"][f"{name}.md"]["bytes"]
+    require(checkpoint["document_bytes"] == expected_bytes,
+            f"{scenario}/{name}: expected {expected_bytes} document bytes, got {checkpoint['document_bytes']}")
+    require(checkpoint["layout"] == layout, f"{scenario}/{name}: expected {layout} layout")
+    if expected_bytes and layout != "Editor":
+        require(checkpoint["blocks"] > 0, f"{scenario}/{name}: preview did not parse")
+
+
+def run_scenario(binary, scenario, run_number, directory, manifest):
+    directory.mkdir(parents=True)
+    control = directory / "control"
+    control.mkdir()
+    environment = os.environ.copy()
+    environment.update(NEON_MEMORY_BENCH=scenario, NEON_MEMORY_FIXTURES=str(FIXTURES),
+                       NEON_MEMORY_CONTROL=str(control))
+    lines = queue.Queue()
+    started = time.monotonic()
+    deadline = started + TIMEOUT
+    samples = []
+    with (directory / "stdout.log").open("w") as stdout, (directory / "stderr.log").open("w") as stderr:
+        process = subprocess.Popen([str(binary)], stdout=subprocess.PIPE, stderr=stderr,
+                                   text=True, bufsize=1, env=environment, cwd=ROOT)
+
+        def read_stdout():
+            try:
+                for line in process.stdout:
+                    stdout.write(line)
+                    stdout.flush()
+                    lines.put((time.monotonic(), line))
+            finally:
+                lines.put((time.monotonic(), None))
+
+        reader = threading.Thread(target=read_stdout, daemon=True)
+        reader.start()
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                require(remaining > 0, f"{scenario} exceeded {TIMEOUT} seconds")
+                try:
+                    received, line = lines.get(timeout=min(remaining, 1))
+                except queue.Empty:
+                    continue
+                if line is None:
+                    break
+                if not line.startswith("NEON_MEMORY_CHECKPOINT\t"):
+                    continue
+                fields = line.rstrip("\n").split("\t")
+                require(len(fields) == 7 and fields[6] in ("true", "false"),
+                        f"malformed checkpoint: {line.strip()}")
+                require(len(samples) < len(CHECKPOINTS[scenario]) and
+                        fields[1] == CHECKPOINTS[scenario][len(samples)],
+                        f"unexpected checkpoint: {fields[1]}")
+                sample = {"scenario": scenario, "run": run_number, "checkpoint": fields[1],
+                          "document_bytes": int(fields[2]), "blocks": int(fields[3]),
+                          "scale": float(fields[4]), "layout": fields[5],
+                          "window_active": fields[6] == "true",
+                          "elapsed_seconds": round(received - started, 3)}
+                validate_checkpoint(scenario, sample, manifest)
+                vmmap = subprocess.run(["/usr/bin/vmmap", "-summary", str(process.pid)],
+                                       capture_output=True, text=True,
+                                       timeout=min(20, max(0.1, deadline - time.monotonic())))
+                (directory / f"{fields[1]}.vmmap.txt").write_text(vmmap.stdout)
+                (directory / f"{fields[1]}.vmmap.stderr.log").write_text(vmmap.stderr)
+                require(vmmap.returncode == 0, f"vmmap failed: {vmmap.stderr.strip()}")
+                sample.update(parse_vmmap(vmmap.stdout))
+                samples.append(sample)
+                write_json(directory / "samples.json", samples)
+                (control / f"{fields[1]}.ack").touch()
+                print(f"{scenario} run {run_number} {fields[1]}: "
+                      f"{sample['physical_footprint_bytes'] / MIB:.1f} MiB footprint, "
+                      f"{sample['live_heap_bytes'] / MIB:.1f} MiB live heap", flush=True)
+            status = process.wait(timeout=max(0.1, deadline - time.monotonic()))
+            require(status == 0, f"Neon exited with status {status}")
+            require([sample["checkpoint"] for sample in samples] == CHECKPOINTS[scenario],
+                    f"missing checkpoints for {scenario}; see {directory}")
+            require("NEON_MEMORY_ERROR\t" not in (directory / "stderr.log").read_text(),
+                    f"Neon reported a benchmark error; see {directory / 'stderr.log'}")
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=3)
+            reader.join(timeout=3)
+            process.stdout.close()
+    return samples
+
+
+def summarize(samples):
+    grouped = {}
+    for sample in samples:
+        key = (sample["scenario"], sample["checkpoint"])
+        grouped.setdefault(key, []).append(sample)
+    rows = []
+    for (scenario, checkpoint), group in grouped.items():
+        row = {"scenario": scenario, "checkpoint": checkpoint, "runs": len(group)}
+        for metric in METRICS + ["elapsed_seconds"]:
+            values = [sample[metric] for sample in group]
+            row[metric] = {"median": statistics.median(values), "min": min(values), "max": max(values)}
+        rows.append(row)
+    return rows
+
+
+def scale_of(report):
+    scales = {sample["scale"] for sample in report["samples"] if sample["checkpoint"] != "closed"}
+    require(len(scales) == 1, "display scale changed during benchmark")
+    return next(iter(scales))
+
+
+def metric_cell(value):
+    return f"{value['median'] / MIB:.1f} [{value['min'] / MIB:.1f}, {value['max'] / MIB:.1f}]"
+
+
+def report_markdown(report):
+    lines = [f"# Memory benchmark: {report['label']}", "", "Execution: background; every checkpoint requires an inactive window.", "",
+             f"Runs per scenario: {report['runs']}. "
+             "Values are median [min, max] in MiB.", "",
+             "| Scenario | Checkpoint | Footprint | Live heap | Lifetime peak footprint |",
+             "| --- | --- | ---: | ---: | ---: |"]
+    for row in report["summary"]:
+        lines.append(f"| {row['scenario']} | {row['checkpoint']} | "
+                     + " | ".join(metric_cell(row[metric]) for metric in METRICS) + " |")
+    lines += ["", "Live heap means DefaultMallocZone bytes allocated; it excludes GPU allocations and other malloc zones.",
+              "Peak footprint is cumulative for the process lifetime, not a phase-specific peak.", "",
+              "| Scenario | Process launch to first settled checkpoint, seconds |", "| --- | ---: |"]
+    for row in report["summary"]:
+        if row["checkpoint"] == CHECKPOINTS[row["scenario"]][0]:
+            value = row["elapsed_seconds"]
+            lines.append(f"| {row['scenario']} | {value['median']:.3f} [{value['min']:.3f}, {value['max']:.3f}] |")
+    lines += ["", "These elapsed times include harness delays (including the launch delay and settling); they are not startup latency.", ""]
+    return "\n".join(lines)
+
+
+def label_path(label):
+    require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", label) is not None, "label must contain only letters, digits, '.', '_' or '-'")
+    require(label != "fixtures", "'fixtures' is reserved")
+    return OUTPUT / label
+
+
+def run(args):
+    require(sys.platform == "darwin" and Path("/usr/bin/vmmap").exists(), "sampling requires macOS /usr/bin/vmmap")
+    binary = args.binary.expanduser().resolve()
+    require(binary.is_file() and os.access(binary, os.X_OK), f"binary is not executable: {binary}")
+    scenarios = args.scenarios.split(",")
+    require(scenarios and len(scenarios) == len(set(scenarios)) and all(s in CHECKPOINTS for s in scenarios), "invalid or duplicate scenarios")
+    require(args.runs > 0, "--runs must be positive")
+    directory = label_path(args.label)
+    require(not directory.exists(), f"output already exists: {directory}; use a new label")
+    manifest = ensure_fixtures()
+    directory.mkdir(parents=True)
+    report = {
+        "format_version": FORMAT_VERSION, "label": args.label, "status": "running",
+        "execution_mode": "background",
+        "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "runs": args.runs, "scenarios": scenarios, "binary": str(binary), "binary_sha256": sha256(binary),
+        "source": git_metadata(args.source.expanduser().resolve()),
+        "platform": {"system": platform.system(), "release": platform.release(), "machine": platform.machine(),
+                     "macos": platform.mac_ver()[0]},
+        "hardware": hardware_metadata(), "rustc_version": rustc_version(),
+        "fixtures": manifest, "fixture_sha256": manifest_digest(manifest),
+        "samples": [], "summary": [],
+    }
+    write_json(directory / "report.json", report)
+    try:
+        for number in range(1, args.runs + 1):
+            for scenario in scenarios:
+                report["samples"].extend(run_scenario(binary, scenario, number,
+                                                       directory / f"run-{number}" / scenario, manifest))
+                write_json(directory / "report.json", report)
+        report["display_scale"] = scale_of(report)
+        report["summary"] = summarize(report["samples"])
+        report["status"] = "complete"
+        (directory / "report.md").write_text(report_markdown(report))
+    except (Exception, KeyboardInterrupt) as error:
+        report["status"] = "failed"
+        report["error"] = str(error) or type(error).__name__
+        raise
+    finally:
+        write_json(directory / "report.json", report)
+    print(directory / "report.md")
+
+
+def compare(args):
+    before = json.loads((label_path(args.before) / "report.json").read_text())
+    after = json.loads((label_path(args.after) / "report.json").read_text())
+    for report in [before, after]:
+        require(report["status"] == "complete", f"{report['label']} did not complete")
+        require(report["format_version"] == FORMAT_VERSION, "report version mismatch")
+        require(report.get("execution_mode") == "background", "execution mode must be background")
+        require(all(sample.get("window_active") is False for sample in report["samples"]),
+                f"{report['label']} contains active or unverified window samples")
+    require(before["fixture_sha256"] == after["fixture_sha256"] and before["fixtures"] == after["fixtures"], "fixture manifests differ")
+    require(before["platform"] == after["platform"], "platforms differ")
+    require(before["hardware"] == after["hardware"], "hardware differs")
+    require(before["execution_mode"] == after["execution_mode"], "execution modes differ")
+    require(scale_of(before) == scale_of(after), "display scales differ")
+    require(before["scenarios"] == after["scenarios"] and before["runs"] == after["runs"], "scenario order or repeat counts differ")
+    old = {(row["scenario"], row["checkpoint"]): row for row in before["summary"]}
+    lines = [f"# Memory comparison: {args.before} → {args.after}", "", "Execution: background; all sampled windows were inactive.", "",
+             "Values are median [min, max] MiB. Negative changes indicate reductions.", "",
+             "| Scenario | Checkpoint | Before footprint | After footprint | Change | Before live heap | After live heap | Change |",
+             "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |"]
+    differences = []
+    for row in after["summary"]:
+        prior = old[(row["scenario"], row["checkpoint"])]
+        cells = [row["scenario"], row["checkpoint"]]
+        difference = {"scenario": row["scenario"], "checkpoint": row["checkpoint"]}
+        for metric in METRICS[:2]:
+            delta = row[metric]["median"] - prior[metric]["median"]
+            percent = delta / prior[metric]["median"] * 100 if prior[metric]["median"] else None
+            difference[metric] = {"before": prior[metric], "after": row[metric], "change_bytes": delta, "change_percent": percent}
+            change = f"{delta / MIB:+.1f}" + (f" ({percent:+.1f}%)" if percent is not None else "")
+            cells += [metric_cell(prior[metric]), metric_cell(row[metric]), change]
+        lines.append("| " + " | ".join(cells) + " |")
+        differences.append(difference)
+    lines += ["", "Live heap is DefaultMallocZone bytes allocated, not total process memory.",
+              "Per-run lifetime peak footprint and elapsed checkpoint times remain in each report.json/report.md.",
+              "Checkpoint times include harness delays and must not be interpreted as startup latency.", ""]
+    destination = label_path(args.after)
+    markdown = "\n".join(lines)
+    (destination / f"compare-{args.before}.md").write_text(markdown)
+    write_json(destination / f"compare-{args.before}.json", {
+        "format_version": FORMAT_VERSION, "execution_mode": "background",
+        "before": args.before, "after": args.after, "rows": differences,
+    })
+    print(markdown)
+
+
+def selfcheck(args):
+    require(memory_bytes("1.5M") == 1572864 and memory_bytes("128K") == 131072 and
+            memory_bytes("2G") == 2147483648 and memory_bytes("17") == 17, "unit parser failed")
+    fixture = "Physical footprint: 273.8M\nPhysical footprint (peak): 348.5M\nDefaultMallocZone_0x1 268.2M 233.4M 211.9M 0K 1003990 119.3M 92.7M 44% 101\n"
+    require(parse_vmmap(fixture)["live_heap_bytes"] == memory_bytes("119.3M"), "allocated column parser failed")
+    try:
+        parse_vmmap("Physical footprint: 10M")
+    except ValueError:
+        pass
+    else:
+        raise ValueError("incomplete vmmap output accepted")
+    checkpoint = {"checkpoint": "closed", "document_bytes": 0,
+                  "layout": "closed", "window_active": False}
+    validate_checkpoint("startup", checkpoint, {})
+    checkpoint["window_active"] = True
+    try:
+        validate_checkpoint("startup", checkpoint, {})
+    except ValueError:
+        pass
+    else:
+        raise ValueError("active benchmark window accepted")
+    for path in args.vmmap:
+        print(f"{path}: {json.dumps(parse_vmmap(path.read_text()), sort_keys=True)}")
+    print("Parser self-check passed")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    runner = commands.add_parser("run", help="sample an existing binary; never builds it")
+    runner.add_argument("label")
+    runner.add_argument("--binary", type=Path, required=True)
+    runner.add_argument("--source", type=Path, default=ROOT, help="source checkout used to build this binary (default: this checkout)")
+    runner.add_argument("--runs", type=int, default=3)
+    runner.add_argument("--scenarios", default=",".join(CHECKPOINTS))
+    runner.set_defaults(function=run)
+    comparison = commands.add_parser("compare", help="validate and compare two completed labels")
+    comparison.add_argument("before")
+    comparison.add_argument("after")
+    comparison.set_defaults(function=compare)
+    fixtures = commands.add_parser("fixtures", help="generate or verify the shared deterministic fixtures")
+    fixtures.add_argument("--verify", action="store_true", help="require existing fixtures")
+    fixtures.set_defaults(function=lambda args: print(f"Fixtures verified: {manifest_digest(ensure_fixtures(args.verify))}"))
+    checks = commands.add_parser("selfcheck", help="validate parsing, optionally against saved vmmap outputs")
+    checks.add_argument("--vmmap", type=Path, action="append", default=[])
+    checks.set_defaults(function=selfcheck)
+    args = parser.parse_args()
+    try:
+        args.function(args)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        parser.exit(1, f"memory-bench: {error}\n")
+
+
+if __name__ == "__main__":
+    main()

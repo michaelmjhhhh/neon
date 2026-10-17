@@ -47,9 +47,9 @@ struct State {
     highlighter: SyntaxHighlighter,
     /// The background parse in flight.
     reparse: Option<Task<()>>,
-    /// Edits made since the background parse took its text, each with the
-    /// text right after it, to replay onto the parsed tree.
-    edits_since_reparse: Vec<(tree_sitter::InputEdit, Rope)>,
+    /// Ordered edits since the background parse took its text. Tree edits only
+    /// need their coordinates; the foreground highlighter owns the latest text.
+    edits_since_reparse: Vec<tree_sitter::InputEdit>,
 }
 
 impl DeferredHighlighter {
@@ -86,32 +86,42 @@ impl DeferredHighlighter {
             };
             (highlighter, folds)
         });
-        let state = self.state.clone();
-        let this = Self {
-            language: self.language.clone(),
-            state: self.state.clone(),
-        };
+        // State owns this task, so the completion must not keep State alive.
+        // Dropping the highlighter then cancels its task and releases its text.
+        let state = Rc::downgrade(&self.state);
+        let language = self.language.clone();
         let mut state_ref = self.state.borrow_mut();
         state_ref.edits_since_reparse.clear();
         state_ref.reparse = Some(cx.spawn_in(window, async move |editor, cx| {
             let (mut parsed, folds) = parse.await;
+            let Some(state) = state.upgrade() else {
+                return;
+            };
             let caught_up = {
                 let mut state = state.borrow_mut();
+                let text = state.highlighter.text().clone();
                 let edits = std::mem::take(&mut state.edits_since_reparse);
-                for (edit, text) in &edits {
-                    parsed.edit_tree(Some(*edit), text);
+                // edit_tree shifts tree coordinates without reading the text,
+                // so intermediate Rope snapshots need not be retained.
+                for edit in &edits {
+                    parsed.edit_tree(Some(*edit), &text);
                 }
                 state.highlighter = parsed;
                 state.reparse = None;
                 edits.is_empty()
             };
+            let this = Self { language, state };
             editor
                 .update_in(cx, |editor, window, cx| {
                     if !caught_up {
-                        let text = state.borrow().highlighter.text().clone();
+                        let text = this.state.borrow().highlighter.text().clone();
                         this.start_reparse(&text, folding, window, cx);
+                        cx.notify();
+                    } else {
+                        // These folds describe the background snapshot, before
+                        // replayed edits. Publish them only after catching up.
+                        editor.apply_highlighter_fold_candidates(folds, cx);
                     }
-                    editor.apply_highlighter_fold_candidates(folds, cx);
                 })
                 .ok();
         }));
@@ -138,7 +148,7 @@ impl InputHighlighter for DeferredHighlighter {
                 state.highlighter.edit_tree(edit, text);
                 match edit {
                     Some(edit) => {
-                        state.edits_since_reparse.push((edit, text.clone()));
+                        state.edits_since_reparse.push(edit);
                         false
                     }
                     // An unknown change can't be replayed: parse it afresh.

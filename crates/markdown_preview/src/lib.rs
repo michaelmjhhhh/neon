@@ -6,7 +6,9 @@
 //! block keeps its cached height and the scroll position stays put.
 
 mod blocks;
+mod image_cache;
 mod preview;
+mod rows;
 
 use gpui_kit::{App, KeyBinding};
 

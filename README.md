@@ -29,7 +29,7 @@ Neon is a Markdown editor built on [GPUI](https://github.com/zed-industries/zed/
 - **Folder sidebar** to browse nested Markdown files, create new ones and refresh the tree.
 - **Settings**: separate fonts and sizes for the editor and the preview, in light and dark mode.
 - **Light and dark appearance**: follow the system, or pick Light or Dark in Settings.
-- **Status bar** with cursor position, word count, how much of the file is in view, and FPS.
+- **Status bar** with cursor position, word count and how much of the file is in view. Builds with `--features diagnostics` also show FPS.
 
 ## Install
 
@@ -71,6 +71,10 @@ script/latency-bench my-run 3
 ```
 
 Keep the Neon window in front while it runs; the benchmark pauses while another window is focused.
+
+To compare memory use across startup, editing, images and document release, see
+the [memory benchmark](docs/memory-benchmark.md). It records physical footprint,
+live heap and lifetime peak memory across repeated runs.
 
 ## Build from source
 

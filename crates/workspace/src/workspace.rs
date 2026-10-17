@@ -38,6 +38,13 @@ use crate::present_now::{self, NativeView};
 use crate::scroll_metrics::ScrollMetrics;
 use crate::settings::SettingsView;
 use crate::theme::{self, Appearance};
+use crate::word_count::WordCount;
+
+#[cfg(feature = "memory-bench")]
+#[path = "memory_bench.rs"]
+mod memory_bench;
+#[cfg(feature = "memory-bench")]
+pub use memory_bench::MemoryBench;
 
 gpui_kit::actions!(
     workspace,
@@ -117,6 +124,7 @@ pub struct Workspace {
     editor_pane: Entity<EditorPane>,
     preview: Entity<MarkdownPreview>,
     scroll_metrics: Entity<ScrollMetrics>,
+    word_count: Entity<WordCount>,
     layout: LayoutMode,
     focus_handle: FocusHandle,
     /// Cursor offset last revealed in the preview, to react to moves only.
@@ -142,6 +150,7 @@ impl Workspace {
         let preview = cx.new(MarkdownPreview::new);
         let scroll_metrics =
             cx.new(|cx| ScrollMetrics::new(editor.clone(), preview.clone(), window, cx));
+        let word_count = cx.new(|_| WordCount::default());
 
         let tree = cx.new(|cx| TreeState::new(cx));
         let typography = cx.new(|cx| Typography::new(window, cx));
@@ -205,6 +214,7 @@ impl Workspace {
             editor_pane,
             preview,
             scroll_metrics,
+            word_count,
             layout: LayoutMode::default(),
             focus_handle: cx.focus_handle(),
             revealed_cursor: None,
@@ -326,6 +336,8 @@ impl Workspace {
         self.editor
             .update(cx, |editor, cx| editor.set_value(text, window, cx));
         let source = self.editor.read(cx).text().clone();
+        self.word_count
+            .update(cx, |count, cx| count.set_source(source.clone(), cx));
         let base_dir = path.as_deref().and_then(Path::parent).map(Arc::from);
         self.preview
             .update(cx, |preview, cx| preview.load_source(source, base_dir, cx));
@@ -351,6 +363,8 @@ impl Workspace {
         self.document.record_edit();
         // Cloning the rope is O(1); the preview flattens it off the UI thread.
         let source = editor.read(cx).text().clone();
+        self.word_count
+            .update(cx, |count, cx| count.set_source(source.clone(), cx));
         self.preview
             .update(cx, |preview, cx| preview.set_source(source, cx));
         self.draw_soon(window, cx);
@@ -733,6 +747,11 @@ impl Workspace {
             return;
         }
         self.settings_open = open;
+        self.settings
+            .update(cx, |settings, cx| settings.set_open(open, window, cx));
+        self.preview.update(cx, |preview, cx| {
+            preview.set_active(!open && self.layout != LayoutMode::Editor, cx);
+        });
         // Move focus now: the pane that held it is not rendered next frame,
         // and keys sent to it would not reach the workspace.
         self.focus_content(window, cx);
@@ -978,6 +997,9 @@ impl Workspace {
             return;
         }
         self.layout = layout;
+        self.preview.update(cx, |preview, cx| {
+            preview.set_active(!self.settings_open && layout != LayoutMode::Editor, cx);
+        });
         self.scroll_metrics
             .update(cx, |metrics, cx| metrics.set_layout(layout, cx));
         if layout != LayoutMode::Editor {
@@ -1304,8 +1326,6 @@ impl Workspace {
 
     fn render_sheet_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let position = self.editor.read(cx).cursor_position();
-        let stats = self.preview.read(cx).document().stats();
-        let words = stats.words();
         let theme = cx.theme();
 
         StatusBar::new()
@@ -1331,11 +1351,7 @@ impl Workspace {
                     .when(self.save_task.is_some(), |this| this.child("Saving…")),
             )
             .right(self.scroll_metrics.clone())
-            .right(div().child(format!(
-                "{} {}",
-                format_count(words),
-                if words == 1 { "word" } else { "words" }
-            )))
+            .right(self.word_count.clone())
     }
 }
 
@@ -1459,7 +1475,7 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 /// `12345` as `12,345`.
-fn format_count(count: usize) -> String {
+pub(super) fn format_count(count: usize) -> String {
     let digits = count.to_string();
     let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
     for (ix, digit) in digits.chars().enumerate() {

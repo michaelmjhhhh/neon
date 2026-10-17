@@ -4,19 +4,24 @@ mod document_file;
 mod editor_pane;
 mod folder;
 mod highlighter;
+#[cfg(feature = "diagnostics")]
 mod latency_bench;
 mod present_now;
 mod scroll_metrics;
 mod settings;
 mod theme;
 mod typography;
+mod word_count;
 mod workspace;
 
 use gpui_kit::component::TitleBar;
 use gpui_kit::{App, KeyBinding, TitlebarOptions, WindowOptions, point, px};
 
 pub use document_file::DocumentFile;
+#[cfg(feature = "diagnostics")]
 pub use latency_bench::LatencyBench;
+#[cfg(feature = "memory-bench")]
+pub use workspace::MemoryBench;
 pub use workspace::{
     CloseSettings, CloseWindow, LayoutMode, NewFile, Open, OpenFolder, OpenSettings, Quit,
     RefreshFolder, Save, SaveAs, ShowEditor, ShowPreview, ShowSplit, ToggleSidebar, ToggleTheme,

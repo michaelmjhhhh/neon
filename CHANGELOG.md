@@ -37,6 +37,7 @@ Groups, in this order:
 - Settings page, opened with Cmd+, or Neon > Settings…, with Appearance and Typography sections. Escape or Done returns to the document.
 - Choose System, Light or Dark appearance in Settings. System follows the macOS setting as it changes.
 - List each font in the font picker in its own typeface, and reset the editor or preview typography to its defaults.
+- Add a reproducible macOS memory benchmark covering startup, editing, images, large blocks, folders and document release.
 
 ### Changed
 
@@ -50,6 +51,15 @@ Groups, in this order:
 - Move Open Folder and Refresh Folder into a folder menu in the sidebar header, which shows a spinner while the folder is read.
 - Name the sidebar button by what it does: Hide sidebar or Show sidebar.
 - Replace the Typography dialog and its View menu item with the Settings page, opened from the gear button in the document header; font samples render on the document surface.
+- Show the FPS counter only in builds with the `diagnostics` feature.
+
+### Performance
+
+- Release hidden previews and their images in Editor mode and Settings, rebuilding from the latest text when shown again.
+- Keep preview images in a document-owned cache with a 64 MiB retention target, releasing them when switching documents; visible images may exceed the target.
+- Render long lists in visible chunks instead of laying out every item at once.
+- Create font pickers only while Typography settings are open, sharing installed font names across windows.
+- Remove profiler allocations from ordinary builds and stop retaining intermediate text snapshots during background syntax highlighting.
 
 ## [0.2.0] - 2026-10-17
 

@@ -22,6 +22,16 @@ impl MarkdownDocument {
     /// from a Markdown editor: tables, task lists, strikethrough, footnotes
     /// and YAML front matter.
     pub fn parse(source: &str) -> Self {
+        Self::parse_with_cancellation(source, || false)
+            .expect("an uncancelled Markdown parse always returns a document")
+    }
+
+    /// Parse while periodically checking whether the caller still needs the
+    /// result. Cancellation is checked between top-level blocks.
+    pub fn parse_with_cancellation(source: &str, cancelled: impl Fn() -> bool) -> Option<Self> {
+        if cancelled() {
+            return None;
+        }
         let options = Options::ENABLE_TABLES
             | Options::ENABLE_FOOTNOTES
             | Options::ENABLE_STRIKETHROUGH
@@ -38,6 +48,9 @@ impl MarkdownDocument {
         let mut blocks = Vec::new();
         let mut occurrences = HashMap::<u64, u64>::new();
         while let Some((event, range)) = parser.events.next() {
+            if cancelled() {
+                return None;
+            }
             let Some(kind) = parser.block_from_event(event) else {
                 continue;
             };
@@ -53,10 +66,13 @@ impl MarkdownDocument {
             });
         }
 
-        Self {
+        if cancelled() {
+            return None;
+        }
+        Some(Self {
             blocks,
             stats: DocumentStats::measure(source),
-        }
+        })
     }
 
     pub fn blocks(&self) -> &[Block] {
@@ -228,10 +244,19 @@ impl MarkdownList {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ListItem {
     task: Option<bool>,
     children: Vec<BlockKind>,
+    source_range: Range<usize>,
+}
+
+impl Hash for ListItem {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Moving a list in the source does not change its rendered identity.
+        self.task.hash(state);
+        self.children.hash(state);
+    }
 }
 
 impl ListItem {
@@ -242,6 +267,11 @@ impl ListItem {
 
     pub fn children(&self) -> &[BlockKind] {
         &self.children
+    }
+
+    /// Source bytes occupied by this item, including its marker and children.
+    pub fn source_range(&self) -> Range<usize> {
+        self.source_range.clone()
     }
 }
 
@@ -386,7 +416,7 @@ impl<'a> BlockParser<'a> {
 
     fn collect_list_items(&mut self, end: TagEnd) -> Vec<ListItem> {
         let mut items = Vec::new();
-        while let Some((event, _)) = self.events.next() {
+        while let Some((event, source_range)) = self.events.next() {
             match event {
                 Event::Start(Tag::Item) => {
                     // A marker already seen belongs to the enclosing item.
@@ -394,7 +424,11 @@ impl<'a> BlockParser<'a> {
                     let children = self.collect_blocks_until(TagEnd::Item);
                     let task = self.pending_task.take();
                     self.pending_task = enclosing_task;
-                    items.push(ListItem { task, children });
+                    items.push(ListItem {
+                        task,
+                        children,
+                        source_range,
+                    });
                 }
                 Event::End(tag_end) if tag_end == end => break,
                 _ => {}

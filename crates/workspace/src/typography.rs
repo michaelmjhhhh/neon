@@ -3,7 +3,7 @@ use gpui_kit::component::{
     select::{SearchableVec, SelectEvent, SelectItem, SelectState},
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, IntoElement,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, Global, IntoElement,
     ParentElement as _, SharedString, Styled as _, Subscription, Window, div,
 };
 
@@ -53,14 +53,28 @@ impl FontItem {
 
 /// Independent document typography; application chrome keeps the system font.
 pub(super) struct Typography {
+    editor_font: SharedString,
+    preview_font: SharedString,
+    editor_size: SharedString,
+    preview_size: SharedString,
+    /// The theme's monospace family when the window opened.
+    editor_default_font: SharedString,
+    pickers: Option<TypographyPickers>,
+}
+
+/// Retained only while the typography settings are visible.
+struct TypographyPickers {
     editor_font: Entity<FontSelect>,
     preview_font: Entity<FontSelect>,
     editor_size: Entity<SizeSelect>,
     preview_size: Entity<SizeSelect>,
-    /// The theme's monospace family when the window opened.
-    editor_default_font: SharedString,
     _subscriptions: Vec<Subscription>,
 }
+
+/// Enumerate once on first use; the picker lists share these font-name strings.
+struct InstalledFonts(Vec<SharedString>);
+
+impl Global for InstalledFonts {}
 
 pub(super) struct TypographyChanged;
 
@@ -85,17 +99,41 @@ impl Pane {
 impl EventEmitter<TypographyChanged> for Typography {}
 
 impl Typography {
-    pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let mut names: Vec<SharedString> = cx
-            .text_system()
-            .all_font_names()
-            .into_iter()
-            .filter(|name| !name.starts_with('.'))
-            .map(Into::into)
-            .collect();
+    pub(super) fn new(_: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor_default = cx.theme().mono_font_family.clone();
-        let preview_default: SharedString = SYSTEM_DEFAULT.into();
-        names.extend([editor_default.clone(), preview_default.clone()]);
+        Self {
+            editor_font: editor_default.clone(),
+            preview_font: SYSTEM_DEFAULT.into(),
+            editor_size: EDITOR_DEFAULT_SIZE.into(),
+            preview_size: PREVIEW_DEFAULT_SIZE.into(),
+            editor_default_font: editor_default,
+            pickers: None,
+        }
+    }
+
+    pub(crate) fn show_pickers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pickers.is_some() {
+            return;
+        }
+        if cx.try_global::<InstalledFonts>().is_none() {
+            let mut names: Vec<SharedString> = cx
+                .text_system()
+                .all_font_names()
+                .into_iter()
+                .filter(|name| !name.starts_with('.'))
+                .map(Into::into)
+                .collect();
+            names.sort();
+            names.dedup();
+            cx.set_global(InstalledFonts(names));
+        }
+        let mut names = cx.global::<InstalledFonts>().0.clone();
+        names.extend([
+            self.editor_default_font.clone(),
+            SYSTEM_DEFAULT.into(),
+            self.editor_font.clone(),
+            self.preview_font.clone(),
+        ]);
         names.sort();
         names.dedup();
         let system_family = cx.theme().font_family.clone();
@@ -117,10 +155,10 @@ impl Typography {
             SelectState::new(SearchableVec::new(fonts), None, window, cx).searchable(true)
         });
         editor_font.update(cx, |state, cx| {
-            state.set_selected_value(&editor_default, window, cx)
+            state.set_selected_value(&self.editor_font, window, cx)
         });
         preview_font.update(cx, |state, cx| {
-            state.set_selected_value(&preview_default, window, cx)
+            state.set_selected_value(&self.preview_font, window, cx)
         });
         let sizes: Vec<SharedString> = ["12", "14", "16", "18", "20", "24"]
             .into_iter()
@@ -129,36 +167,41 @@ impl Typography {
         let editor_size = cx.new(|cx| SelectState::new(sizes.clone(), None, window, cx));
         let preview_size = cx.new(|cx| SelectState::new(sizes, None, window, cx));
         editor_size.update(cx, |state, cx| {
-            state.set_selected_value(&EDITOR_DEFAULT_SIZE.into(), window, cx)
+            state.set_selected_value(&self.editor_size, window, cx)
         });
         preview_size.update(cx, |state, cx| {
-            state.set_selected_value(&PREVIEW_DEFAULT_SIZE.into(), window, cx)
+            state.set_selected_value(&self.preview_size, window, cx)
         });
         let mut subscriptions = Vec::new();
-        for font in [&editor_font, &preview_font] {
-            subscriptions.push(cx.subscribe(font, |_, _, event, cx| {
-                if matches!(event, SelectEvent::Confirm(Some(_))) {
+        for (pane, font) in [(Pane::Editor, &editor_font), (Pane::Preview, &preview_font)] {
+            subscriptions.push(cx.subscribe(font, move |this, _, event, cx| {
+                if let SelectEvent::Confirm(Some(value)) = event {
+                    *this.font_value_mut(pane) = value.clone();
                     cx.emit(TypographyChanged);
                     cx.notify();
                 }
             }));
         }
-        for size in [&editor_size, &preview_size] {
-            subscriptions.push(cx.subscribe(size, |_, _, event, cx| {
-                if matches!(event, SelectEvent::Confirm(Some(_))) {
+        for (pane, size) in [(Pane::Editor, &editor_size), (Pane::Preview, &preview_size)] {
+            subscriptions.push(cx.subscribe(size, move |this, _, event, cx| {
+                if let SelectEvent::Confirm(Some(value)) = event {
+                    *this.size_value_mut(pane) = value.clone();
                     cx.emit(TypographyChanged);
                     cx.notify();
                 }
             }));
         }
-        Self {
+        self.pickers = Some(TypographyPickers {
             editor_font,
             preview_font,
             editor_size,
             preview_size,
-            editor_default_font: editor_default,
             _subscriptions: subscriptions,
-        }
+        });
+    }
+
+    pub(crate) fn hide_pickers(&mut self) {
+        self.pickers = None;
     }
 
     pub(super) fn editor_font(&self, cx: &App) -> SharedString {
@@ -176,30 +219,55 @@ impl Typography {
 
     /// The family the pane draws its text in.
     pub(crate) fn font(&self, pane: Pane, cx: &App) -> SharedString {
-        match self.font_state(pane).read(cx).selected_value() {
-            Some(value) if value.as_ref() != SYSTEM_DEFAULT => value.clone(),
-            _ => cx.theme().font_family.clone(),
+        let value = self.font_value(pane);
+        if value.as_ref() == SYSTEM_DEFAULT {
+            cx.theme().font_family.clone()
+        } else {
+            value.clone()
         }
     }
     /// The pane's text size in pixels at the default rem size.
-    pub(crate) fn size(&self, pane: Pane, cx: &App) -> f32 {
-        self.size_state(pane)
-            .read(cx)
-            .selected_value()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(16.)
+    pub(crate) fn size(&self, pane: Pane, _: &App) -> f32 {
+        self.size_value(pane).parse().unwrap_or(16.)
     }
 
-    pub(crate) fn font_state(&self, pane: Pane) -> &Entity<FontSelect> {
+    pub(crate) fn font_state(&self, pane: Pane) -> Option<&Entity<FontSelect>> {
+        let pickers = self.pickers.as_ref()?;
+        Some(match pane {
+            Pane::Editor => &pickers.editor_font,
+            Pane::Preview => &pickers.preview_font,
+        })
+    }
+    pub(crate) fn size_state(&self, pane: Pane) -> Option<&Entity<SizeSelect>> {
+        let pickers = self.pickers.as_ref()?;
+        Some(match pane {
+            Pane::Editor => &pickers.editor_size,
+            Pane::Preview => &pickers.preview_size,
+        })
+    }
+
+    fn font_value(&self, pane: Pane) -> &SharedString {
         match pane {
             Pane::Editor => &self.editor_font,
             Pane::Preview => &self.preview_font,
         }
     }
-    pub(crate) fn size_state(&self, pane: Pane) -> &Entity<SizeSelect> {
+    fn font_value_mut(&mut self, pane: Pane) -> &mut SharedString {
+        match pane {
+            Pane::Editor => &mut self.editor_font,
+            Pane::Preview => &mut self.preview_font,
+        }
+    }
+    fn size_value(&self, pane: Pane) -> &SharedString {
         match pane {
             Pane::Editor => &self.editor_size,
             Pane::Preview => &self.preview_size,
+        }
+    }
+    fn size_value_mut(&mut self, pane: Pane) -> &mut SharedString {
+        match pane {
+            Pane::Editor => &mut self.editor_size,
+            Pane::Preview => &mut self.preview_size,
         }
     }
 
@@ -217,19 +285,23 @@ impl Typography {
     }
 
     /// Whether the pane uses its default font and size.
-    pub(crate) fn is_default(&self, pane: Pane, cx: &App) -> bool {
-        self.font_state(pane).read(cx).selected_value() == Some(&self.default_font(pane))
-            && self.size_state(pane).read(cx).selected_value() == Some(&Self::default_size(pane))
+    pub(crate) fn is_default(&self, pane: Pane, _: &App) -> bool {
+        self.font_value(pane) == &self.default_font(pane)
+            && self.size_value(pane) == &Self::default_size(pane)
     }
 
     /// Return the pane to its default font and size.
     pub(crate) fn reset(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
         let font = self.default_font(pane);
         let size = Self::default_size(pane);
-        self.font_state(pane)
-            .update(cx, |state, cx| state.set_selected_value(&font, window, cx));
-        self.size_state(pane)
-            .update(cx, |state, cx| state.set_selected_value(&size, window, cx));
+        *self.font_value_mut(pane) = font.clone();
+        *self.size_value_mut(pane) = size.clone();
+        if let Some(state) = self.font_state(pane) {
+            state.update(cx, |state, cx| state.set_selected_value(&font, window, cx));
+        }
+        if let Some(state) = self.size_state(pane) {
+            state.update(cx, |state, cx| state.set_selected_value(&size, window, cx));
+        }
         cx.emit(TypographyChanged);
         cx.notify();
     }
