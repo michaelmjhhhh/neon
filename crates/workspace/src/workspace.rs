@@ -12,7 +12,7 @@ use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::empty::{
     Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
 };
-use gpui_kit::component::input::{EditorState, InputEvent};
+use gpui_kit::component::input::{EditorState, Escape, InputEvent};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::notification::Notification;
@@ -372,6 +372,9 @@ impl Workspace {
         let cursor = editor.read(cx).cursor();
         if let Some(selection) = self.slash_commands.take_selection(&source, cursor) {
             editor.update(cx, |editor, cx| editor.set_selected_range(selection, cx));
+        } else if self.slash_commands.needs_refresh(cursor) {
+            // A deletion closes the menu without asking for a new one.
+            editor.update(cx, |editor, cx| editor.show_completions(window, cx));
         }
         self.word_count
             .update(cx, |count, cx| count.set_source(source.clone(), cx));
@@ -1399,6 +1402,9 @@ impl Render for Workspace {
             .id("workspace")
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus_handle)
+            .capture_action(cx.listener(|this, _: &Escape, _, _| {
+                this.slash_commands.dismiss();
+            }))
             .on_action(cx.listener(Self::new_file))
             .on_action(cx.listener(Self::open))
             .on_action(cx.listener(Self::open_folder))

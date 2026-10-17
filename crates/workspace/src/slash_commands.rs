@@ -1,4 +1,4 @@
-//! Slash commands: typing `/` at the start of a line opens a menu of Markdown
+//! Slash commands: typing `/` on an empty line opens a menu of Markdown
 //! templates, such as a list or a table, and accepting one inserts it in place
 //! of the command.
 
@@ -9,14 +9,16 @@ use gpui_kit::component::input::{CompletionProvider, Rope, RopeExt as _};
 use gpui_kit::{App, Result, Task, Window};
 use lsp_types::{
     CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit,
-    TextEdit,
+    Documentation, MarkupContent, MarkupKind, TextEdit,
 };
 
 const DEFAULT_LIST_ITEMS: usize = 3;
 const MAX_LIST_ITEMS: usize = 50;
-const DEFAULT_TABLE: (usize, usize) = (3, 3);
+const DEFAULT_TABLE_SIZE: usize = 3;
 const MAX_TABLE_COLUMNS: usize = 20;
 const MAX_TABLE_ROWS: usize = 100;
+/// Lines of a template shown in the menu's preview before it is cut short.
+const PREVIEW_LINES: usize = 8;
 
 #[derive(Clone, Copy)]
 enum Command {
@@ -52,6 +54,18 @@ impl Command {
         }
     }
 
+    /// How to give this command an argument, shown until one is typed.
+    fn hint(self) -> Option<&'static str> {
+        match self {
+            Command::Bullet => Some("Add a count: `/bullet 5`"),
+            Command::Numbered => Some("Add a count: `/numbered 5`"),
+            Command::Todo => Some("Add a count: `/todo 5`"),
+            Command::Code => Some("Add a language: `/code rust`"),
+            Command::Table => Some("Add a size: `/table 4x5`, columns x rows"),
+            Command::Link | Command::Image => None,
+        }
+    }
+
     /// The template for this command with `argument`, the text after the
     /// command name, or `None` when the argument is not valid for it.
     fn template(self, argument: &str) -> Option<Template> {
@@ -63,11 +77,12 @@ impl Command {
             Command::Link if argument.is_empty() => {
                 Some(Template::selecting("Link", "[text](url)", "text"))
             }
-            Command::Image if argument.is_empty() => Some(Template::selecting(
-                "Image",
-                "![alt text](path)",
-                "alt text",
-            )),
+            Command::Image if argument.is_empty() => Some(Template {
+                // An image right under text joins its paragraph and is not
+                // shown as an image of its own.
+                blank_line_before: true,
+                ..Template::selecting("Image", "![alt text](path)", "alt text")
+            }),
             Command::Link | Command::Image => None,
             Command::Table => table(argument),
         }
@@ -77,21 +92,30 @@ impl Command {
 /// Text to insert, and the range within it to select afterwards.
 #[derive(Debug, Clone, PartialEq)]
 struct Template {
-    label: String,
+    /// The argument as it will be applied, completed from what was typed:
+    /// `/table 4` is listed as `/table 4x3`.
+    argument: Option<String>,
     detail: String,
     text: String,
     selection: Range<usize>,
+    /// Whether the template needs a blank line above it to stand alone.
+    blank_line_before: bool,
 }
 
 impl Template {
+    fn new(detail: String, text: String, selection: Range<usize>) -> Self {
+        Self {
+            argument: None,
+            detail,
+            text,
+            selection,
+            blank_line_before: false,
+        }
+    }
+
     fn selecting(detail: &str, text: &str, selected: &str) -> Self {
         let start = text.find(selected).unwrap_or(0);
-        Self {
-            label: String::new(),
-            detail: detail.into(),
-            text: text.into(),
-            selection: start..start + selected.len(),
-        }
+        Self::new(detail.into(), text.into(), start..start + selected.len())
     }
 }
 
@@ -107,12 +131,13 @@ fn list(argument: &str, detail: &str, marker: impl Fn(usize) -> String) -> Optio
     };
     let items: Vec<String> = (0..count).map(marker).collect();
     let cursor = items[0].len();
-    Some(Template {
-        label: String::new(),
-        detail: format!("{detail}, {count} items"),
-        text: items.join("\n"),
-        selection: cursor..cursor,
-    })
+    let mut template = Template::new(
+        format!("{detail}, {count} items"),
+        items.join("\n"),
+        cursor..cursor,
+    );
+    template.argument = (!argument.is_empty()).then(|| count.to_string());
+    Some(template)
 }
 
 /// A fenced code block. Without a language the cursor waits after the
@@ -121,29 +146,40 @@ fn code(language: &str) -> Option<Template> {
     if language.contains(char::is_whitespace) || language.contains('`') {
         return None;
     }
-    let text = format!("```{language}\n\n```");
     let cursor = if language.is_empty() {
         3
     } else {
         4 + language.len()
     };
-    Some(Template {
-        label: String::new(),
-        detail: "Code block".into(),
-        text,
-        selection: cursor..cursor,
-    })
+    let detail = if language.is_empty() {
+        "Code block".into()
+    } else {
+        format!("Code block, {language}")
+    };
+    let mut template = Template::new(detail, format!("```{language}\n\n```"), cursor..cursor);
+    template.argument = (!language.is_empty()).then(|| language.into());
+    Some(template)
 }
 
-/// A table of `columns` x `rows` body rows under a header row, `3x3` by
-/// default, with the first header cell selected.
+/// A table of `columns` x `rows` body rows under a header row, with the
+/// first header cell selected. Either size may be left out while typing:
+/// `4`, `4x` and `4x3` are all four columns and three rows.
 fn table(argument: &str) -> Option<Template> {
-    let (columns, rows) = if argument.is_empty() {
-        DEFAULT_TABLE
-    } else {
-        let (columns, rows) = argument.split_once(['x', 'X'])?;
-        (columns.parse().ok()?, rows.parse().ok()?)
+    let size = |digits: &str| -> Option<usize> {
+        if digits.is_empty() {
+            Some(DEFAULT_TABLE_SIZE)
+        } else {
+            digits.parse().ok()
+        }
     };
+    let (columns, rows) = match argument.split_once(['x', 'X']) {
+        Some((columns, rows)) => (columns, rows),
+        None => (argument, ""),
+    };
+    if argument.starts_with(['x', 'X']) {
+        return None;
+    }
+    let (columns, rows) = (size(columns)?, size(rows)?);
     if !(1..=MAX_TABLE_COLUMNS).contains(&columns) || !(1..=MAX_TABLE_ROWS).contains(&rows) {
         return None;
     }
@@ -158,12 +194,20 @@ fn table(argument: &str) -> Option<Template> {
     lines.extend((0..rows).map(|_| row(&|_| " ".into())));
     let mut template = Template::selecting("", &lines.join("\n"), "Column 1");
     template.detail = format!("Table, {columns} columns x {rows} rows");
+    template.argument = (!argument.is_empty()).then(|| format!("{columns}x{rows}"));
     Some(template)
+}
+
+/// A template on offer in the menu, with the label it is listed under.
+struct Match {
+    command: Command,
+    label: String,
+    template: Template,
 }
 
 /// The templates matching `query`, the text typed after `/`. The command
 /// name matches by prefix; an argument, after a space, needs the full name.
-fn matching(query: &str) -> Vec<Template> {
+fn matching(query: &str) -> Vec<Match> {
     let (name, argument) = match query.split_once(' ') {
         Some((name, argument)) => (name, Some(argument.trim())),
         None => (query, None),
@@ -175,16 +219,40 @@ fn matching(query: &str) -> Vec<Template> {
             None => command.name().starts_with(name),
         })
         .filter_map(|command| {
-            let argument = argument.unwrap_or("");
-            let mut template = command.template(argument)?;
-            template.label = if argument.is_empty() {
-                format!("/{}", command.name())
-            } else {
-                format!("/{} {argument}", command.name())
+            let template = command.template(argument.unwrap_or(""))?;
+            let label = match &template.argument {
+                Some(argument) => format!("/{} {argument}", command.name()),
+                None => format!("/{}", command.name()),
             };
-            Some(template)
+            Some(Match {
+                command,
+                label,
+                template,
+            })
         })
         .collect()
+}
+
+/// The menu's preview of a template: its Markdown source, cut short when
+/// long, and how to give the command an argument.
+fn preview(command: Command, template: &Template) -> Documentation {
+    let mut lines: Vec<&str> = template.text.lines().take(PREVIEW_LINES + 1).collect();
+    if lines.len() > PREVIEW_LINES {
+        lines.truncate(PREVIEW_LINES);
+        lines.push("…");
+    }
+    // A fence longer than any in the template, so a code block shows whole.
+    let mut value = format!("````markdown\n{}\n````", lines.join("\n"));
+    if template.argument.is_none()
+        && let Some(hint) = command.hint()
+    {
+        value.push_str("\n\n");
+        value.push_str(hint);
+    }
+    Documentation::MarkupContent(MarkupContent {
+        kind: MarkupKind::Markdown,
+        value,
+    })
 }
 
 /// A slash command being typed: where its `/` is, and the indentation before
@@ -246,10 +314,11 @@ fn in_code_block(text: &Rope, row: usize) -> bool {
     fence.is_some()
 }
 
-/// Templates offered at `start`, to place the cursor once one is inserted.
-struct Offer {
+/// A template inserted at `start` as `text`, to place the cursor afterwards.
+struct Offered {
     start: usize,
-    templates: Vec<(String, Range<usize>)>,
+    text: String,
+    selection: Range<usize>,
 }
 
 /// The completion provider behind the slash menu.
@@ -258,41 +327,112 @@ pub(crate) struct SlashCommands {
     /// Whether the cursor was last in a slash command, so each further
     /// keystroke refines the menu instead of only `/` opening it.
     active: Cell<bool>,
-    offer: RefCell<Option<Offer>>,
+    /// The cursor offset the menu was last asked about.
+    requested_at: Cell<Option<usize>>,
+    /// The `/` offset of a command whose menu was closed with Escape, which
+    /// stays closed until a `/` is typed again.
+    dismissed: Cell<Option<usize>>,
+    offered: RefCell<Vec<Offered>>,
 }
 
 impl SlashCommands {
     /// The range to select after an edit, when the edit inserted one of the
     /// offered templates and left the cursor at its end.
     pub(crate) fn take_selection(&self, text: &Rope, cursor: usize) -> Option<Range<usize>> {
-        let mut offer = self.offer.borrow_mut();
-        let start = offer.as_ref()?.start;
-        let inserted = text.slice(start.min(cursor)..cursor).to_string();
-        let selection = offer
-            .as_ref()?
-            .templates
-            .iter()
-            .find(|(text, _)| *text == inserted)
-            .map(|(_, selection)| start + selection.start..start + selection.end)?;
-        *offer = None;
+        let mut offered = self.offered.borrow_mut();
+        let selection = offered.iter().find_map(|offered| {
+            let end = offered.start + offered.text.len();
+            (end == cursor && text.slice(offered.start..end) == offered.text.as_str()).then(|| {
+                offered.start + offered.selection.start..offered.start + offered.selection.end
+            })
+        })?;
+        offered.clear();
+        self.active.set(false);
         Some(selection)
     }
 
-    /// The `/` offset, indentation and matching templates of the slash
-    /// command ending at `offset`.
-    fn templates_at(&self, text: &Rope, offset: usize) -> Option<(usize, String, Vec<Template>)> {
+    /// Whether an edit the menu did not see, such as a deletion, left the
+    /// cursor in a slash command, so the menu should be asked again.
+    pub(crate) fn needs_refresh(&self, cursor: usize) -> bool {
+        self.active.get() && self.requested_at.get() != Some(cursor)
+    }
+
+    /// Keep the menu closed after Escape until a new `/` is typed.
+    pub(crate) fn dismiss(&self) {
+        let mut offered = self.offered.borrow_mut();
+        if let Some(offer) = offered.first() {
+            self.dismissed.set(Some(offer.start));
+            offered.clear();
+            self.active.set(false);
+        }
+    }
+
+    /// The menu items for the slash command ending at `offset`, or `None`
+    /// when the cursor is not in one.
+    fn items_at(&self, text: &Rope, offset: usize) -> Option<Vec<CompletionItem>> {
         let point = text.offset_to_point(offset);
         let line_start = text.line_start_offset(point.row);
         let line = text.slice(line_start..offset).to_string();
         let invocation = invocation(&line, line_start)?;
-        if in_code_block(text, point.row) {
+        let line_end = text.line_end_offset(point.row);
+        if self.dismissed.get() == Some(invocation.start)
+            || text
+                .slice(offset..line_end)
+                .chars()
+                .any(|ch| !ch.is_whitespace())
+            || in_code_block(text, point.row)
+        {
             return None;
         }
-        Some((
-            invocation.start,
-            invocation.indent.to_owned(),
-            matching(invocation.query),
-        ))
+        let after_text = point.row > 0
+            && text
+                .slice_line(point.row - 1)
+                .chars()
+                .any(|ch| !ch.is_whitespace());
+        let typed = text.slice(invocation.start..offset).to_string();
+        let end = text.offset_to_position(offset);
+
+        let mut offered = Vec::new();
+        let items = matching(invocation.query)
+            .into_iter()
+            .map(
+                |Match {
+                     command,
+                     label,
+                     template,
+                 }| {
+                    let documentation = preview(command, &template);
+                    let (start, prefix) = if template.blank_line_before && after_text {
+                        (line_start, format!("\n{}", invocation.indent))
+                    } else {
+                        (invocation.start, String::new())
+                    };
+                    let indent = format!("\n{}", invocation.indent);
+                    let new_text = format!("{prefix}{}", template.text.replace('\n', &indent));
+                    let selection = indented(&template.text, template.selection, invocation.indent);
+                    offered.push(Offered {
+                        start,
+                        text: new_text.clone(),
+                        selection: selection.start + prefix.len()..selection.end + prefix.len(),
+                    });
+                    CompletionItem {
+                        label,
+                        detail: Some(template.detail),
+                        kind: Some(CompletionItemKind::SNIPPET),
+                        documentation: Some(documentation),
+                        // Highlights what was typed, the `/` included.
+                        filter_text: Some(typed.clone()),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                            range: lsp_types::Range::new(text.offset_to_position(start), end),
+                            new_text,
+                        })),
+                        ..Default::default()
+                    }
+                },
+            )
+            .collect();
+        *self.offered.borrow_mut() = offered;
+        Some(items)
     }
 }
 
@@ -305,46 +445,21 @@ impl CompletionProvider for SlashCommands {
         _: &mut Window,
         _: &mut App,
     ) -> Task<Result<CompletionResponse>> {
-        let Some((start, indent, templates)) = self.templates_at(text, offset) else {
-            self.active.set(false);
-            *self.offer.borrow_mut() = None;
-            return Task::ready(Ok(CompletionResponse::Array(Vec::new())));
-        };
-        self.active.set(true);
-
-        let range = lsp_types::Range::new(
-            text.offset_to_position(start),
-            text.offset_to_position(offset),
-        );
-        let mut offered = Vec::with_capacity(templates.len());
-        let items = templates
-            .into_iter()
-            .map(|template| {
-                let text = template.text.replace('\n', &format!("\n{indent}"));
-                let selection = indented(&template.text, template.selection, &indent);
-                offered.push((text.clone(), selection));
-                CompletionItem {
-                    label: template.label,
-                    detail: Some(template.detail),
-                    kind: Some(CompletionItemKind::SNIPPET),
-                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                        range,
-                        new_text: text,
-                    })),
-                    ..Default::default()
-                }
-            })
-            .collect();
-        *self.offer.borrow_mut() = Some(Offer {
-            start,
-            templates: offered,
-        });
-        Task::ready(Ok(CompletionResponse::Array(items)))
+        self.requested_at.set(Some(offset));
+        let items = self.items_at(text, offset);
+        self.active.set(items.is_some());
+        if items.is_none() {
+            self.offered.borrow_mut().clear();
+        }
+        Task::ready(Ok(CompletionResponse::Array(items.unwrap_or_default())))
     }
 
     fn is_completion_trigger(&self, _: usize, new_text: &str, _: &mut App) -> bool {
-        new_text == "/"
-            || (self.active.get() && new_text.chars().count() == 1 && !new_text.contains('\n'))
+        if new_text == "/" {
+            self.dismissed.set(None);
+            return true;
+        }
+        self.active.get() && new_text.chars().count() == 1 && !new_text.contains('\n')
     }
 }
 
@@ -360,7 +475,7 @@ mod tests {
     use super::*;
 
     fn labels(query: &str) -> Vec<String> {
-        matching(query).into_iter().map(|t| t.label).collect()
+        matching(query).into_iter().map(|m| m.label).collect()
     }
 
     #[test]
@@ -374,9 +489,17 @@ mod tests {
     fn arguments_need_the_full_name() {
         assert_eq!(labels("table 4x5"), ["/table 4x5"]);
         assert!(labels("tab 4x5").is_empty());
-        assert!(labels("table 4x").is_empty());
         assert!(labels("table 0x2").is_empty());
+        assert!(labels("table x2").is_empty());
         assert!(labels("link x").is_empty());
+    }
+
+    #[test]
+    fn partial_sizes_complete_with_defaults() {
+        assert_eq!(labels("table 4"), ["/table 4x3"]);
+        assert_eq!(labels("table 4x"), ["/table 4x3"]);
+        assert_eq!(labels("table "), ["/table"]);
+        assert_eq!(labels("bullet 5"), ["/bullet 5"]);
     }
 
     #[test]
@@ -404,6 +527,23 @@ mod tests {
         let template = Command::Code.template("rust").unwrap();
         assert_eq!(template.text, "```rust\n\n```");
         assert_eq!(template.selection, 8..8);
+    }
+
+    #[test]
+    fn preview_cuts_long_templates_and_hints_at_arguments() {
+        let Documentation::MarkupContent(content) =
+            preview(Command::Table, &Command::Table.template("").unwrap())
+        else {
+            unreachable!()
+        };
+        assert!(content.value.ends_with("`/table 4x5`, columns x rows"));
+        let Documentation::MarkupContent(content) =
+            preview(Command::Bullet, &Command::Bullet.template("20").unwrap())
+        else {
+            unreachable!()
+        };
+        assert_eq!(content.value.matches("- ").count(), PREVIEW_LINES);
+        assert!(content.value.contains('…') && !content.value.contains("Add a count"));
     }
 
     #[test]
