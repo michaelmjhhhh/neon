@@ -5,6 +5,10 @@ version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+memory-bench = ["workspace/memory-bench"]
+diagnostics = ["workspace/diagnostics"]
+
 [dependencies]
 gpui-kit.workspace = true
 workspace.workspace = true

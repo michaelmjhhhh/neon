@@ -8,9 +8,11 @@ use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Bounds, Global, Menu, MenuItem, OsAction,
     SystemMenuType, WeakEntity, WindowBounds, WindowKind, WindowOptions, size,
 };
+#[cfg(feature = "diagnostics")]
+use workspace::LatencyBench;
 use workspace::{
-    CloseWindow, LatencyBench, NewFile, Open, OpenFolder, OpenSettings, Quit, RefreshFolder, Save,
-    SaveAs, ShowEditor, ShowPreview, ShowSplit, ToggleSidebar, ToggleTheme, Workspace,
+    CloseWindow, NewFile, Open, OpenFolder, OpenSettings, Quit, RefreshFolder, Save, SaveAs,
+    ShowEditor, ShowPreview, ShowSplit, ToggleSidebar, ToggleTheme, Workspace,
 };
 
 /// Every open document window, so files opened from Finder can reuse one.
@@ -51,11 +53,24 @@ fn main() {
         set_menus(cx);
         cx.set_global(OpenWorkspaces::default());
         cx.on_action(|_: &Quit, cx| cx.quit());
+        #[cfg(feature = "memory-bench")]
+        if let Some(bench) = workspace::MemoryBench::from_env() {
+            open_window_with_focus(None, WindowKind::Normal, false, cx);
+            let (window, workspace) = cx.global::<OpenWorkspaces>().0.last().cloned().unwrap();
+            window
+                .update(cx, |_, window, cx| bench.start(workspace, window, cx))
+                .ok();
+            return;
+        }
+
         cx.activate(true);
 
+        #[cfg(feature = "diagnostics")]
         if let Some(bench) = LatencyBench::from_env() {
             start_latency_bench(bench, cx);
-        } else if launch_paths.is_empty() {
+            return;
+        }
+        if launch_paths.is_empty() {
             open_window(None, WindowKind::Normal, cx);
         } else {
             open_paths(launch_paths, cx);
@@ -116,11 +131,16 @@ fn open_paths(paths: Vec<PathBuf>, cx: &mut App) {
 }
 
 fn open_window(path: Option<PathBuf>, kind: WindowKind, cx: &mut App) {
+    open_window_with_focus(path, kind, true, cx);
+}
+
+fn open_window_with_focus(path: Option<PathBuf>, kind: WindowKind, focus: bool, cx: &mut App) {
     let bounds = Bounds::centered(None, size(gpui_kit::px(1200.), gpui_kit::px(800.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(size(gpui_kit::px(840.), gpui_kit::px(560.))),
         kind,
+        focus,
         ..workspace::window_options()
     };
     let opened = gpui_kit::open_window(options, cx, |window, cx| {
@@ -142,6 +162,7 @@ fn open_window(path: Option<PathBuf>, kind: WindowKind, cx: &mut App) {
 }
 
 /// Open the benchmark fixture in a window and type into it.
+#[cfg(feature = "diagnostics")]
 fn start_latency_bench(bench: LatencyBench, cx: &mut App) {
     let path = match bench.fixture_path() {
         Ok(path) => path,

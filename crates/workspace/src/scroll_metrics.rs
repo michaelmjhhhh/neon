@@ -1,4 +1,6 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(feature = "diagnostics")]
+use std::time::Instant;
 
 use gpui_kit::component::input::{EditorState, RopeExt as _};
 use gpui_kit::{
@@ -9,6 +11,7 @@ use markdown_preview::MarkdownPreview;
 use crate::LayoutMode;
 
 const SCROLL_SAMPLE_INTERVAL: Duration = Duration::from_millis(100);
+#[cfg(feature = "diagnostics")]
 const FPS_SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
 
 /// A separate view so sampling the counters does not invalidate the editor.
@@ -20,7 +23,9 @@ pub(crate) struct ScrollMetrics {
     offsets: [f32; 2],
     viewed_percent: u8,
     fps: Option<u64>,
+    #[cfg(feature = "diagnostics")]
     last_frame_count: u64,
+    #[cfg(feature = "diagnostics")]
     last_frame_sample: Instant,
     _sample_task: Task<()>,
 }
@@ -51,7 +56,9 @@ impl ScrollMetrics {
             offsets: [0.; 2],
             viewed_percent: 100,
             fps: None,
+            #[cfg(feature = "diagnostics")]
             last_frame_count: presented_frames(window),
+            #[cfg(feature = "diagnostics")]
             last_frame_sample: Instant::now(),
             _sample_task: task,
         }
@@ -64,7 +71,7 @@ impl ScrollMetrics {
         cx.notify();
     }
 
-    fn sample(&mut self, window: &Window, cx: &mut Context<Self>) {
+    fn sample(&mut self, _window: &Window, cx: &mut Context<Self>) {
         let offsets = [
             f32::from((-self.editor.read(cx).scroll_offset().y).max(px(0.))),
             f32::from(self.preview.read(cx).scroll_offset()),
@@ -82,16 +89,19 @@ impl ScrollMetrics {
         self.offsets = offsets;
         self.update_viewed_percent(cx);
 
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.last_frame_sample);
-        if elapsed >= FPS_SAMPLE_INTERVAL {
-            let count = presented_frames(window);
-            self.fps = Some(
-                (count.saturating_sub(self.last_frame_count) as f64 / elapsed.as_secs_f64()).round()
-                    as u64,
-            );
-            self.last_frame_count = count;
-            self.last_frame_sample = now;
+        #[cfg(feature = "diagnostics")]
+        {
+            let now = Instant::now();
+            let elapsed = now.duration_since(self.last_frame_sample);
+            if elapsed >= FPS_SAMPLE_INTERVAL {
+                let count = presented_frames(_window);
+                self.fps = Some(
+                    (count.saturating_sub(self.last_frame_count) as f64 / elapsed.as_secs_f64())
+                        .round() as u64,
+                );
+                self.last_frame_count = count;
+                self.last_frame_sample = now;
+            }
         }
         if previous != (self.preview_active, self.viewed_percent, self.fps) {
             cx.notify();
@@ -116,19 +126,18 @@ impl Render for ScrollMetrics {
         } else {
             "Editor"
         };
+        #[cfg(feature = "diagnostics")]
         let fps = self
             .fps
             .map_or_else(|| "— FPS".to_string(), |fps| format!("{fps} FPS"));
-        div()
-            .flex()
-            .items_center()
-            .gap_3()
-            .child(
-                div()
-                    .min_w_24()
-                    .child(format!("{panel} {}%", self.viewed_percent)),
-            )
-            .child(div().min_w_16().child(fps))
+        let metrics = div().flex().items_center().gap_3().child(
+            div()
+                .min_w_24()
+                .child(format!("{panel} {}%", self.viewed_percent)),
+        );
+        #[cfg(feature = "diagnostics")]
+        let metrics = metrics.child(div().min_w_16().child(fps));
+        metrics
     }
 }
 
@@ -161,6 +170,7 @@ fn editor_viewed_fraction(editor: &EditorState) -> f32 {
 
 /// Count presentations, not render calls or requested animation callbacks.
 /// The profiler's per-window counters work without enabling trace collection.
+#[cfg(feature = "diagnostics")]
 fn presented_frames(window: &Window) -> u64 {
     window
         .frame_duration_snapshot()

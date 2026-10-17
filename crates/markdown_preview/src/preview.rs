@@ -2,6 +2,7 @@ use std::cell::Cell;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::empty::{
@@ -17,10 +18,12 @@ use gpui_kit::{
     StyleRefinement, Styled as _, Task, WeakEntity, Window, canvas, div, list,
     prelude::FluentBuilder as _, px,
 };
-use markdown::{BlockSplice, MarkdownDocument};
+use markdown::MarkdownDocument;
 
 use crate::KEY_CONTEXT;
 use crate::blocks::render_block;
+use crate::image_cache::PreviewImageCache;
+use crate::rows::PreviewRows;
 
 gpui_kit::actions!(
     markdown_preview,
@@ -58,6 +61,15 @@ pub enum MarkdownPreviewEvent {
 /// scroll position.
 pub struct MarkdownPreview {
     document: Arc<MarkdownDocument>,
+    rows: Arc<PreviewRows>,
+    /// Once a document needs list chunks, keep their boundaries through edits
+    /// and suspension. Merging them at the threshold loses row-local scroll.
+    chunk_lists: bool,
+    active: bool,
+    source: Rope,
+    image_cache: Option<Entity<PreviewImageCache>>,
+    suspended_scroll: Option<(usize, Pixels)>,
+    pending_reveal_offset: Option<usize>,
     font_family: Option<gpui_kit::SharedString>,
     font_scale: f32,
     list_state: ListState,
@@ -69,6 +81,7 @@ pub struct MarkdownPreview {
     /// runs; newer source waits in `pending_source` and only the latest is
     /// kept.
     parse_task: Option<Task<()>>,
+    parse_cancel: Option<Arc<AtomicBool>>,
     pending_source: Option<Rope>,
     last_parse_at: Option<Instant>,
     /// The next applied parse replaces the document instead of patching it.
@@ -92,6 +105,13 @@ impl MarkdownPreview {
         });
         Self {
             document: Arc::default(),
+            rows: Arc::default(),
+            chunk_lists: false,
+            active: true,
+            source: Rope::new(),
+            image_cache: Some(PreviewImageCache::new(cx)),
+            suspended_scroll: None,
+            pending_reveal_offset: None,
             font_family: None,
             font_scale: 1.,
             list_state,
@@ -99,11 +119,44 @@ impl MarkdownPreview {
             focus_handle: cx.focus_handle(),
             base_dir: None,
             parse_task: None,
+            parse_cancel: None,
             pending_source: None,
             last_parse_at: None,
             replace_on_next_parse: false,
             estimated_block_height: px(48.),
         }
+    }
+
+    /// Suspend hidden previews without retaining their parsed text or images.
+    /// Source updates still replace the latest shared rope; showing the preview
+    /// parses that source once and restores its source-relative scroll anchor.
+    pub fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.active == active {
+            return;
+        }
+        self.active = active;
+        self.cancel_parse();
+        self.last_parse_at = None;
+        if active {
+            self.reset_image_cache(cx);
+            self.replace_on_next_parse = true;
+            self.pending_source = Some(self.source.clone());
+            self.schedule_parse(cx);
+        } else {
+            let top = self.list_state.logical_scroll_top();
+            if top.item_ix < self.rows.len(&self.document) {
+                self.suspended_scroll = Some((
+                    self.rows.source_range(top.item_ix, &self.document).start,
+                    top.offset_in_item,
+                ));
+            }
+            self.pending_source = None;
+            self.document = Arc::default();
+            self.rows = Arc::default();
+            self.list_state.reset(0);
+            self.reset_image_cache(cx);
+        }
+        cx.notify();
     }
 
     /// Change document typography and invalidate cached block heights.
@@ -116,15 +169,18 @@ impl MarkdownPreview {
         self.font_family = Some(family);
         self.font_scale = scale.clamp(0.75, 1.5);
         self.list_state
-            .remeasure_items(0..self.document.blocks().len());
+            .remeasure_items(0..self.rows.len(&self.document));
         cx.notify();
     }
 
     /// Update relative resources after Save As without moving the reader.
     pub fn set_base_dir(&mut self, base_dir: Option<Arc<Path>>, cx: &mut Context<Self>) {
+        if self.base_dir != base_dir && self.active {
+            self.reset_image_cache(cx);
+        }
         self.base_dir = base_dir;
         self.list_state
-            .remeasure_items(0..self.document.blocks().len());
+            .remeasure_items(0..self.rows.len(&self.document));
         cx.notify();
     }
 
@@ -153,6 +209,11 @@ impl MarkdownPreview {
         &self.document
     }
 
+    /// Number of variable-height scroll rows, including chunks of large lists.
+    pub fn row_count(&self) -> usize {
+        self.rows.len(&self.document)
+    }
+
     /// Vertical scroll distance from the top, using the scrollbar's measured offset.
     pub fn scroll_offset(&self) -> Pixels {
         (-self.list_state.scroll_px_offset_for_scrollbar().y).max(px(0.))
@@ -161,17 +222,19 @@ impl MarkdownPreview {
     /// Fraction of the source reached by the bottom of the viewport.
     /// Source ranges keep progress independent of unmeasured block heights.
     pub fn viewed_fraction(&self) -> f32 {
-        let blocks = self.document.blocks();
-        let Some(last) = blocks.last() else {
+        let count = self.row_count();
+        if count == 0 {
             return 1.;
-        };
-        let total = last.source_range().end.max(1) as f32;
+        }
+        let total = self.rows.source_range(count - 1, &self.document).end.max(1) as f32;
         let viewport_bottom = self.list_state.viewport_bounds().bottom();
         let first = self.list_state.logical_scroll_top().item_ix;
-        let mut viewed = blocks
-            .get(first)
-            .map_or(0., |block| block.source_range().start as f32);
-        for (ix, block) in blocks.iter().enumerate().skip(first) {
+        let mut viewed = if first < count {
+            self.rows.source_range(first, &self.document).start as f32
+        } else {
+            0.
+        };
+        for ix in first..count {
             let Some(bounds) = self.list_state.bounds_for_item(ix) else {
                 break;
             };
@@ -183,7 +246,7 @@ impl MarkdownPreview {
             } else {
                 1.
             };
-            let range = block.source_range();
+            let range = self.rows.source_range(ix, &self.document);
             viewed = range.start as f32 + range.len() as f32 * fraction;
             if fraction < 1. {
                 break;
@@ -201,6 +264,10 @@ impl MarkdownPreview {
     /// and the scroll position is preserved. During a burst of edits the
     /// preview catches up at most every [`PARSE_INTERVAL`].
     pub fn set_source(&mut self, source: Rope, cx: &mut Context<Self>) {
+        self.source = source.clone();
+        if !self.active {
+            return;
+        }
         self.pending_source = Some(source);
         if self.parse_task.is_none() {
             self.schedule_parse(cx);
@@ -215,16 +282,26 @@ impl MarkdownPreview {
         cx: &mut Context<Self>,
     ) {
         self.base_dir = base_dir;
+        self.cancel_parse();
+        self.suspended_scroll = None;
+        self.pending_reveal_offset = None;
+        self.document = Arc::default();
+        self.rows = Arc::default();
+        self.chunk_lists = false;
+        self.list_state.reset(0);
+        self.reset_image_cache(cx);
         self.replace_on_next_parse = true;
         // A new document shows at once; only typing is throttled.
         self.last_parse_at = None;
-        self.parse_task = None;
+        self.pending_source = None;
         self.set_source(source, cx);
+        cx.notify();
     }
 
     /// Scroll so the block rendered from the source byte `offset` is visible.
     pub fn reveal_offset(&mut self, offset: usize, cx: &mut Context<Self>) {
-        let Some(ix) = self.document.block_ix_for_offset(offset) else {
+        let Some(ix) = self.rows.row_for_offset(offset, &self.document) else {
+            self.pending_reveal_offset = Some(offset);
             return;
         };
         let before = self.list_state.logical_scroll_top();
@@ -262,15 +339,28 @@ impl MarkdownPreview {
 
     fn start_parse(&mut self, source: Rope, cx: &mut Context<Self>) {
         self.last_parse_at = Some(cx.background_executor().now());
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.parse_cancel = Some(cancel.clone());
+        let chunk_lists = self.chunk_lists;
         let parse = cx.background_spawn(async move {
+            if cancel.load(Ordering::Relaxed) {
+                return None;
+            }
             let text = source.to_string();
-            MarkdownDocument::parse(&text)
+            let document = MarkdownDocument::parse_with_cancellation(&text, || {
+                cancel.load(Ordering::Relaxed)
+            })?;
+            let rows = PreviewRows::new(&document, chunk_lists);
+            (!cancel.load(Ordering::Relaxed)).then_some((document, rows))
         });
         self.parse_task = Some(cx.spawn(async move |this, cx| {
             let document = parse.await;
             this.update(cx, |this, cx| {
                 this.parse_task = None;
-                this.apply_document(document, cx);
+                this.parse_cancel = None;
+                if let Some((document, rows)) = document {
+                    this.apply_document(document, rows, cx);
+                }
                 if this.pending_source.is_some() {
                     this.schedule_parse(cx);
                 }
@@ -279,23 +369,84 @@ impl MarkdownPreview {
         }));
     }
 
-    fn apply_document(&mut self, document: MarkdownDocument, cx: &mut Context<Self>) {
-        let block_count = document.blocks().len();
+    fn cancel_parse(&mut self) {
+        if let Some(cancel) = self.parse_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.parse_task = None;
+    }
+
+    fn reset_image_cache(&mut self, cx: &mut Context<Self>) {
+        if let Some(cache) = self.image_cache.take() {
+            cache.update(cx, |cache, cx| cache.clear(cx));
+        }
+        self.image_cache = self.active.then(|| PreviewImageCache::new(cx));
+    }
+
+    fn apply_document(
+        &mut self,
+        document: MarkdownDocument,
+        rows: PreviewRows,
+        cx: &mut Context<Self>,
+    ) {
+        let row_count = rows.len(&document);
+        self.chunk_lists |= rows.is_expanded();
+        let mut splice_scroll = None;
         if std::mem::take(&mut self.replace_on_next_parse) {
             self.list_state
-                .reset_with_uniform_height(block_count, self.estimated_block_height);
-        } else if let Some(splice) = BlockSplice::between(self.document.blocks(), document.blocks())
+                .reset_with_uniform_height(row_count, self.estimated_block_height);
+        } else if let Some((old_range, new_range)) =
+            self.rows.changed_range(&self.document, &rows, &document)
         {
-            let (old_range, new_range) = (splice.old_range(), splice.new_range());
             if old_range.len() == new_range.len() {
                 // Same shape: keep the old heights as hints until remeasured,
                 // so the scrollbar does not jump for the frame in between.
                 self.list_state.remeasure_items(old_range);
             } else {
+                let top = self.list_state.logical_scroll_top();
+                if old_range.contains(&top.item_ix) {
+                    // Splice normally resets an affected scroll row to the
+                    // replacement's beginning. Keep its identity or source
+                    // anchor when list chunk boundaries change instead.
+                    let id = self.rows.id(top.item_ix, &self.document);
+                    let offset = self.rows.source_range(top.item_ix, &self.document).start;
+                    splice_scroll = rows
+                        .row_for_id(id, &document)
+                        .or_else(|| rows.row_for_offset(offset, &document))
+                        .map(|item_ix| ListOffset {
+                            item_ix,
+                            offset_in_item: top.offset_in_item,
+                        });
+                }
                 self.list_state.splice(old_range, new_range.len());
             }
         }
         self.document = Arc::new(document);
+        self.rows = Arc::new(rows);
+        if let Some(scroll) = splice_scroll {
+            self.list_state.scroll_to(scroll);
+        }
+        if let Some((offset, offset_in_item)) = self.suspended_scroll.take()
+            && let Some(item_ix) = self.rows.row_for_offset(offset, &self.document)
+        {
+            self.list_state.scroll_to(ListOffset {
+                item_ix,
+                offset_in_item,
+            });
+        }
+        if let Some(offset) = self.pending_reveal_offset.take() {
+            if let Some(item_ix) = self.rows.row_for_offset(offset, &self.document) {
+                // Fresh rows only have height hints. Anchor the target directly:
+                // reveal-item can mistake tall unmeasured rows for visible ones.
+                self.list_state.scroll_to(ListOffset {
+                    item_ix,
+                    offset_in_item: px(0.),
+                });
+            } else {
+                // An empty parse can precede a newer queued source update.
+                self.pending_reveal_offset = Some(offset);
+            }
+        }
         cx.emit(MarkdownPreviewEvent::DocumentChanged);
         cx.notify();
     }
@@ -345,6 +496,12 @@ impl MarkdownPreview {
     }
 }
 
+impl Drop for MarkdownPreview {
+    fn drop(&mut self) {
+        self.cancel_parse();
+    }
+}
+
 impl Focusable for MarkdownPreview {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -357,6 +514,7 @@ impl Render for MarkdownPreview {
         self.estimated_block_height = window.rem_size() * 3.;
 
         let document = self.document.clone();
+        let rows = self.rows.clone();
         let font_family = self
             .font_family
             .clone()
@@ -364,9 +522,13 @@ impl Render for MarkdownPreview {
         let font_scale = self.font_scale;
         let base_dir = self.base_dir.clone();
         let is_empty = document.blocks().is_empty() && !self.is_parsing();
+        let cache = self.image_cache.clone();
+        if let Some(cache) = &cache {
+            cache.update(cx, |cache, _| cache.begin_frame());
+        }
+        let finish_cache = cache.clone();
         let theme = cx.theme();
-
-        div()
+        let content = div()
             .id("markdown-preview")
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus_handle)
@@ -405,13 +567,17 @@ impl Render for MarkdownPreview {
             })
             .when(!is_empty, |this| {
                 this.child(
-                    list(self.list_state.clone(), move |ix, window, cx| {
+                    list(self.list_state.clone(), move |ix, _, cx| {
+                        let Some(cache) = &cache else {
+                            return div().into_any_element();
+                        };
                         render_block(
-                            &document.blocks()[ix],
+                            &document.blocks()[rows.block_ix(ix)],
+                            rows.id(ix, &document),
+                            rows.list_items(ix),
                             base_dir.as_ref(),
-                            font_family.clone(),
-                            font_scale,
-                            window,
+                            cache,
+                            (font_family.clone(), font_scale),
                             cx,
                         )
                     })
@@ -419,7 +585,19 @@ impl Render for MarkdownPreview {
                     .pt_10()
                     .pb_16(),
                 )
-            })
+            });
+        content.when_some(finish_cache, |this, cache| {
+            this.child(
+                canvas(
+                    |_, _, _| {},
+                    move |_, _, window, cx| {
+                        cache.update(cx, |cache, cx| cache.finish_frame(window, cx));
+                    },
+                )
+                .absolute()
+                .size_0(),
+            )
+        })
     }
 }
 

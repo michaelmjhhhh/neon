@@ -1,0 +1,348 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 2109821..8e19c03 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -8488,6 +8488,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+ name = "workspace"
+ version = "0.2.0"
+ dependencies = [
++ "anyhow",
+  "gpui-kit",
+  "markdown 0.2.0",
+  "markdown_preview",
+diff --git a/crates/neon/Cargo.toml b/crates/neon/Cargo.toml
+index 7631e3b..3c26fed 100644
+--- a/crates/neon/Cargo.toml
++++ b/crates/neon/Cargo.toml
+@@ -5,6 +5,9 @@ version.workspace = true
+ license.workspace = true
+ publish.workspace = true
+ 
++[features]
++memory-bench = ["workspace/memory-bench"]
++
+ [dependencies]
+ gpui-kit.workspace = true
+ workspace.workspace = true
+diff --git a/crates/neon/src/main.rs b/crates/neon/src/main.rs
+index c19a635..c4e28ee 100644
+--- a/crates/neon/src/main.rs
++++ b/crates/neon/src/main.rs
+@@ -51,6 +51,16 @@ fn main() {
+         set_menus(cx);
+         cx.set_global(OpenWorkspaces::default());
+         cx.on_action(|_: &Quit, cx| cx.quit());
++        #[cfg(feature = "memory-bench")]
++        if let Some(bench) = workspace::MemoryBench::from_env() {
++            open_window_with_focus(None, WindowKind::Normal, false, cx);
++            let (window, workspace) = cx.global::<OpenWorkspaces>().0.last().cloned().unwrap();
++            window
++                .update(cx, |_, window, cx| bench.start(workspace, window, cx))
++                .ok();
++            return;
++        }
++
+         cx.activate(true);
+ 
+         if let Some(bench) = LatencyBench::from_env() {
+@@ -116,11 +126,16 @@ fn open_paths(paths: Vec<PathBuf>, cx: &mut App) {
+ }
+ 
+ fn open_window(path: Option<PathBuf>, kind: WindowKind, cx: &mut App) {
++    open_window_with_focus(path, kind, true, cx);
++}
++
++fn open_window_with_focus(path: Option<PathBuf>, kind: WindowKind, focus: bool, cx: &mut App) {
+     let bounds = Bounds::centered(None, size(gpui_kit::px(1200.), gpui_kit::px(800.)), cx);
+     let options = WindowOptions {
+         window_bounds: Some(WindowBounds::Windowed(bounds)),
+         window_min_size: Some(size(gpui_kit::px(840.), gpui_kit::px(560.))),
+         kind,
++        focus,
+         ..workspace::window_options()
+     };
+     let opened = gpui_kit::open_window(options, cx, |window, cx| {
+diff --git a/crates/workspace/Cargo.toml b/crates/workspace/Cargo.toml
+index 3b8f6e9..71b9626 100644
+--- a/crates/workspace/Cargo.toml
++++ b/crates/workspace/Cargo.toml
+@@ -5,10 +5,14 @@ version.workspace = true
+ license.workspace = true
+ publish.workspace = true
+ 
++[features]
++memory-bench = ["dep:anyhow"]
++
+ [dependencies]
+ gpui-kit = { workspace = true, features = ["profiler"] }
+ markdown_preview.workspace = true
+ tree-sitter = "0.26"
++anyhow = { workspace = true, optional = true }
+ 
+ [target.'cfg(target_os = "macos")'.dependencies]
+ objc2 = "0.6"
+diff --git a/crates/workspace/src/lib.rs b/crates/workspace/src/lib.rs
+index 584bf48..1c1040f 100644
+--- a/crates/workspace/src/lib.rs
++++ b/crates/workspace/src/lib.rs
+@@ -17,6 +17,8 @@ use gpui_kit::{App, KeyBinding, TitlebarOptions, WindowOptions, point, px};
+ 
+ pub use document_file::DocumentFile;
+ pub use latency_bench::LatencyBench;
++#[cfg(feature = "memory-bench")]
++pub use workspace::MemoryBench;
+ pub use workspace::{
+     CloseSettings, CloseWindow, LayoutMode, NewFile, Open, OpenFolder, OpenSettings, Quit,
+     RefreshFolder, Save, SaveAs, ShowEditor, ShowPreview, ShowSplit, ToggleSidebar, ToggleTheme,
+diff --git a/crates/workspace/src/workspace.rs b/crates/workspace/src/workspace.rs
+index aea9259..39900ec 100644
+--- a/crates/workspace/src/workspace.rs
++++ b/crates/workspace/src/workspace.rs
+@@ -39,6 +39,12 @@ use crate::scroll_metrics::ScrollMetrics;
+ use crate::settings::SettingsView;
+ use crate::theme::{self, Appearance};
+ 
++#[cfg(feature = "memory-bench")]
++#[path = "memory_bench.rs"]
++mod memory_bench;
++#[cfg(feature = "memory-bench")]
++pub use memory_bench::MemoryBench;
++
+ gpui_kit::actions!(
+     workspace,
+     [
+diff --git a/crates/workspace/src/memory_bench.rs b/crates/workspace/src/memory_bench.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/workspace/src/memory_bench.rs
+@@ -0,0 +1,230 @@
++//! Deterministic real-window workloads for `script/memory-bench`.
++//! The external runner samples OS memory at checkpoints and acknowledges each
++//! sample. Nothing in this module is compiled into the normal application.
++
++use std::io::Write as _;
++use std::path::PathBuf;
++use std::time::{Duration, Instant};
++
++use gpui_kit::{App, AsyncWindowContext, Keystroke, WeakEntity, Window};
++
++use super::{LayoutMode, Workspace};
++
++pub struct MemoryBench {
++    scenario: String,
++    fixtures: PathBuf,
++    control: PathBuf,
++}
++
++impl MemoryBench {
++    pub fn from_env() -> Option<Self> {
++        Some(Self {
++            scenario: std::env::var("NEON_MEMORY_BENCH").ok()?,
++            fixtures: std::env::var_os("NEON_MEMORY_FIXTURES")?.into(),
++            control: std::env::var_os("NEON_MEMORY_CONTROL")?.into(),
++        })
++    }
++
++    pub fn start(self, workspace: WeakEntity<Workspace>, window: &mut Window, cx: &mut App) {
++        window
++            .spawn(cx, async move |cx| {
++                if let Err(error) = self.run(&workspace, cx).await {
++                    eprintln!("NEON_MEMORY_ERROR\t{error}");
++                    cx.update(|_, cx| cx.quit()).ok();
++                }
++            })
++            .detach();
++    }
++
++    async fn run(
++        &self,
++        workspace: &WeakEntity<Workspace>,
++        cx: &mut AsyncWindowContext,
++    ) -> anyhow::Result<()> {
++        self.settle(workspace, cx).await?;
++        match self.scenario.as_str() {
++            "startup" => {
++                self.checkpoint("empty", workspace, cx).await?;
++                workspace.update_in(cx, |workspace, window, cx| {
++                    workspace.set_settings_open(true, window, cx)
++                })?;
++                self.settle(workspace, cx).await?;
++                self.checkpoint("settings", workspace, cx).await?;
++                workspace.update_in(cx, |workspace, window, cx| {
++                    workspace.set_settings_open(false, window, cx)
++                })?;
++                self.settle(workspace, cx).await?;
++                self.checkpoint("settings_closed", workspace, cx).await?;
++            }
++            "small" | "large" => {
++                self.open(&format!("{}.md", self.scenario), workspace, cx)
++                    .await?;
++                self.checkpoint("loaded", workspace, cx).await?;
++                self.type_text(workspace, cx).await?;
++                self.checkpoint("typed_split", workspace, cx).await?;
++                workspace.update_in(cx, |workspace, window, cx| {
++                    workspace.set_layout(LayoutMode::Editor, window, cx)
++                })?;
++                self.type_text(workspace, cx).await?;
++                self.checkpoint("typed_editor", workspace, cx).await?;
++                workspace.update_in(cx, |workspace, window, cx| {
++                    workspace.set_layout(LayoutMode::Preview, window, cx)
++                })?;
++                self.settle(workspace, cx).await?;
++                self.checkpoint("preview", workspace, cx).await?;
++                self.empty(workspace, cx).await?;
++                self.checkpoint("released", workspace, cx).await?;
++            }
++            "images" => {
++                for ix in 0..3 {
++                    self.open(&format!("image-{ix}.md"), workspace, cx).await?;
++                    // Decode/upload is asynchronous and independent of Markdown parsing.
++                    cx.background_executor().timer(Duration::from_secs(2)).await;
++                    self.checkpoint(&format!("image_{ix}"), workspace, cx)
++                        .await?;
++                }
++                self.empty(workspace, cx).await?;
++                self.checkpoint("released", workspace, cx).await?;
++            }
++            "blocks" => {
++                for name in ["list", "table", "code"] {
++                    self.open(&format!("{name}.md"), workspace, cx).await?;
++                    self.checkpoint(name, workspace, cx).await?;
++                }
++                self.empty(workspace, cx).await?;
++                self.checkpoint("released", workspace, cx).await?;
++            }
++            "folder" => {
++                self.open("folder", workspace, cx).await?;
++                self.checkpoint("loaded", workspace, cx).await?;
++            }
++            scenario => anyhow::bail!("unknown scenario: {scenario}"),
++        }
++        // Only weak handles are held here, so removing the window can reclaim
++        // the workspace and its tasks before the final process-level sample.
++        let control = self.control.join("closed.ack");
++        cx.update(|window, cx| {
++            cx.spawn(async move |cx| {
++                cx.background_executor().timer(Duration::from_secs(1)).await;
++                println!("NEON_MEMORY_CHECKPOINT\tclosed\t0\t0\t0\tclosed\tfalse");
++                std::io::stdout().flush().ok();
++                let until = Instant::now() + Duration::from_secs(30);
++                while !control.exists() && Instant::now() < until {
++                    cx.background_executor()
++                        .timer(Duration::from_millis(25))
++                        .await;
++                }
++                cx.update(|cx| cx.quit());
++            })
++            .detach();
++            window.remove_window();
++        })?;
++        Ok(())
++    }
++
++    async fn open(
++        &self,
++        name: &str,
++        workspace: &WeakEntity<Workspace>,
++        cx: &mut AsyncWindowContext,
++    ) -> anyhow::Result<()> {
++        let path = self.fixtures.join(name);
++        workspace.update_in(cx, |workspace, window, cx| {
++            workspace.open_path(path, window, cx)
++        })?;
++        self.settle(workspace, cx).await
++    }
++
++    async fn empty(
++        &self,
++        workspace: &WeakEntity<Workspace>,
++        cx: &mut AsyncWindowContext,
++    ) -> anyhow::Result<()> {
++        workspace.update_in(cx, |workspace, window, cx| {
++            workspace.set_layout(LayoutMode::Split, window, cx);
++            workspace.show_document(None, "", window, cx);
++        })?;
++        self.settle(workspace, cx).await
++    }
++
++    async fn type_text(
++        &self,
++        workspace: &WeakEntity<Workspace>,
++        cx: &mut AsyncWindowContext,
++    ) -> anyhow::Result<()> {
++        let before =
++            workspace.read_with(cx, |workspace, cx| workspace.editor.read(cx).text().len())?;
++        workspace.update_in(cx, |workspace, window, cx| {
++            workspace.focus_content(window, cx)
++        })?;
++        for _ in 0..40 {
++            cx.update(|window, cx| window.dispatch_keystroke(Keystroke::parse("x").unwrap(), cx))?;
++            cx.background_executor()
++                .timer(Duration::from_millis(50))
++                .await;
++        }
++        self.settle(workspace, cx).await?;
++        let after =
++            workspace.read_with(cx, |workspace, cx| workspace.editor.read(cx).text().len())?;
++        anyhow::ensure!(
++            after == before + 40,
++            "typing did not insert 40 bytes ({before} -> {after})"
++        );
++        Ok(())
++    }
++
++    async fn settle(
++        &self,
++        workspace: &WeakEntity<Workspace>,
++        cx: &mut AsyncWindowContext,
++    ) -> anyhow::Result<()> {
++        let until = Instant::now() + Duration::from_secs(30);
++        loop {
++            let ready = workspace.read_with(cx, |workspace, cx| {
++                !workspace.is_busy()
++                    && workspace.folder_task.is_none()
++                    && !workspace.preview.read(cx).is_parsing()
++            })?;
++            if ready {
++                break;
++            }
++            anyhow::ensure!(Instant::now() < until, "document did not settle");
++            cx.background_executor()
++                .timer(Duration::from_millis(25))
++                .await;
++        }
++        cx.background_executor().timer(Duration::from_secs(1)).await;
++        // A real draw makes the workload deterministic when the user briefly
++        // covers the benchmark window. Metal submission remains real.
++        cx.update(|window, cx| window.draw(cx).clear(cx))?;
++        Ok(())
++    }
++
++    async fn checkpoint(
++        &self,
++        name: &str,
++        workspace: &WeakEntity<Workspace>,
++        cx: &mut AsyncWindowContext,
++    ) -> anyhow::Result<()> {
++        let (bytes, blocks, layout) = workspace.read_with(cx, |workspace, cx| {
++            (
++                workspace.editor.read(cx).text().len(),
++                workspace.preview.read(cx).document().blocks().len(),
++                format!("{:?}", workspace.layout),
++            )
++        })?;
++        let (scale, active) =
++            cx.update(|window, _| (window.scale_factor(), window.is_window_active()))?;
++        println!("NEON_MEMORY_CHECKPOINT\t{name}\t{bytes}\t{blocks}\t{scale}\t{layout}\t{active}");
++        std::io::stdout().flush()?;
++        let acknowledgement = self.control.join(format!("{name}.ack"));
++        let until = Instant::now() + Duration::from_secs(30);
++        while !acknowledgement.exists() {
++            anyhow::ensure!(Instant::now() < until, "runner did not acknowledge {name}");
++            cx.background_executor()
++                .timer(Duration::from_millis(25))
++                .await;
++        }
++        Ok(())
++    }
++}

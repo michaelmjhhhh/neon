@@ -4,21 +4,24 @@
 //! are visible, so it must stay allocation-light: text is shared from the
 //! parsed document and GPUI caches its shaped lines across frames.
 
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _};
 use gpui_kit::{
-    AnyElement, App, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla,
+    AnyElement, App, ElementId, Entity, FontStyle, FontWeight, HighlightStyle, Hsla,
     InteractiveElement as _, InteractiveText, IntoElement, ObjectFit, ParentElement as _, Pixels,
     SharedString, StatefulInteractiveElement as _, StrikethroughStyle, Styled as _,
-    StyledImage as _, StyledText, UnderlineStyle, Window, div, img, prelude::FluentBuilder as _,
-    px, relative, rems,
+    StyledImage as _, StyledText, UnderlineStyle, div, img, prelude::FluentBuilder as _, px,
+    relative, rems,
 };
 use markdown::{
     Block, BlockKind, CodeBlock, ColumnAlignment, Heading, Image, InlineStyle, InlineText,
     MarkdownList, Table,
 };
+
+use crate::image_cache::PreviewImageCache;
 
 /// Width of the reading column, about 75 characters of body text. Long lines
 /// are harder to read than short ones.
@@ -26,23 +29,31 @@ const MAX_READING_WIDTH_REMS: f32 = 40.;
 
 pub(crate) fn render_block(
     block: &Block,
+    row_id: u64,
+    list_items: Option<Range<usize>>,
     base_dir: Option<&Arc<Path>>,
-    font_family: SharedString,
-    font_scale: f32,
-    _: &mut Window,
+    image_cache: &Entity<PreviewImageCache>,
+    typography: (SharedString, f32),
     cx: &mut App,
 ) -> AnyElement {
-    let mut renderer = BlockRenderer::new(base_dir, cx);
+    let (font_family, font_scale) = typography;
+    let mut renderer = BlockRenderer::new(base_dir, image_cache, cx);
     renderer.font_scale = font_scale;
-    let content = renderer.render_kind(block.kind());
+    let (content, continues_list) = match (block.kind(), list_items) {
+        (BlockKind::List(list), Some(items)) => {
+            let continues = items.end < list.items().len();
+            (renderer.render_list_items(list, items), continues)
+        }
+        (kind, _) => (renderer.render_kind(kind), false),
+    };
     // A heading sits closer to the text it introduces than to the text
     // before it, so each section reads as one group.
     let is_heading = matches!(block.kind(), BlockKind::Heading(_));
 
-    // The top-level block owns the id namespace for everything inside it, so
-    // nested ids only need to be unique within this one block.
+    // Each immutable row owns its child identity namespace. Chunked lists use
+    // content-derived row ids, so an unchanged chunk keeps its element state.
     div()
-        .id(("block", block.id().as_u64()))
+        .id(("block", row_id))
         .font_family(font_family)
         .text_size(rems(font_scale))
         .w_full()
@@ -53,7 +64,16 @@ pub(crate) fn render_block(
             div()
                 .w_full()
                 .max_w(rems(MAX_READING_WIDTH_REMS))
-                .map(|this| if is_heading { this.pb_2() } else { this.pb_4() })
+                .map(|this| {
+                    if continues_list {
+                        // This is the same gap as between items in one list.
+                        this.pb_1()
+                    } else if is_heading {
+                        this.pb_2()
+                    } else {
+                        this.pb_4()
+                    }
+                })
                 .child(content),
         )
         .into_any_element()
@@ -78,6 +98,7 @@ struct Palette {
 
 struct BlockRenderer<'a> {
     base_dir: Option<&'a Arc<Path>>,
+    image_cache: &'a Entity<PreviewImageCache>,
     palette: Palette,
     /// Counter for element ids inside the block. The block's content is
     /// immutable, so the same content always yields the same ids.
@@ -86,10 +107,15 @@ struct BlockRenderer<'a> {
 }
 
 impl<'a> BlockRenderer<'a> {
-    fn new(base_dir: Option<&'a Arc<Path>>, cx: &App) -> Self {
+    fn new(
+        base_dir: Option<&'a Arc<Path>>,
+        image_cache: &'a Entity<PreviewImageCache>,
+        cx: &App,
+    ) -> Self {
         let theme = cx.theme();
         Self {
             base_dir,
+            image_cache,
             palette: Palette {
                 foreground: theme.foreground,
                 muted: theme.muted,
@@ -238,6 +264,7 @@ impl<'a> BlockRenderer<'a> {
         };
         match resolve_image(image.url(), self.base_dir.map(|dir| &**dir)) {
             Some(source) => img(source)
+                .image_cache(self.image_cache)
                 .max_w_full()
                 .object_fit(ObjectFit::ScaleDown)
                 .with_fallback(fallback)
@@ -294,8 +321,12 @@ impl<'a> BlockRenderer<'a> {
     }
 
     fn render_list(&mut self, list: &MarkdownList) -> AnyElement {
-        let items: Vec<_> = list
-            .items()
+        self.render_list_items(list, 0..list.items().len())
+    }
+
+    fn render_list_items(&mut self, list: &MarkdownList, range: Range<usize>) -> AnyElement {
+        let first_item = range.start;
+        let items: Vec<_> = list.items()[range]
             .iter()
             .enumerate()
             .map(|(ix, item)| {
@@ -303,7 +334,10 @@ impl<'a> BlockRenderer<'a> {
                     (Some(checked), _) => self.render_task_marker(checked),
                     (None, Some(start)) => div()
                         .text_color(self.palette.muted_foreground)
-                        .child(SharedString::from(format!("{}.", start + ix as u64)))
+                        .child(SharedString::from(format!(
+                            "{}.",
+                            start + (first_item + ix) as u64
+                        )))
                         .into_any_element(),
                     (None, None) => div()
                         .text_color(self.palette.muted_foreground)

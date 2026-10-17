@@ -15,7 +15,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 out="$root/output/latency"
 mkdir -p "$out"
 
-cargo build --release --manifest-path "$root/Cargo.toml" >&2
+cargo build --release --features diagnostics --manifest-path "$root/Cargo.toml" >&2
 
 for run in $(seq 1 "$runs"); do
   NEON_LATENCY_BENCH=1 \
