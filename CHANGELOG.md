@@ -33,6 +33,10 @@ Groups, in this order:
 
 - Install instructions for allowing the first launch with one Terminal command instead of System Settings.
 
+### Changed
+
+- Lighten the dark theme to match Zed's One Dark: blue-gray surfaces instead of near-black, with comments and link addresses brightened to stay readable.
+
 ## [0.3.0] - 2026-10-17
 
 ### Added
