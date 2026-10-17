@@ -24,6 +24,7 @@ Neon is a Markdown editor built on [GPUI](https://github.com/zed-industries/zed/
 ## Features
 
 - **Editor** with Markdown syntax highlighting.
+- **Slash commands**: type `/` at the start of a line to insert a list, task list, code block, link, image or table. `/table 4x5` sets the columns and rows; `/bullet 5` sets the number of items.
 - **Live preview**: headings, emphasis, links, task lists, nested and numbered lists, block quotes, code blocks, tables with column alignment, images, footnotes and YAML front matter.
 - **Three layouts**: Editor, Split and Preview. In Split, the preview follows the cursor.
 - **Folder sidebar** to browse nested Markdown files, create new ones and refresh the tree.
