@@ -14,7 +14,7 @@
 
 ## Tests
 
-- Do not NEVER EVER write any unit tests for UI changes.
+- Do not NEVER EVER write any unit tests for UI changes. If you are a codex agent, you may just use computer use to test the UI. 
 
 ## Git
 
@@ -26,6 +26,7 @@
 
 ## Changlog
 
+- Always update the changelog after you made changes. 
 - Follow the structure in `CHANGELOG.md`.
 
 ## User Override
