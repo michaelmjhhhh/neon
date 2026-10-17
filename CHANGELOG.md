@@ -29,6 +29,8 @@ Groups, in this order:
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-17
+
 ### Added
 
 - Neon light and dark themes: graphite surfaces with the icon's orange reserved for the caret, selection, unsaved state and checked tasks.
