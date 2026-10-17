@@ -254,6 +254,10 @@ struct Report {
     refresh_hz: Option<f64>,
     /// Dispatch start to frame submitted.
     latency: Stats,
+    /// Dispatch start to the first refresh after the frame was submitted:
+    /// when the frame can first reach the screen. Display scanout and
+    /// compositor delays after that are the same for every frame.
+    on_screen: Stats,
     /// Main-thread time spent on the keystroke: dispatch, then the frame's
     /// draw and submission. Independent of the vsync phase.
     work: Stats,
@@ -261,6 +265,8 @@ struct Report {
     dispatch: Stats,
     /// Every frame drawn while typing.
     draw: Stats,
+    /// Submitting each frame to the GPU, including waits for a drawable.
+    present: Stats,
     draws_per_keystroke: f64,
     /// Share of keystrokes whose dispatch first had to draw a pending frame,
     /// because the window was already invalidated when the key arrived.
@@ -298,6 +304,8 @@ impl Report {
         let refresh = draws.iter().find_map(|draw| draw.refresh_interval);
 
         let ms = |d: Duration| d.as_secs_f64() * 1000.;
+        let ticks = refresh.map(|refresh| vsync_ticks(&draws, refresh));
+        let mut on_screen = Vec::new();
         let mut latency = Vec::new();
         let mut work = Vec::new();
         let mut missed = 0;
@@ -316,6 +324,11 @@ impl Report {
             };
             let total = present.present_end.duration_since(sample.start);
             latency.push(ms(total));
+            if let (Some(refresh), Some(ticks)) = (refresh, &ticks)
+                && let Some(refresh_at) = next_refresh(ticks, refresh, present.present_end)
+            {
+                on_screen.push(ms(refresh_at.duration_since(sample.start)));
+            }
             work.push(ms(sample.dispatched.duration_since(sample.start)
                 + draw.draw_duration()
                 + present.present_duration()));
@@ -353,6 +366,7 @@ impl Report {
                 .count(),
             refresh_hz: refresh.map(|interval| 1. / interval.as_secs_f64()),
             latency: Stats::new(latency),
+            on_screen: Stats::new(on_screen),
             work: Stats::new(work),
             dispatch: Stats::new(
                 samples
@@ -361,6 +375,12 @@ impl Report {
                     .collect(),
             ),
             draw: Stats::new(draws.iter().map(|draw| ms(draw.draw_duration())).collect()),
+            present: Stats::new(
+                presents
+                    .iter()
+                    .map(|present| ms(present.present_duration()))
+                    .collect(),
+            ),
             draws_per_keystroke: draws.len() as f64 / samples.len().max(1) as f64,
             forced_draw_percent: forced as f64 * 100. / samples.len().max(1) as f64,
             phases,
@@ -398,10 +418,12 @@ impl Report {
             .ok();
         }
         writeln!(text, "  (milliseconds)").ok();
+        row(&mut text, "key -> next refresh", &self.on_screen);
         row(&mut text, "key -> frame submitted", &self.latency);
         row(&mut text, "main-thread work", &self.work);
         row(&mut text, "key dispatch", &self.dispatch);
         row(&mut text, "frame draw (all)", &self.draw);
+        row(&mut text, "frame submit (all)", &self.present);
         writeln!(
             text,
             "  draws per keystroke {:.2}, keystrokes later than one refresh {:.1}%",
@@ -419,17 +441,19 @@ impl Report {
 
     fn to_json(&self) -> String {
         format!(
-            r#"{{"label":"{}","keystrokes":{},"matched":{},"inactive":{},"refresh_hz":{},"latency_ms":{},"work_ms":{},"dispatch_ms":{},"draw_ms":{},"draws_per_keystroke":{:.3},"missed_refresh_percent":{:.2},"forced_draw_percent":{:.2},"phases_ms":{{"render":{:.3},"layout":{:.3},"paint":{:.3}}},"latency_samples_ms":[{}]}}"#,
+            r#"{{"label":"{}","keystrokes":{},"matched":{},"inactive":{},"refresh_hz":{},"on_screen_ms":{},"latency_ms":{},"work_ms":{},"dispatch_ms":{},"draw_ms":{},"present_ms":{},"draws_per_keystroke":{:.3},"missed_refresh_percent":{:.2},"forced_draw_percent":{:.2},"phases_ms":{{"render":{:.3},"layout":{:.3},"paint":{:.3}}},"latency_samples_ms":[{}]}}"#,
             self.label.replace('"', "'"),
             self.keystrokes,
             self.matched,
             self.inactive,
             self.refresh_hz
                 .map_or_else(|| "null".into(), |hz| format!("{hz:.1}")),
+            self.on_screen.json(),
             self.latency.json(),
             self.work.json(),
             self.dispatch.json(),
             self.draw.json(),
+            self.present.json(),
             self.draws_per_keystroke,
             self.missed_refresh_percent,
             self.forced_draw_percent,
@@ -443,6 +467,54 @@ impl Report {
                 .join(","),
         ) + "\n"
     }
+}
+
+/// Display-link frame signals, which arrive at the display's refresh.
+///
+/// Frames drawn outside the display link also carry a signal time, at an
+/// arbitrary phase. The refresh signals share one phase modulo the refresh
+/// interval, so keep the signals in the most common phase.
+fn vsync_ticks(draws: &[gpui_kit::FrameTiming], refresh: Duration) -> Vec<Instant> {
+    const BIN: f64 = 0.000_25;
+    let signals: Vec<Instant> = draws.iter().filter_map(|draw| draw.signal_at).collect();
+    let Some(&origin) = signals.first() else {
+        return Vec::new();
+    };
+    let period = refresh.as_secs_f64();
+    let phase = |at: Instant| {
+        let since = if at >= origin {
+            at.duration_since(origin).as_secs_f64()
+        } else {
+            -origin.duration_since(at).as_secs_f64()
+        };
+        since.rem_euclid(period)
+    };
+    let bins = (period / BIN).ceil() as usize;
+    let mut counts = vec![0usize; bins];
+    for &at in &signals {
+        counts[(phase(at) / BIN) as usize % bins] += 1;
+    }
+    let Some(mode) = (0..bins).max_by_key(|&bin| counts[bin]) else {
+        return Vec::new();
+    };
+    let center = (mode as f64 + 0.5) * BIN;
+    let mut ticks: Vec<Instant> = signals
+        .into_iter()
+        .filter(|&at| {
+            let distance = (phase(at) - center).abs();
+            distance.min(period - distance) <= 0.000_75
+        })
+        .collect();
+    ticks.sort();
+    ticks
+}
+
+/// The first refresh at or after `at`, from the nearest earlier tick.
+fn next_refresh(ticks: &[Instant], refresh: Duration, at: Instant) -> Option<Instant> {
+    let ix = ticks.partition_point(|&tick| tick <= at);
+    let tick = *ticks.get(ix.checked_sub(1)?)?;
+    let periods = (at.duration_since(tick).as_secs_f64() / refresh.as_secs_f64()).ceil();
+    Some(tick + refresh.mul_f64(periods))
 }
 
 /// A large, varied Markdown document, and the 0-based line to type at: the
