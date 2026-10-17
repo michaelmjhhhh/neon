@@ -1,6 +1,7 @@
 //! Slash commands: typing `/` on an empty line opens a menu of Markdown
 //! templates, such as a list or a table, and accepting one inserts it in place
-//! of the command.
+//! of the command. Tab instead completes the command's name, so an argument
+//! can be typed before the template is inserted.
 
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
@@ -233,6 +234,16 @@ fn matching(query: &str) -> Vec<Match> {
         .collect()
 }
 
+/// The command written out for `template`, as Tab completes it. Without an
+/// argument a space follows the name, ready for one; an argument typed in
+/// part is filled in, so `/table 4` becomes `/table 4x3`.
+fn command_line(command: Command, template: &Template) -> String {
+    match &template.argument {
+        Some(argument) => format!("/{} {argument}", command.name()),
+        None => format!("/{} ", command.name()),
+    }
+}
+
 /// The menu's preview of a template: its Markdown source, cut short when
 /// long, and how to give the command an argument.
 fn preview(command: Command, template: &Template) -> Documentation {
@@ -319,6 +330,19 @@ struct Offered {
     start: usize,
     text: String,
     selection: Range<usize>,
+    /// What replaces `text` when the template was accepted with Tab: the
+    /// command written out, such as `/table `, ready for an argument.
+    command: String,
+}
+
+/// What to do after an edit inserted one of the offered templates.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Insertion {
+    /// Accepted with Enter: select this range of the template.
+    Select(Range<usize>),
+    /// Accepted with Tab: replace the template at `range` with `command` and
+    /// open the menu again.
+    Complete { range: Range<usize>, command: String },
 }
 
 /// The completion provider behind the slash menu.
@@ -333,22 +357,43 @@ pub(crate) struct SlashCommands {
     /// stays closed until a `/` is typed again.
     dismissed: Cell<Option<usize>>,
     offered: RefCell<Vec<Offered>>,
+    /// Whether the next accepted template completes its command instead.
+    completing: Cell<bool>,
 }
 
 impl SlashCommands {
-    /// The range to select after an edit, when the edit inserted one of the
-    /// offered templates and left the cursor at its end.
-    pub(crate) fn take_selection(&self, text: &Rope, cursor: usize) -> Option<Range<usize>> {
+    /// What to do after an edit, when the edit inserted one of the offered
+    /// templates and left the cursor at its end.
+    pub(crate) fn take_insertion(&self, text: &Rope, cursor: usize) -> Option<Insertion> {
         let mut offered = self.offered.borrow_mut();
-        let selection = offered.iter().find_map(|offered| {
+        let insertion = offered.iter().find_map(|offered| {
             let end = offered.start + offered.text.len();
             (end == cursor && text.slice(offered.start..end) == offered.text.as_str()).then(|| {
-                offered.start + offered.selection.start..offered.start + offered.selection.end
+                if self.completing.get() {
+                    Insertion::Complete {
+                        range: offered.start..end,
+                        command: offered.command.clone(),
+                    }
+                } else {
+                    Insertion::Select(
+                        offered.start + offered.selection.start
+                            ..offered.start + offered.selection.end,
+                    )
+                }
             })
         })?;
         offered.clear();
         self.active.set(false);
-        Some(selection)
+        self.completing.set(false);
+        Some(insertion)
+    }
+
+    /// Make the template accepted next complete its command instead, when
+    /// the menu has templates on offer. Returns whether it does.
+    pub(crate) fn complete_next(&self) -> bool {
+        let offered = !self.offered.borrow().is_empty();
+        self.completing.set(offered);
+        offered
     }
 
     /// Whether an edit the menu did not see, such as a deletion, left the
@@ -365,6 +410,7 @@ impl SlashCommands {
             offered.clear();
             self.active.set(false);
         }
+        self.completing.set(false);
     }
 
     /// The menu items for the slash command ending at `offset`, or `None`
@@ -409,11 +455,15 @@ impl SlashCommands {
                     };
                     let indent = format!("\n{}", invocation.indent);
                     let new_text = format!("{prefix}{}", template.text.replace('\n', &indent));
+                    // The text from `start` up to the `/` stays as it was.
+                    let kept = text.slice(start..invocation.start).to_string();
+                    let command = format!("{kept}{}", command_line(command, &template));
                     let selection = indented(&template.text, template.selection, invocation.indent);
                     offered.push(Offered {
                         start,
                         text: new_text.clone(),
                         selection: selection.start + prefix.len()..selection.end + prefix.len(),
+                        command,
                     });
                     CompletionItem {
                         label,
@@ -446,6 +496,7 @@ impl CompletionProvider for SlashCommands {
         _: &mut App,
     ) -> Task<Result<CompletionResponse>> {
         self.requested_at.set(Some(offset));
+        self.completing.set(false);
         let items = self.items_at(text, offset);
         self.active.set(items.is_some());
         if items.is_none() {
@@ -561,6 +612,38 @@ mod tests {
         let text = Rope::from("```\n/tab\n```\n/tab");
         assert!(in_code_block(&text, 1));
         assert!(!in_code_block(&text, 3));
+    }
+
+    #[test]
+    fn tab_writes_out_the_command() {
+        let line = |query: &str| {
+            matching(query)
+                .into_iter()
+                .map(|m| command_line(m.command, &m.template))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(line("ta"), ["/table "]);
+        assert_eq!(line("table 4"), ["/table 4x3"]);
+        assert_eq!(line("link "), ["/link "]);
+    }
+
+    #[test]
+    fn tab_replaces_the_template_with_its_command() {
+        let commands = SlashCommands::default();
+        let typed = Rope::from("  /ta");
+        let items = commands.items_at(&typed, typed.len()).unwrap();
+        let Some(CompletionTextEdit::Edit(edit)) = &items[0].text_edit else {
+            unreachable!()
+        };
+        let text = Rope::from(format!("  {}", edit.new_text).as_str());
+        assert!(commands.complete_next());
+        assert_eq!(
+            commands.take_insertion(&text, text.len()),
+            Some(Insertion::Complete {
+                range: 2..text.len(),
+                command: "/table ".into(),
+            })
+        );
     }
 
     #[test]

@@ -13,7 +13,7 @@ use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::empty::{
     Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
 };
-use gpui_kit::component::input::{EditorState, Escape, InputEvent};
+use gpui_kit::component::input::{EditorState, Enter, Escape, IndentInline, InputEvent};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::notification::Notification;
@@ -38,7 +38,7 @@ use crate::editor_pane::EditorPane;
 use crate::present_now::{self, NativeView};
 use crate::scroll_metrics::ScrollMetrics;
 use crate::settings::SettingsView;
-use crate::slash_commands::SlashCommands;
+use crate::slash_commands::{Insertion, SlashCommands};
 use crate::theme::{self, Appearance};
 use crate::word_count::WordCount;
 
@@ -378,11 +378,22 @@ impl Workspace {
         // Cloning the rope is O(1); the preview flattens it off the UI thread.
         let source = editor.read(cx).text().clone();
         let cursor = editor.read(cx).cursor();
-        if let Some(selection) = self.slash_commands.take_selection(&source, cursor) {
-            editor.update(cx, |editor, cx| editor.set_selected_range(selection, cx));
-        } else if self.slash_commands.needs_refresh(cursor) {
-            // A deletion closes the menu without asking for a new one.
-            editor.update(cx, |editor, cx| editor.show_completions(window, cx));
+        match self.slash_commands.take_insertion(&source, cursor) {
+            Some(Insertion::Select(selection)) => {
+                editor.update(cx, |editor, cx| editor.set_selected_range(selection, cx));
+            }
+            Some(Insertion::Complete { range, command }) => {
+                editor.update(cx, |editor, cx| {
+                    editor.set_selected_range(range, cx);
+                    editor.replace(command, window, cx);
+                    editor.show_completions(window, cx);
+                });
+            }
+            None if self.slash_commands.needs_refresh(cursor) => {
+                // A deletion closes the menu without asking for a new one.
+                editor.update(cx, |editor, cx| editor.show_completions(window, cx));
+            }
+            None => {}
         }
         self.word_count
             .update(cx, |count, cx| count.set_source(source.clone(), cx));
@@ -1502,6 +1513,20 @@ impl Render for Workspace {
             .track_focus(&self.focus_handle)
             .capture_action(cx.listener(|this, _: &Escape, _, _| {
                 this.slash_commands.dismiss();
+            }))
+            .capture_action(cx.listener(|this, _: &IndentInline, window, cx| {
+                // Tab accepts the highlighted template like Enter, through the
+                // menu, then writes out its command in place of the template.
+                if this.editor.read(cx).completion_menu_state().open
+                    && this.slash_commands.complete_next()
+                {
+                    cx.stop_propagation();
+                    let enter = Enter {
+                        secondary: false,
+                        shift: false,
+                    };
+                    window.dispatch_action(Box::new(enter), cx);
+                }
             }))
             .on_action(cx.listener(Self::new_file))
             .on_action(cx.listener(Self::open))

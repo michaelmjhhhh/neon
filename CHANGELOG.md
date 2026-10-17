@@ -32,6 +32,7 @@ Groups, in this order:
 ### Added
 
 - Install instructions for allowing the first launch with one Terminal command instead of System Settings.
+- Tab in the slash command menu completes the highlighted command, such as `/table `, so you can add an argument before inserting it.
 - Export to HTML, PDF or Word from File > Export, set in the preview's font and size, with code in the monospace font. Local images are embedded, Word documents use Word's heading and list styles, and a failed export never leaves a partial file or damages an existing one.
 
 ### Changed
