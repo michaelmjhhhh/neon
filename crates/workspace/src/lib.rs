@@ -2,6 +2,7 @@
 
 mod document_file;
 mod folder;
+mod latency_bench;
 mod scroll_metrics;
 mod typography;
 mod workspace;
@@ -9,6 +10,7 @@ mod workspace;
 use gpui_kit::{App, KeyBinding};
 
 pub use document_file::DocumentFile;
+pub use latency_bench::LatencyBench;
 pub use workspace::{
     CloseWindow, LayoutMode, NewFile, Open, OpenFolder, Quit, RefreshFolder, Save, SaveAs,
     ShowEditor, ShowPreview, ShowSplit, ToggleSidebar, ToggleTheme, TypographySettings, Workspace,
