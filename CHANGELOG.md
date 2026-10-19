@@ -29,6 +29,8 @@ Groups, in this order:
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-19
+
 ### Fixed
 
 - The word count counts each Chinese and Japanese character as one word, instead of counting a whole unspaced sentence as one. Markdown markers such as `#` and `-` no longer count as words.
