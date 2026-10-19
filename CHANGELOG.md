@@ -37,6 +37,7 @@ Groups, in this order:
 ### Fixed
 
 - Saving with Cmd+S no longer reopens a hidden sidebar. Cmd+B still toggles it.
+- The input method's candidate window stays at the caret when typing fast, instead of lagging a few characters behind and jumping forward.
 
 ## [0.4.0] - 2026-10-17
 
