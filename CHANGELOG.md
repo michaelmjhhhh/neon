@@ -29,6 +29,10 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Added
+
+- Line numbers beside the editor can be hidden: Cmd+Shift+L toggles them in the current window, and Settings > Editor sets whether they show by default.
+
 ## [0.5.2] - 2026-10-19
 
 ### Fixed

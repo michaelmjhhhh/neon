@@ -1,5 +1,5 @@
-//! Settings that outlast the app: the appearance and each pane's typography,
-//! kept as JSON in the user's settings directory.
+//! Settings that outlast the app: the appearance, each pane's typography and
+//! the editor's line numbers, kept as JSON in the user's settings directory.
 
 use std::path::{Path, PathBuf};
 
@@ -8,12 +8,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::theme::{self, Appearance};
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Settings {
     pub(crate) appearance: Appearance,
     pub(crate) editor: PaneTypography,
     pub(crate) preview: PaneTypography,
+    /// Whether new windows show line numbers beside the editor.
+    pub(crate) line_numbers: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            appearance: Appearance::default(),
+            editor: PaneTypography::default(),
+            preview: PaneTypography::default(),
+            line_numbers: true,
+        }
+    }
 }
 
 /// A pane's chosen font and size; `None` keeps the default, so a default
@@ -122,6 +135,7 @@ mod tests {
                 size: Some(18),
             },
             preview: PaneTypography::default(),
+            line_numbers: false,
         };
         write(&path, &settings).unwrap();
         assert_eq!(read(&path), settings);
@@ -136,5 +150,6 @@ mod tests {
         assert_eq!(read(&path), Settings::default());
         std::fs::write(&path, r#"{"preview": {"size": 20}}"#).unwrap();
         assert_eq!(read(&path).preview.size, Some(20));
+        assert!(read(&path).line_numbers);
     }
 }
