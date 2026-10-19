@@ -901,7 +901,23 @@ impl Workspace {
         // create, so an empty field does not open with an error.
         let attempted = Rc::new(Cell::new(false));
         let this = cx.weak_entity();
-        let location: SharedString = format!("In “{}”", file_name(&directory)).into();
+        // The path from the open folder, so two folders with one name differ.
+        let location: SharedString = format!(
+            "In {}",
+            self.folder
+                .as_deref()
+                .and_then(|folder| {
+                    let relative = directory.strip_prefix(folder).ok()?;
+                    let parts = std::iter::once(file_name(folder)).chain(
+                        relative
+                            .components()
+                            .map(|part| part.as_os_str().to_string_lossy().into_owned()),
+                    );
+                    Some(parts.collect::<Vec<_>>().join(" / "))
+                })
+                .unwrap_or_else(|| file_name(&directory))
+        )
+        .into();
         window.open_dialog(cx, {
             let input = input.clone();
             move |dialog, window, cx| {
@@ -939,6 +955,9 @@ impl Workspace {
                             .child(Input::new(&input))
                             .child(
                                 div()
+                                    .min_w_0()
+                                    // A long path may shorten; an error may not.
+                                    .when(error.is_none(), |this| this.truncate())
                                     .text_xs()
                                     .text_color(if error.is_some() { danger } else { muted })
                                     .child(error.unwrap_or_else(|| location.clone())),
