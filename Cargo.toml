@@ -40,3 +40,8 @@ debug = "line-tables-only"
 # metal. patches/block is that release with only the type changed.
 [patch.crates-io]
 block = { path = "patches/block" }
+# gpui-pre-apple 0.3.9 resolves bold and italic only to faces a font family
+# ships, so a family without them (most CJK fonts have no italic, many no
+# bold) draws regular text. The patch synthesizes the missing face; see
+# patches/gpui-pre-apple/PATCH.md.
+gpui-pre-apple = { path = "patches/gpui-pre-apple" }
