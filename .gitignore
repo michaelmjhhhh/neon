@@ -2,3 +2,7 @@
 /dist
 .DS_Store
 /output
+
+# Signing keys must never be committed.
+*.p8
+*.p12

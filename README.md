@@ -38,13 +38,13 @@ Neon is a Markdown editor built on [GPUI](https://github.com/zed-industries/zed/
 1. Download `Neon-<version>-macos.dmg` from the [latest release](https://github.com/michaelmjhhhh/neon/releases/latest).
 2. Open it and drag **Neon** to Applications.
 
-Neon runs natively on Apple Silicon and Intel Macs, macOS 11 or later. It is not signed with an Apple Developer ID yet, so macOS blocks the first launch. To allow it, run this once in Terminal after step 2:
+Neon runs natively on Apple Silicon and Intel Macs, macOS 11 or later. It is signed with an Apple Developer ID and notarized by Apple, so macOS opens it without a warning.
+
+To check that a download is the one built by this repository's release workflow, compare it with `SHA256SUMS` from the same release, or run:
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/Neon.app
+gh attestation verify Neon-<version>-macos.dmg --repo michaelmjhhhh/neon
 ```
-
-This removes the quarantine flag the browser added to the download, so macOS opens Neon without asking. Alternatively, try to open Neon once, then go to **System Settings → Privacy & Security** and click **Open Anyway**.
 
 ## Keyboard shortcuts
 

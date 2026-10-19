@@ -1,6 +1,15 @@
 # Push a tag such as v0.1.0 to test, package and publish a macOS release.
 # Running it by hand from the Actions tab builds the same packages and keeps
 # them as a workflow artifact, without publishing anything.
+#
+# The app and DMG are signed with Developer ID and notarized. The signing
+# secrets live in the "release" environment, which only tags and main may use:
+#
+#   MACOS_CERTIFICATE_P12     base64 of the exported Developer ID .p12
+#   MACOS_CERTIFICATE_PASSWORD  password of that .p12
+#   NOTARY_KEY_P8             base64 of the App Store Connect API key .p8
+#   NOTARY_KEY_ID             its key ID
+#   NOTARY_ISSUER_ID          its issuer ID
 name: Release
 
 on:
@@ -10,6 +19,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -19,9 +30,10 @@ jobs:
   macos:
     name: macOS universal
     runs-on: macos-15
+    environment: release
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Check the tag matches the version
         if: startsWith(github.ref, 'refs/tags/')
@@ -46,20 +58,80 @@ jobs:
       - name: Make sure the Metal compiler is available
         run: xcrun -f metal || xcodebuild -downloadComponent MetalToolchain
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Test
         run: cargo test --workspace --locked
 
-      - name: Build Neon.app, DMG and ZIP
+      # Compile before any secret is on the runner, so dependency build
+      # scripts never run next to the signing key. The signed run below
+      # reuses these binaries without compiling again.
+      - name: Build Neon.app unsigned
         run: script/bundle-mac
 
-      - uses: actions/upload-artifact@v4
+      - name: Import the signing certificate and notary key
+        id: signing
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+        run: |
+          umask 077
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password=$(openssl rand -hex 32)
+          echo "::add-mask::$keychain_password"
+          printf %s "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          printf %s "$NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$keychain_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain"
+          identity=$(security find-identity -v -p codesigning "$keychain" \
+            | sed -n 's/.*"\(Developer ID Application: .*\)"$/\1/p' | head -1)
+          if [ -z "$identity" ]; then
+            echo "::error::No Developer ID Application identity in MACOS_CERTIFICATE_P12"
+            exit 1
+          fi
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+
+      - name: Sign, notarize and package Neon.app, DMG and ZIP
+        env:
+          NEON_SIGNING_IDENTITY: ${{ steps.signing.outputs.identity }}
+          NEON_NOTARY_KEY: ${{ runner.temp }}/notary.p8
+          NEON_NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NEON_NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: script/bundle-mac
+
+      # Runs before any action's post step, so nothing later sees the key.
+      - name: Remove the signing keychain and notary key
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/certificate.p12"
+
+      - name: Write SHA-256 checksums
+        working-directory: dist
+        run: shasum -a 256 Neon-*.dmg Neon-*.zip | tee SHA256SUMS
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/Neon-*.dmg
+            dist/Neon-*.zip
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: neon-macos
           path: |
             dist/Neon-*.dmg
             dist/Neon-*.zip
+            dist/SHA256SUMS
           if-no-files-found: error
 
       - name: Publish the GitHub release
@@ -74,9 +146,9 @@ jobs:
             echo
             echo "Download \`Neon-${GITHUB_REF_NAME#v}-macos.dmg\`, open it and drag Neon to Applications. It runs natively on Apple Silicon and Intel Macs, macOS 11 or later."
             echo
-            echo "Neon is not signed with an Apple Developer ID yet, so macOS blocks the first launch. Try to open Neon once, then go to System Settings → Privacy & Security and click **Open Anyway**."
+            echo "Neon is signed with an Apple Developer ID and notarized by Apple. To check a download, compare it with \`SHA256SUMS\`, or run \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."
           } > notes.md
-          gh release create "$GITHUB_REF_NAME" dist/Neon-*.dmg dist/Neon-*.zip \
+          gh release create "$GITHUB_REF_NAME" dist/Neon-*.dmg dist/Neon-*.zip dist/SHA256SUMS \
             --title "Neon ${GITHUB_REF_NAME#v}" \
             --notes-file notes.md \
             --verify-tag

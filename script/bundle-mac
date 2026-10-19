@@ -4,10 +4,21 @@
 #   script/bundle-mac            universal binary (Apple Silicon + Intel)
 #   script/bundle-mac --native   this machine's architecture only, faster
 #
-# The app is ad-hoc signed, which lets it run but is not a Developer ID
-# signature: on another Mac, Gatekeeper asks the user to approve it once.
-# Set NEON_SIGNING_IDENTITY to a "Developer ID Application: …" identity in the
-# keychain to sign with it instead.
+# By default the app is ad-hoc signed, which lets it run but is not a Developer
+# ID signature: on another Mac, Gatekeeper asks the user to approve it once.
+#
+# To release, sign with Developer ID and notarize:
+#
+#   NEON_SIGNING_IDENTITY   a "Developer ID Application: …" identity in the
+#                           keychain. Signs the app and the DMG.
+#   NEON_NOTARY_PROFILE     a notarytool keychain profile, made with
+#                           `xcrun notarytool store-credentials`, or instead
+#   NEON_NOTARY_KEY, NEON_NOTARY_KEY_ID, NEON_NOTARY_ISSUER
+#                           an App Store Connect API key (.p8 path), its key
+#                           ID and issuer ID.
+#
+# With credentials set, the DMG is notarized and the ticket is stapled to both
+# the DMG and the app, so they open offline without a Gatekeeper prompt.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -24,6 +35,10 @@ version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 bundle_id="io.github.michaelmjhhhh.neon"
 dist="dist"
 app="$dist/Neon.app"
+
+# Rewrite source paths baked into the binary (panic messages, line tables) so
+# they do not reveal the build machine's home directory or checkout location.
+export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=~ --remap-path-prefix=$PWD=."
 
 echo "Building Neon $version"
 rm -rf "$dist"
@@ -110,16 +125,52 @@ else
 fi
 codesign --verify --strict "$app"
 
+notary_args=()
+if [ -n "${NEON_NOTARY_PROFILE:-}" ]; then
+    notary_args=(--keychain-profile "$NEON_NOTARY_PROFILE")
+elif [ -n "${NEON_NOTARY_KEY:-}" ]; then
+    notary_args=(--key "$NEON_NOTARY_KEY" --key-id "${NEON_NOTARY_KEY_ID:?}" --issuer "${NEON_NOTARY_ISSUER:?}")
+fi
+if [ ${#notary_args[@]} -gt 0 ] && [ "$identity" = "-" ]; then
+    echo "notarization needs NEON_SIGNING_IDENTITY" >&2
+    exit 1
+fi
+
 echo "Packaging"
 zip_name="Neon-$version-macos.zip"
 dmg_name="Neon-$version-macos.dmg"
-ditto -c -k --keepParent "$app" "$dist/$zip_name"
 
 staging=$(mktemp -d)
 trap 'rm -rf "$staging"' EXIT
 cp -R "$app" "$staging/"
 ln -s /Applications "$staging/Applications"
 hdiutil create -quiet -volname "Neon" -srcfolder "$staging" -ov -format UDZO "$dist/$dmg_name"
+
+if [ "$identity" != "-" ]; then
+    codesign --force --timestamp --sign "$identity" "$dist/$dmg_name"
+fi
+
+# Notarizing the DMG also registers the app inside it, so one submission
+# covers both. Stapling attaches the ticket so Gatekeeper needs no network.
+if [ ${#notary_args[@]} -gt 0 ]; then
+    echo "Notarizing"
+    xcrun notarytool submit "$dist/$dmg_name" "${notary_args[@]}" --wait --timeout 30m \
+        --output-format json > "$staging/notary.json" || true
+    id=$(plutil -extract id raw "$staging/notary.json" 2>/dev/null || true)
+    status=$(plutil -extract status raw "$staging/notary.json" 2>/dev/null || true)
+    if [ "$status" != "Accepted" ]; then
+        echo "notarization failed: ${status:-no response}" >&2
+        cat "$staging/notary.json" >&2
+        [ -n "$id" ] && xcrun notarytool log "$id" "${notary_args[@]}" >&2
+        exit 1
+    fi
+    xcrun stapler staple -q "$dist/$dmg_name"
+    xcrun stapler staple -q "$app"
+    spctl --assess --type execute "$app"
+    spctl --assess --type open --context context:primary-signature "$dist/$dmg_name"
+fi
+
+ditto -c -k --keepParent "$app" "$dist/$zip_name"
 
 echo
 echo "Done:"
