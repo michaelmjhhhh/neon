@@ -35,6 +35,7 @@ use markdown_preview::MarkdownPreview;
 use crate::KEY_CONTEXT;
 use crate::document_file::DocumentFile;
 use crate::editor_pane::EditorPane;
+use crate::list_continuation;
 use crate::present_now::{self, NativeView};
 use crate::scroll_metrics::ScrollMetrics;
 use crate::settings::SettingsView;
@@ -858,6 +859,31 @@ impl Workspace {
         .detach();
     }
 
+    /// Start the next list item when Enter ends one in the editor, in place of
+    /// the editor's plain newline.
+    fn continue_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let editor = self.editor.read(cx);
+        if self.is_loading()
+            || !editor.focus_handle(cx).is_focused(window)
+            || editor.completion_menu_state().open
+        {
+            return;
+        }
+        let selection = editor.selected_range();
+        if !selection.is_empty() {
+            return;
+        }
+        let Some((range, text)) = list_continuation::on_enter(editor.text(), selection.start)
+        else {
+            return;
+        };
+        cx.stop_propagation();
+        self.editor.update(cx, |editor, cx| {
+            editor.set_selected_range(range, cx);
+            editor.replace(text, window, cx);
+        });
+    }
+
     fn toggle_sidebar(&mut self, _: &ToggleSidebar, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_visible = !self.sidebar_visible;
         if !self.sidebar_visible {
@@ -1536,6 +1562,11 @@ impl Render for Workspace {
                         shift: false,
                     };
                     window.dispatch_action(Box::new(enter), cx);
+                }
+            }))
+            .capture_action(cx.listener(|this, enter: &Enter, window, cx| {
+                if !enter.shift && !enter.secondary {
+                    this.continue_list(window, cx);
                 }
             }))
             .on_action(cx.listener(Self::new_file))

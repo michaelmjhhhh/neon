@@ -6,6 +6,7 @@ mod folder;
 mod highlighter;
 #[cfg(feature = "diagnostics")]
 mod latency_bench;
+mod list_continuation;
 mod present_now;
 mod scroll_metrics;
 mod settings;

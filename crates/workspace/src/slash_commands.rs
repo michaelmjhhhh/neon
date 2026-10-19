@@ -294,7 +294,7 @@ fn invocation(line_before_cursor: &str, line_start: usize) -> Option<Invocation<
 
 /// Whether line `row` of `text` is inside a fenced code block, where `/` is
 /// code rather than a command.
-fn in_code_block(text: &Rope, row: usize) -> bool {
+pub(crate) fn in_code_block(text: &Rope, row: usize) -> bool {
     let mut fence: Option<(char, usize)> = None;
     for line in text.iter_lines().take(row) {
         let mut chars = line
