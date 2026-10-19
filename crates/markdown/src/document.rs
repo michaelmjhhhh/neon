@@ -106,7 +106,7 @@ pub struct DocumentStats {
 impl DocumentStats {
     fn measure(source: &str) -> Self {
         Self {
-            words: source.split_whitespace().count(),
+            words: crate::count_words(source),
             lines: source.lines().count().max(1),
         }
     }
