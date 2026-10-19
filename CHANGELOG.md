@@ -29,6 +29,10 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Fixed
+
+- Saving with Cmd+S no longer reopens a hidden sidebar. Cmd+B still toggles it.
+
 ## [0.4.0] - 2026-10-17
 
 ### Added

@@ -296,7 +296,7 @@ impl Workspace {
             return;
         }
         if path.is_dir() {
-            self.load_folder(path, window, cx);
+            self.load_folder(path, true, window, cx);
             return;
         }
         let read = cx.background_spawn({
@@ -711,14 +711,24 @@ impl Workspace {
                 return;
             };
             if let Some(path) = paths.into_iter().next() {
-                this.update_in(cx, |this, window, cx| this.load_folder(path, window, cx))
-                    .ok();
+                this.update_in(cx, |this, window, cx| {
+                    this.load_folder(path, true, window, cx)
+                })
+                .ok();
             }
         })
         .detach();
     }
 
-    fn load_folder(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    /// Scan `path` into the sidebar tree. `reveal` shows a hidden sidebar:
+    /// opening a folder should, but a refresh after a save should not.
+    fn load_folder(
+        &mut self,
+        path: PathBuf,
+        reveal: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let scan = cx.background_spawn({
             let path = path.clone();
             async move {
@@ -737,7 +747,7 @@ impl Workspace {
                             this.expanded_folders.clear();
                         }
                         this.folder = Some(path);
-                        this.sidebar_visible = true;
+                        this.sidebar_visible |= reveal;
                         let selected = this
                             .document
                             .path()
@@ -773,7 +783,7 @@ impl Workspace {
 
     fn refresh_folder(&mut self, _: &RefreshFolder, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(path) = self.folder.clone() {
-            self.load_folder(path, window, cx);
+            self.load_folder(path, false, window, cx);
         }
     }
 
