@@ -102,7 +102,10 @@ mod tests {
     fn counts_each_chinese_and_japanese_character() {
         assert_eq!(count_words("权力结构"), 4);
         assert_eq!(count_words("鲁迅：《孔乙己》《药》"), 6);
-        assert_eq!(count_words("福克纳:《献给艾米丽的一朵玫瑰花》《烧马棚》"), 17);
+        assert_eq!(
+            count_words("福克纳:《献给艾米丽的一朵玫瑰花》《烧马棚》"),
+            17
+        );
         assert_eq!(count_words("日本語のテキスト"), 8);
         assert_eq!(count_words("学习Rust语言"), 5);
     }

@@ -44,7 +44,7 @@ use crate::inline_format::{self, Style};
 use crate::list_continuation;
 use crate::present_now::{self, NativeView};
 use crate::scroll_metrics::ScrollMetrics;
-use crate::settings::SettingsView;
+use crate::settings::{LineNumbersChanged, SettingsView};
 use crate::slash_commands::{Insertion, SlashCommands};
 use crate::theme::{self, Appearance};
 use crate::word_count::WordCount;
@@ -66,6 +66,7 @@ gpui_kit::actions!(
         OpenSettings,
         CloseSettings,
         ToggleSidebar,
+        ToggleLineNumbers,
         ToggleBold,
         ToggleItalic,
         Save,
@@ -136,6 +137,9 @@ pub struct Workspace {
     /// open document: a folder just created.
     select_after_scan: Option<SharedString>,
     sidebar_visible: bool,
+    /// Starts from the saved setting; the shortcut changes it for this
+    /// window only.
+    line_numbers: bool,
     /// Settings cover the window's content while open.
     settings_open: bool,
     settings: Entity<SettingsView>,
@@ -165,9 +169,11 @@ pub struct Workspace {
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let slash_commands = Rc::new(SlashCommands::default());
+        let line_numbers = crate::settings_file::saved(cx).line_numbers;
         let editor = cx.new(|cx| {
             let mut editor = EditorState::new(window, cx)
                 .language("markdown")
+                .line_number(line_numbers)
                 .placeholder("Start writing, or open a Markdown file…");
             editor.set_highlighter_factory(crate::highlighter::factory(), cx);
             editor.lsp_mut().completion_provider = Some(slash_commands.clone());
@@ -218,6 +224,10 @@ impl Workspace {
                     .update(cx, |preview, cx| preview.set_typography(font, scale, cx));
                 cx.notify();
             }),
+            cx.subscribe_in(&settings, window, |this, _, event, window, cx| {
+                let LineNumbersChanged(visible) = *event;
+                this.set_line_numbers(visible, window, cx);
+            }),
             cx.subscribe_in(&editor, window, Self::on_editor_event),
             cx.observe_in(&editor, window, Self::on_editor_notified),
             cx.observe_window_appearance(window, |_, window, cx| {
@@ -235,6 +245,7 @@ impl Workspace {
             folder_file_counts: Rc::default(),
             select_after_scan: None,
             sidebar_visible: true,
+            line_numbers,
             settings_open: false,
             settings,
             sidebar,
@@ -1075,6 +1086,21 @@ impl Workspace {
         cx.notify();
     }
 
+    fn toggle_line_numbers(
+        &mut self,
+        _: &ToggleLineNumbers,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_line_numbers(!self.line_numbers, window, cx);
+    }
+
+    fn set_line_numbers(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.line_numbers = visible;
+        self.editor
+            .update(cx, |editor, cx| editor.set_line_number(visible, window, cx));
+    }
+
     fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
         self.set_settings_open(true, window, cx);
     }
@@ -1902,6 +1928,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_settings))
             .on_action(cx.listener(Self::close_settings))
             .on_action(cx.listener(Self::toggle_sidebar))
+            .on_action(cx.listener(Self::toggle_line_numbers))
             .on_action(cx.listener(|this, _: &ToggleBold, window, cx| {
                 this.toggle_style(Style::Bold, window, cx);
             }))
