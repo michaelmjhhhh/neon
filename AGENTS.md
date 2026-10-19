@@ -22,7 +22,7 @@
 - Always use conventional commit.
 - For non-trivial changes, ask the user whether we should open an issue or not.
 - Your issue/PR description should be concise and simple. keep it short, concrete, and worth reading.
-- Do not include yourself as "Co Authored By".
+- If you are a Claude model, do not add a "Co-Authored-By" line to any commit message or PR description, and do not end PRs with the "Generated with Claude Code" line.
 
 ## Changlog
 
