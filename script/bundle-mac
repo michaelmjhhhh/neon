@@ -154,14 +154,17 @@ fi
 # covers both. Stapling attaches the ticket so Gatekeeper needs no network.
 if [ ${#notary_args[@]} -gt 0 ]; then
     echo "Notarizing"
-    xcrun notarytool submit "$dist/$dmg_name" "${notary_args[@]}" --wait --timeout 30m \
-        --output-format json > "$staging/notary.json" || true
-    id=$(plutil -extract id raw "$staging/notary.json" 2>/dev/null || true)
-    status=$(plutil -extract status raw "$staging/notary.json" 2>/dev/null || true)
+    # A team's first submissions can take hours while Apple analyzes them.
+    result=$(xcrun notarytool submit "$dist/$dmg_name" "${notary_args[@]}" --wait --timeout 2h \
+        --output-format json 2>&1) || true
+    echo "$result"
+    id=$(printf '%s' "$result" | sed -n 's/.*"id" *: *"\([^"]*\)".*/\1/p' | head -1)
+    status=$(printf '%s' "$result" | sed -n 's/.*"status" *: *"\([^"]*\)".*/\1/p' | head -1)
     if [ "$status" != "Accepted" ]; then
-        echo "notarization failed: ${status:-no response}" >&2
-        cat "$staging/notary.json" >&2
-        [ -n "$id" ] && xcrun notarytool log "$id" "${notary_args[@]}" >&2
+        echo "notarization did not succeed: ${status:-no status}" >&2
+        if [ -n "$id" ] && [ "$status" = "Invalid" ]; then
+            xcrun notarytool log "$id" "${notary_args[@]}" >&2
+        fi
         exit 1
     fi
     xcrun stapler staple -q "$dist/$dmg_name"
