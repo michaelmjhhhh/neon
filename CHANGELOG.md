@@ -29,6 +29,10 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Fixed
+
+- Bold and italic now show for fonts that have no bold or italic face, including Chinese, Japanese and Korean text: Neon draws a synthesized bold or slant instead of regular text.
+
 ## [0.6.0] - 2026-10-19
 
 ### Added
