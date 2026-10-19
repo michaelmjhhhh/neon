@@ -1617,7 +1617,7 @@ dependencies = [
 
 [[package]]
 name = "export"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4038,7 +4038,7 @@ dependencies = [
 
 [[package]]
 name = "markdown"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "pulldown-cmark",
 ]
@@ -4055,10 +4055,10 @@ dependencies = [
 
 [[package]]
 name = "markdown_preview"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "gpui-kit",
- "markdown 0.5.2",
+ "markdown 0.6.0",
 ]
 
 [[package]]
@@ -4247,7 +4247,7 @@ dependencies = [
 
 [[package]]
 name = "neon"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "export",
@@ -8546,13 +8546,13 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "workspace"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "export",
  "gpui-kit",
  "lsp-types",
- "markdown 0.5.2",
+ "markdown 0.6.0",
  "markdown_preview",
  "objc2 0.6.5",
  "raw-window-handle",

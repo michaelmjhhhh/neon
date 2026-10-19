@@ -29,6 +29,8 @@ Groups, in this order:
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-19
+
 ### Added
 
 - New Folder creates a folder in the sidebar, inside the selected folder or beside the selected file. Use the folder button in the sidebar header, File > New Folder…, or Cmd+Shift+N. A name that is already taken is flagged in the dialog before anything is created.
