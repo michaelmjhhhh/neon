@@ -32,11 +32,17 @@ Groups, in this order:
 ### Added
 
 - Enter on a list item starts the next one: `- ` bullets keep their marker and indent, numbered items count up, and tasks continue unchecked. Enter on an empty item ends the list; Shift+Enter inserts a plain newline.
+- Tab on a list item indents the whole item one level, making it a child of the item above. Shift+Tab moves it back out.
 - Settings are remembered: the appearance and each pane's font and size are saved and restored the next time Neon opens.
+- Cmd+B and Cmd+I make the selection bold or italic, and pressing them again removes the markers. With no selection they insert an empty pair with the cursor inside.
+
+### Changed
+
+- Toggle Sidebar moves to Cmd+Shift+B, freeing Cmd+B for bold.
 
 ### Fixed
 
-- Saving with Cmd+S no longer reopens a hidden sidebar. Cmd+B still toggles it.
+- Saving with Cmd+S no longer reopens a hidden sidebar. Cmd+Shift+B still toggles it.
 - The input method's candidate window stays at the caret when typing fast, instead of lagging a few characters behind and jumping forward.
 
 ## [0.4.0] - 2026-10-17

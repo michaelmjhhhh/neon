@@ -4,6 +4,7 @@ mod document_file;
 mod editor_pane;
 mod folder;
 mod highlighter;
+mod inline_format;
 #[cfg(feature = "diagnostics")]
 mod latency_bench;
 mod list_continuation;
@@ -29,7 +30,7 @@ pub use workspace::MemoryBench;
 pub use workspace::{
     CloseSettings, CloseWindow, ExportDocx, ExportHtml, ExportPdf, LayoutMode, NewFile, Open,
     OpenFolder, OpenSettings, Quit, RefreshFolder, Save, SaveAs, ShowEditor, ShowPreview,
-    ShowSplit, ToggleSidebar, ToggleTheme, Workspace,
+    ShowSplit, ToggleBold, ToggleItalic, ToggleSidebar, ToggleTheme, Workspace,
 };
 
 const KEY_CONTEXT: &str = "Workspace";
@@ -59,7 +60,9 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-shift-o", OpenFolder, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-,", OpenSettings, Some(KEY_CONTEXT)),
         KeyBinding::new("escape", CloseSettings, Some(SETTINGS_KEY_CONTEXT)),
-        KeyBinding::new("secondary-b", ToggleSidebar, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-shift-b", ToggleSidebar, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-b", ToggleBold, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-i", ToggleItalic, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-o", Open, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-s", Save, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-shift-s", SaveAs, Some(KEY_CONTEXT)),

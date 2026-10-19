@@ -13,7 +13,9 @@ use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::empty::{
     Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
 };
-use gpui_kit::component::input::{EditorState, Enter, Escape, IndentInline, InputEvent};
+use gpui_kit::component::input::{
+    EditorState, Enter, Escape, Indent, IndentInline, InputEvent, Outdent, OutdentInline,
+};
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::notification::Notification;
@@ -35,6 +37,7 @@ use markdown_preview::MarkdownPreview;
 use crate::KEY_CONTEXT;
 use crate::document_file::DocumentFile;
 use crate::editor_pane::EditorPane;
+use crate::inline_format::{self, Style};
 use crate::list_continuation;
 use crate::present_now::{self, NativeView};
 use crate::scroll_metrics::ScrollMetrics;
@@ -59,6 +62,8 @@ gpui_kit::actions!(
         OpenSettings,
         CloseSettings,
         ToggleSidebar,
+        ToggleBold,
+        ToggleItalic,
         Save,
         SaveAs,
         ExportHtml,
@@ -884,6 +889,33 @@ impl Workspace {
         });
     }
 
+    /// Whether the editor's cursor sits on a list item, where Tab and
+    /// Shift+Tab indent the whole item instead of inserting spaces.
+    fn on_list_item(&self, window: &Window, cx: &gpui_kit::App) -> bool {
+        let editor = self.editor.read(cx);
+        let selection = editor.selected_range();
+        !self.is_loading()
+            && editor.focus_handle(cx).is_focused(window)
+            && !editor.completion_menu_state().open
+            && selection.is_empty()
+            && list_continuation::is_list_item(editor.text(), selection.start)
+    }
+
+    /// Toggle bold or italic markers on the editor's selection.
+    fn toggle_style(&mut self, style: Style, window: &mut Window, cx: &mut Context<Self>) {
+        let editor = self.editor.read(cx);
+        if self.is_loading() || !editor.focus_handle(cx).is_focused(window) {
+            return;
+        }
+        let edit =
+            inline_format::toggle(&editor.text().to_string(), editor.selected_range(), style);
+        self.editor.update(cx, |editor, cx| {
+            editor.set_selected_range(edit.range, cx);
+            editor.replace(edit.text, window, cx);
+            editor.set_selected_range(edit.selection, cx);
+        });
+    }
+
     fn toggle_sidebar(&mut self, _: &ToggleSidebar, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_visible = !self.sidebar_visible;
         if !self.sidebar_visible {
@@ -1562,6 +1594,15 @@ impl Render for Workspace {
                         shift: false,
                     };
                     window.dispatch_action(Box::new(enter), cx);
+                } else if this.on_list_item(window, cx) {
+                    cx.stop_propagation();
+                    window.dispatch_action(Box::new(Indent), cx);
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &OutdentInline, window, cx| {
+                if this.on_list_item(window, cx) {
+                    cx.stop_propagation();
+                    window.dispatch_action(Box::new(Outdent), cx);
                 }
             }))
             .capture_action(cx.listener(|this, enter: &Enter, window, cx| {
@@ -1576,6 +1617,12 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_settings))
             .on_action(cx.listener(Self::close_settings))
             .on_action(cx.listener(Self::toggle_sidebar))
+            .on_action(cx.listener(|this, _: &ToggleBold, window, cx| {
+                this.toggle_style(Style::Bold, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleItalic, window, cx| {
+                this.toggle_style(Style::Italic, window, cx);
+            }))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::save_as))
             .on_action(cx.listener(|this, _: &ExportHtml, window, cx| {
