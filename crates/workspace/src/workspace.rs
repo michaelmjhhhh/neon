@@ -1,20 +1,23 @@
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::folder::{is_markdown, scan_folder};
+use crate::folder::{folder_name_error, is_markdown, scan_folder};
 use crate::typography::Typography;
 use export::ExportFormat;
+use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::base::{ResizeHandleRenderer, ResizeHandleState};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::dialog::{DialogAction, DialogClose, DialogFooter};
 use gpui_kit::component::empty::{
     Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
 };
 use gpui_kit::component::input::{
-    EditorState, Enter, Escape, Indent, IndentInline, InputEvent, Outdent, OutdentInline,
+    EditorState, Enter, Escape, Indent, IndentInline, Input, InputEvent, InputState, Outdent,
+    OutdentInline,
 };
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::DropdownMenu as _;
@@ -56,6 +59,7 @@ gpui_kit::actions!(
     workspace,
     [
         NewFile,
+        NewFolder,
         Open,
         OpenFolder,
         RefreshFolder,
@@ -127,6 +131,11 @@ pub struct Workspace {
     folder_task: Option<Task<()>>,
     folder_empty: bool,
     expanded_folders: HashSet<SharedString>,
+    /// How many Markdown files each listed folder holds, at any depth.
+    folder_file_counts: Rc<HashMap<SharedString, usize>>,
+    /// A tree item to select once the next scan lands, in place of the
+    /// open document: a folder just created.
+    select_after_scan: Option<SharedString>,
     sidebar_visible: bool,
     /// Starts from the saved setting; the shortcut changes it for this
     /// window only.
@@ -196,7 +205,7 @@ impl Workspace {
                 let path = tree
                     .read(cx)
                     .selected_entry()
-                    .filter(|entry| !entry.is_folder())
+                    .filter(|entry| !entry.is_folder() && !entry.is_disabled())
                     .map(|entry| PathBuf::from(entry.item().id.as_ref()));
                 if let Some(path) = path
                     && this.document.path() != Some(path.as_path())
@@ -233,6 +242,8 @@ impl Workspace {
             folder_task: None,
             folder_empty: true,
             expanded_folders: HashSet::new(),
+            folder_file_counts: Rc::default(),
+            select_after_scan: None,
             sidebar_visible: true,
             line_numbers,
             settings_open: false,
@@ -750,7 +761,14 @@ impl Workspace {
             let path = path.clone();
             async move {
                 let path = std::fs::canonicalize(path)?;
-                scan_folder(&path).map(|entries| (path, entries))
+                let entries = scan_folder(&path)?;
+                let mut counts = HashMap::new();
+                let total = entries
+                    .iter()
+                    .map(|entry| entry.count_files(&mut counts))
+                    .sum();
+                counts.insert(path.to_string_lossy().into_owned().into(), total);
+                Ok::<_, std::io::Error>((path, entries, counts))
             }
         });
         self.folder_task = Some(cx.spawn_in(window, async move |this, cx| {
@@ -758,17 +776,19 @@ impl Workspace {
             this.update_in(cx, |this, window, cx| {
                 this.folder_task = None;
                 match result {
-                    Ok((path, entries)) => {
+                    Ok((path, entries, counts)) => {
                         this.folder_empty = entries.is_empty();
+                        this.folder_file_counts = Rc::new(counts);
                         if this.folder.as_ref() != Some(&path) {
                             this.expanded_folders.clear();
                         }
                         this.folder = Some(path);
                         this.sidebar_visible |= reveal;
-                        let selected = this
-                            .document
-                            .path()
-                            .map(|path| SharedString::from(path.to_string_lossy().into_owned()));
+                        let selected = this.select_after_scan.take().or_else(|| {
+                            this.document
+                                .path()
+                                .map(|path| SharedString::from(path.to_string_lossy().into_owned()))
+                        });
                         this.tree.update(cx, |tree, cx| {
                             tree.set_items(
                                 entries
@@ -804,10 +824,10 @@ impl Workspace {
         }
     }
 
-    fn prompt_create_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(folder) = self.folder.clone() else {
-            return;
-        };
+    /// Where a new file or folder goes: into the selected folder, beside the
+    /// selected file, or at the top of the open folder.
+    fn target_directory(&self, cx: &gpui_kit::App) -> Option<PathBuf> {
+        let folder = self.folder.as_ref()?;
         let directory = self
             .tree
             .read(cx)
@@ -817,10 +837,17 @@ impl Workspace {
                 if entry.is_folder() {
                     path
                 } else {
-                    path.parent().unwrap_or(&folder).to_path_buf()
+                    path.parent().unwrap_or(folder).to_path_buf()
                 }
             })
-            .unwrap_or(folder);
+            .unwrap_or_else(|| folder.clone());
+        Some(directory)
+    }
+
+    fn prompt_create_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(directory) = self.target_directory(cx) else {
+            return;
+        };
         let path = cx.prompt_for_new_path(&directory, Some("Untitled.md"));
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut path))) = path.await else {
@@ -869,6 +896,130 @@ impl Workspace {
                     .ok();
                 }));
                 cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Ask for a name, then create the folder where a new file would go.
+    fn new_folder(&mut self, _: &NewFolder, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(directory) = self.target_directory(cx) else {
+            return;
+        };
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Folder name"));
+        // The name is checked as typed, but only after the first attempt to
+        // create, so an empty field does not open with an error.
+        let attempted = Rc::new(Cell::new(false));
+        let this = cx.weak_entity();
+        // The path from the open folder, so two folders with one name differ.
+        let location: SharedString = format!(
+            "In {}",
+            self.folder
+                .as_deref()
+                .and_then(|folder| {
+                    let relative = directory.strip_prefix(folder).ok()?;
+                    let parts = std::iter::once(file_name(folder)).chain(
+                        relative
+                            .components()
+                            .map(|part| part.as_os_str().to_string_lossy().into_owned()),
+                    );
+                    Some(parts.collect::<Vec<_>>().join(" / "))
+                })
+                .unwrap_or_else(|| file_name(&directory))
+        )
+        .into();
+        window.open_dialog(cx, {
+            let input = input.clone();
+            move |dialog, window, cx| {
+                let name = input.read(cx).value().trim().to_string();
+                let error = name_problem(&directory, &name).filter(|_| attempted.get());
+                let theme = cx.theme();
+                let (muted, danger) = (theme.muted_foreground, theme.danger);
+                let on_ok = {
+                    let input = input.clone();
+                    let attempted = attempted.clone();
+                    let this = this.clone();
+                    let directory = directory.clone();
+                    move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut gpui_kit::App| {
+                        let name = input.read(cx).value().trim().to_string();
+                        if name_problem(&directory, &name).is_some() {
+                            attempted.set(true);
+                            window.refresh();
+                            return false;
+                        }
+                        this.update(cx, |this, cx| {
+                            this.create_folder(directory.join(name), window, cx)
+                        })
+                        .ok();
+                        true
+                    }
+                };
+                dialog
+                    .title("New Folder")
+                    .w(window.rem_size() * 22.)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(Input::new(&input))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    // A long path may shorten; an error may not.
+                                    .when(error.is_none(), |this| this.truncate())
+                                    .text_xs()
+                                    .text_color(if error.is_some() { danger } else { muted })
+                                    .child(error.unwrap_or_else(|| location.clone())),
+                            ),
+                    )
+                    .footer(
+                        DialogFooter::new()
+                            .gap_2()
+                            .child(
+                                DialogClose::new()
+                                    .child(Button::new("cancel").label("Cancel").outline()),
+                            )
+                            .child(
+                                DialogAction::new()
+                                    .child(Button::new("create-folder").label("Create").primary()),
+                            ),
+                    )
+                    .on_ok(on_ok)
+            }
+        });
+        // The dialog takes focus as it opens; hand it to the field.
+        input.update(cx, |input, cx| input.focus(window, cx));
+    }
+
+    /// Create the folder on a background thread, then show it selected and
+    /// open in the tree, so a new file lands inside it.
+    fn create_folder(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let create = cx.background_spawn({
+            let path = path.clone();
+            async move {
+                std::fs::create_dir(&path)?;
+                std::fs::canonicalize(path)
+            }
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = create.await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(path) => {
+                    let id = SharedString::from(path.to_string_lossy().into_owned());
+                    this.expanded_folders.insert(id.clone());
+                    this.select_after_scan = Some(id);
+                    this.refresh_folder(&RefreshFolder, window, cx);
+                }
+                Err(error) => window.push_notification(
+                    Notification::error(format!(
+                        "Couldn’t create “{}”. {}",
+                        file_name(&path),
+                        sentence(&error.to_string())
+                    )),
+                    cx,
+                ),
             })
             .ok();
         })
@@ -1005,6 +1156,11 @@ impl Workspace {
         );
 
         let header = self.folder.as_deref().map(|folder| {
+            let total = self
+                .folder_file_counts
+                .get(folder.to_string_lossy().as_ref())
+                .copied()
+                .unwrap_or_default();
             div()
                 .flex()
                 .flex_none()
@@ -1015,12 +1171,28 @@ impl Workspace {
                 .pl_1()
                 .child(
                     div()
+                        .flex()
                         .flex_1()
+                        .items_baseline()
+                        .gap_1p5()
                         .min_w_0()
-                        .truncate()
                         .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(file_name(folder)),
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(file_name(folder)),
+                        )
+                        .when(total > 0 && !reading, |this| {
+                            this.child(
+                                div()
+                                    .flex_none()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(format_count(total)),
+                            )
+                        }),
                 )
                 .when(reading, |this| {
                     this.child(Spinner::new().xsmall().color(theme.muted_foreground))
@@ -1029,7 +1201,7 @@ impl Workspace {
                     Button::new("new-file")
                         .small()
                         .ghost()
-                        .icon(IconName::Plus)
+                        .icon(AssetIcon::FilePlus)
                         .accessibility_label("New file…")
                         .tooltip_with_action("New file…", &NewFile, Some(KEY_CONTEXT))
                         .disabled(self.is_busy())
@@ -1038,22 +1210,35 @@ impl Workspace {
                         ),
                 )
                 .child(
+                    Button::new("new-folder")
+                        .small()
+                        .ghost()
+                        .icon(AssetIcon::FolderPlus)
+                        .accessibility_label("New folder…")
+                        .tooltip_with_action("New folder…", &NewFolder, Some(KEY_CONTEXT))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.new_folder(&NewFolder, window, cx)
+                        })),
+                )
+                .child(
                     Button::new("folder-actions")
                         .small()
                         .ghost()
                         .icon(IconName::Ellipsis)
                         .accessibility_label("Folder actions")
                         .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
-                            menu.menu_with_disabled(
-                                "Open Folder…",
-                                Box::new(OpenFolder),
-                                !can_open_folder,
-                            )
-                            .menu_with_disabled(
-                                "Refresh Folder",
-                                Box::new(RefreshFolder),
-                                reading,
-                            )
+                            menu.menu("New Folder…", Box::new(NewFolder))
+                                .separator()
+                                .menu_with_disabled(
+                                    "Open Folder…",
+                                    Box::new(OpenFolder),
+                                    !can_open_folder,
+                                )
+                                .menu_with_disabled(
+                                    "Refresh Folder",
+                                    Box::new(RefreshFolder),
+                                    reading,
+                                )
                         }),
                 )
         });
@@ -1098,45 +1283,123 @@ impl Workspace {
                 "Files ending in .md in this folder appear here.",
             )
             .child(
-                Button::new("new-file-empty")
-                    .small()
-                    .outline()
-                    .icon(IconName::Plus)
-                    .label("New File…")
-                    .disabled(self.is_busy())
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.new_file(&NewFile, window, cx)),
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        Button::new("new-file-empty")
+                            .small()
+                            .outline()
+                            .icon(AssetIcon::FilePlus)
+                            .label("New File…")
+                            .disabled(self.is_busy())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.new_file(&NewFile, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("new-folder-empty")
+                            .small()
+                            .outline()
+                            .icon(AssetIcon::FolderPlus)
+                            .label("New Folder…")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.new_folder(&NewFolder, window, cx)
+                            })),
                     ),
             )
             .into_any_element()
         } else {
-            let folder_icon = theme.muted_foreground;
+            let muted = theme.muted_foreground;
             let active_icon = theme.primary;
+            let guide = theme.sidebar_border;
             let row_radius = theme.radius;
+            let counts = self.folder_file_counts.clone();
+            // A press on a row marks itself here before the press reaches
+            // the space around the rows, which clears the selection so new
+            // files and folders go to the top of the open folder.
+            let row_pressed = Rc::new(Cell::new(false));
+            let tree = self.tree.clone();
             div()
+                .id("folder-tree")
                 .flex_1()
                 .min_h_0()
+                .pt_1()
+                .on_mouse_down(gpui_kit::MouseButton::Left, {
+                    let row_pressed = row_pressed.clone();
+                    cx.listener(move |this, _, _, cx| {
+                        if !row_pressed.replace(false) {
+                            this.tree
+                                .update(cx, |tree, cx| tree.set_selected_index(None, cx));
+                        }
+                    })
+                })
                 .child(Tree::new(&self.tree, move |_, entry, _, window, _| {
                     let item = entry.item();
+                    let rem = window.rem_size();
                     let is_active = active.as_deref() == Some(item.id.as_ref());
-                    let (chevron, icon) = if entry.is_folder() {
+                    let (chevron, icon) = if entry.is_disabled() {
+                        (None, None)
+                    } else if entry.is_folder() {
                         if entry.is_expanded() {
-                            (Some(IconName::ChevronDown), IconName::FolderOpen)
+                            (Some(IconName::ChevronDown), Some(IconName::FolderOpen))
                         } else {
-                            (Some(IconName::ChevronRight), IconName::Folder)
+                            (Some(IconName::ChevronRight), Some(IconName::Folder))
                         }
                     } else {
-                        (None, IconName::FileText)
+                        (None, Some(IconName::FileText))
                     };
-                    let rem = window.rem_size();
+                    // A collapsed folder says how much it holds.
+                    let count = counts
+                        .get(&item.id)
+                        .copied()
+                        .filter(|count| *count > 0 && !entry.is_expanded());
+                    // Files show their extension quietly: every row is Markdown.
+                    let label = item.label.as_ref();
+                    let (stem, extension) = match label.rfind('.') {
+                        Some(ix) if ix > 0 && !entry.is_folder() => {
+                            (&label[..ix], Some(label[ix..].to_string()))
+                        }
+                        _ => (label, None),
+                    };
+                    // One slot per ancestor, each with a hairline under that
+                    // ancestor's chevron, so a nested row reads as a branch.
+                    let guides = (0..entry.depth()).map(|_| {
+                        div()
+                            .flex_none()
+                            .w(rem * 1.25)
+                            .h_7()
+                            .pl(rem * 0.5)
+                            .child(div().w(gpui_kit::px(1.)).h_full().bg(guide))
+                    });
+                    // An empty folder's "Empty" row cannot be selected; a press
+                    // on it selects the folder, where a new file would go.
+                    let select_folder = entry.is_disabled().then(|| {
+                        let folder = Path::new(item.id.as_ref())
+                            .parent()
+                            .map(|path| SharedString::from(path.to_string_lossy().into_owned()));
+                        let tree = tree.clone();
+                        let row_pressed = row_pressed.clone();
+                        move |_: &gpui_kit::MouseDownEvent,
+                              _: &mut Window,
+                              cx: &mut gpui_kit::App| {
+                            row_pressed.set(true);
+                            tree.update(cx, |tree, cx| {
+                                let ix = folder.as_ref().and_then(|folder| tree.index_of(folder));
+                                tree.set_selected_index(ix, cx);
+                            });
+                        }
+                    });
+                    let row_pressed = row_pressed.clone();
                     ListItem::new(item.id.clone())
+                        .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, _| {
+                            row_pressed.set(true)
+                        })
                         .h_7()
                         .mx_2()
                         .px_0()
                         .py_0()
-                        // Each level indents by one icon slot, so a child's
-                        // chevron sits under its parent's folder icon.
-                        .pl(rem * (0.25 + entry.depth() as f32 * 1.25))
+                        .pl(rem * 0.25)
                         .pr_2()
                         .rounded(row_radius)
                         .text_sm()
@@ -1145,39 +1408,60 @@ impl Workspace {
                             div()
                                 .flex()
                                 .items_center()
-                                .gap_1()
+                                .w_full()
                                 .min_w_0()
-                                // Fixed slots keep labels on one spine whether
-                                // or not a row has a disclosure chevron.
+                                .when_some(select_folder, |this, select_folder| {
+                                    this.on_mouse_down(gpui_kit::MouseButton::Left, select_folder)
+                                })
+                                .children(guides)
                                 .child(
                                     div()
-                                        .flex_none()
-                                        .size_4()
                                         .flex()
+                                        .flex_1()
                                         .items_center()
-                                        .justify_center()
-                                        .text_color(folder_icon)
-                                        .children(chevron.map(|chevron| {
-                                            gpui_kit::component::Icon::new(chevron).xsmall()
-                                        })),
-                                )
-                                .child(
-                                    gpui_kit::component::Icon::new(icon)
-                                        .small()
-                                        .flex_none()
-                                        .text_color(if is_active {
-                                            active_icon
-                                        } else {
-                                            folder_icon
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .ml_1()
+                                        .gap_1()
                                         .min_w_0()
-                                        .truncate()
-                                        .when(is_active, |row| row.font_weight(FontWeight::MEDIUM))
-                                        .child(item.label.clone()),
+                                        // Fixed slots keep labels on one spine
+                                        // whether or not a row has a chevron.
+                                        .child(icon_slot().text_color(muted).children(chevron.map(
+                                            |chevron| {
+                                                gpui_kit::component::Icon::new(chevron).xsmall()
+                                            },
+                                        )))
+                                        .child(icon_slot().children(icon.map(|icon| {
+                                            gpui_kit::component::Icon::new(icon).small().text_color(
+                                                if is_active { active_icon } else { muted },
+                                            )
+                                        })))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_1()
+                                                .ml_1()
+                                                .min_w_0()
+                                                .when(is_active, |row| {
+                                                    row.font_weight(FontWeight::MEDIUM)
+                                                })
+                                                .child(
+                                                    div()
+                                                        .min_w_0()
+                                                        .truncate()
+                                                        .child(stem.to_string()),
+                                                )
+                                                .children(extension.map(|extension| {
+                                                    div()
+                                                        .flex_none()
+                                                        .text_color(muted)
+                                                        .child(extension)
+                                                })),
+                                        )
+                                        .children(count.map(|count| {
+                                            div()
+                                                .flex_none()
+                                                .text_xs()
+                                                .text_color(muted)
+                                                .child(format_count(count))
+                                        })),
                                 ),
                         )
                 }))
@@ -1637,6 +1921,7 @@ impl Render for Workspace {
                 }
             }))
             .on_action(cx.listener(Self::new_file))
+            .on_action(cx.listener(Self::new_folder))
             .on_action(cx.listener(Self::open))
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::refresh_folder))
@@ -1693,6 +1978,16 @@ fn sidebar_toggle(sidebar_visible: bool, cx: &Context<Workspace>) -> Button {
         )
 }
 
+/// A one-rem square that centers a tree row's chevron or icon.
+fn icon_slot() -> gpui_kit::Div {
+    div()
+        .flex_none()
+        .size_4()
+        .flex()
+        .items_center()
+        .justify_center()
+}
+
 /// A resize handle that stays out of sight until hovered or dragged, for
 /// panes whose boundary is already drawn by a hairline or a gap.
 fn quiet_resize_handle() -> ResizeHandleRenderer {
@@ -1723,6 +2018,18 @@ fn sidebar_empty_state(icon: IconName, title: &'static str, description: &'stati
                 .title(EmptyTitle::new().child(title))
                 .description(EmptyDescription::new().child(description)),
         )
+}
+
+/// Why `name` cannot name a new folder in `directory`, if it cannot. The
+/// dialog says so in place, rather than failing after it closes.
+fn name_problem(directory: &Path, name: &str) -> Option<SharedString> {
+    if let Some(error) = folder_name_error(name) {
+        return Some(error.into());
+    }
+    directory
+        .join(name)
+        .exists()
+        .then(|| format!("“{name}” already exists here.").into())
 }
 
 fn file_name(path: &Path) -> String {

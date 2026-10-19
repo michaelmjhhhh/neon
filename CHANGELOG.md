@@ -31,7 +31,14 @@ Groups, in this order:
 
 ### Added
 
+- New Folder creates a folder in the sidebar, inside the selected folder or beside the selected file. Use the folder button in the sidebar header, File > New Folder…, or Cmd+Shift+N. A name that is already taken is flagged in the dialog before anything is created.
 - Line numbers beside the editor can be hidden: Cmd+Shift+L toggles them in the current window, and Settings > Editor sets whether they show by default.
+
+### Changed
+
+- The sidebar shows empty folders, with an "Empty" row inside that selects the folder when clicked. Folders that hold only non-Markdown files stay hidden.
+- The sidebar tree draws indent guides, shows how many Markdown files a collapsed folder holds, and dims file extensions.
+- Clicking empty space in the sidebar clears the selection, so New File and New Folder go to the top of the open folder.
 
 ## [0.5.2] - 2026-10-19
 
