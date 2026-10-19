@@ -133,9 +133,6 @@ pub struct Workspace {
     expanded_folders: HashSet<SharedString>,
     /// How many Markdown files each listed folder holds, at any depth.
     folder_file_counts: Rc<HashMap<SharedString, usize>>,
-    /// A tree item to select once the next scan lands, in place of the
-    /// open document: a folder just created.
-    select_after_scan: Option<SharedString>,
     sidebar_visible: bool,
     /// Starts from the saved setting; the shortcut changes it for this
     /// window only.
@@ -243,7 +240,6 @@ impl Workspace {
             folder_empty: true,
             expanded_folders: HashSet::new(),
             folder_file_counts: Rc::default(),
-            select_after_scan: None,
             sidebar_visible: true,
             line_numbers,
             settings_open: false,
@@ -324,7 +320,7 @@ impl Workspace {
             return;
         }
         if path.is_dir() {
-            self.load_folder(path, true, window, cx);
+            self.load_folder(path, true, None, window, cx);
             return;
         }
         let read = cx.background_spawn({
@@ -740,7 +736,7 @@ impl Workspace {
             };
             if let Some(path) = paths.into_iter().next() {
                 this.update_in(cx, |this, window, cx| {
-                    this.load_folder(path, true, window, cx)
+                    this.load_folder(path, true, None, window, cx)
                 })
                 .ok();
             }
@@ -750,10 +746,13 @@ impl Workspace {
 
     /// Scan `path` into the sidebar tree. `reveal` shows a hidden sidebar:
     /// opening a folder should, but a refresh after a save should not.
+    /// `select` is selected in place of the open document, if it is inside
+    /// the folder: a folder just created.
     fn load_folder(
         &mut self,
         path: PathBuf,
         reveal: bool,
+        select: Option<SharedString>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -782,13 +781,16 @@ impl Workspace {
                         if this.folder.as_ref() != Some(&path) {
                             this.expanded_folders.clear();
                         }
+                        // Another folder may have opened since `select` was made.
+                        let selected = select
+                            .filter(|id| Path::new(id.as_ref()).starts_with(&path))
+                            .or_else(|| {
+                                this.document.path().map(|path| {
+                                    SharedString::from(path.to_string_lossy().into_owned())
+                                })
+                            });
                         this.folder = Some(path);
                         this.sidebar_visible |= reveal;
-                        let selected = this.select_after_scan.take().or_else(|| {
-                            this.document
-                                .path()
-                                .map(|path| SharedString::from(path.to_string_lossy().into_owned()))
-                        });
                         this.tree.update(cx, |tree, cx| {
                             tree.set_items(
                                 entries
@@ -820,7 +822,7 @@ impl Workspace {
 
     fn refresh_folder(&mut self, _: &RefreshFolder, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(path) = self.folder.clone() {
-            self.load_folder(path, false, window, cx);
+            self.load_folder(path, false, None, window, cx);
         }
     }
 
@@ -1009,8 +1011,9 @@ impl Workspace {
                 Ok(path) => {
                     let id = SharedString::from(path.to_string_lossy().into_owned());
                     this.expanded_folders.insert(id.clone());
-                    this.select_after_scan = Some(id);
-                    this.refresh_folder(&RefreshFolder, window, cx);
+                    if let Some(folder) = this.folder.clone() {
+                        this.load_folder(folder, false, Some(id), window, cx);
+                    }
                 }
                 Err(error) => window.push_notification(
                     Notification::error(format!(
