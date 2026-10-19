@@ -37,6 +37,7 @@ Groups, in this order:
 
 - The sidebar shows empty folders, with an "Empty" row inside. Folders that hold only non-Markdown files stay hidden.
 - The sidebar tree draws indent guides, shows how many Markdown files a collapsed folder holds, and dims file extensions.
+- Clicking empty space in the sidebar clears the selection, so New File and New Folder go to the top of the open folder.
 
 ## [0.5.2] - 2026-10-19
 

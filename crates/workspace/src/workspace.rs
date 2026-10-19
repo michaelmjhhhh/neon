@@ -1270,10 +1270,24 @@ impl Workspace {
             let guide = theme.sidebar_border;
             let row_radius = theme.radius;
             let counts = self.folder_file_counts.clone();
+            // A press on a row marks itself here before the press reaches
+            // the space around the rows, which clears the selection so new
+            // files and folders go to the top of the open folder.
+            let row_pressed = Rc::new(Cell::new(false));
             div()
+                .id("folder-tree")
                 .flex_1()
                 .min_h_0()
                 .pt_1()
+                .on_mouse_down(gpui_kit::MouseButton::Left, {
+                    let row_pressed = row_pressed.clone();
+                    cx.listener(move |this, _, _, cx| {
+                        if !row_pressed.replace(false) {
+                            this.tree
+                                .update(cx, |tree, cx| tree.set_selected_index(None, cx));
+                        }
+                    })
+                })
                 .child(Tree::new(&self.tree, move |_, entry, _, window, _| {
                     let item = entry.item();
                     let rem = window.rem_size();
@@ -1312,7 +1326,11 @@ impl Workspace {
                             .pl(rem * 0.5)
                             .child(div().w(gpui_kit::px(1.)).h_full().bg(guide))
                     });
+                    let row_pressed = row_pressed.clone();
                     ListItem::new(item.id.clone())
+                        .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, _| {
+                            row_pressed.set(true)
+                        })
                         .h_7()
                         .mx_2()
                         .px_0()
