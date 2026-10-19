@@ -4,17 +4,19 @@
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::select::Select;
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, ThemeConfig, TitleBar,
     try_parse_color,
 };
 use gpui_kit::{
-    AnyElement, App, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla,
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
     Window, div, prelude::FluentBuilder as _, relative, rems,
 };
 
 use crate::SETTINGS_KEY_CONTEXT;
+use crate::settings_file;
 use crate::theme::{self, Appearance};
 use crate::typography::{Pane, Typography};
 use crate::workspace::{CloseSettings, SHEET_HEADER_REMS, SHEET_INSET_REMS, SIDEBAR_WIDTH_REMS};
@@ -26,15 +28,17 @@ const COLUMN_REMS: f32 = 36.;
 enum Section {
     Appearance,
     Typography,
+    Editor,
 }
 
 impl Section {
-    const ALL: [Self; 2] = [Self::Appearance, Self::Typography];
+    const ALL: [Self; 3] = [Self::Appearance, Self::Typography, Self::Editor];
 
     fn title(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
             Self::Typography => "Typography",
+            Self::Editor => "Editor",
         }
     }
 
@@ -42,27 +46,40 @@ impl Section {
         match self {
             Self::Appearance => IconName::Palette,
             Self::Typography => IconName::ALargeSmall,
+            Self::Editor => IconName::FileText,
         }
     }
 }
 
+/// The saved line-numbers setting changed; the window applies it at once.
+pub(crate) struct LineNumbersChanged(pub(crate) bool);
+
 pub(crate) struct SettingsView {
     section: Section,
     typography: Entity<Typography>,
+    /// The saved setting, not a window's temporary toggle.
+    line_numbers: bool,
     focus_handle: FocusHandle,
 }
+
+impl EventEmitter<LineNumbersChanged> for SettingsView {}
 
 impl SettingsView {
     pub(crate) fn new(typography: Entity<Typography>, cx: &mut Context<Self>) -> Self {
         Self {
             section: Section::Appearance,
             typography,
+            line_numbers: settings_file::saved(cx).line_numbers,
             focus_handle: cx.focus_handle(),
         }
     }
 
     /// Keep picker entities only while their settings section is visible.
     pub(crate) fn set_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // Another window may have changed the saved setting since this opened.
+        if open {
+            self.line_numbers = settings_file::saved(cx).line_numbers;
+        }
         self.typography.update(cx, |typography, cx| {
             if open && self.section == Section::Typography {
                 typography.show_pickers(window, cx);
@@ -155,6 +172,7 @@ impl SettingsView {
         let body = match self.section {
             Section::Appearance => self.render_appearance(cx).into_any_element(),
             Section::Typography => self.render_typography(cx).into_any_element(),
+            Section::Editor => self.render_editor(cx).into_any_element(),
         };
         let theme = cx.theme();
         let inset = window.rem_size() * SHEET_INSET_REMS;
@@ -287,6 +305,38 @@ impl SettingsView {
                             theme::set_appearance(appearance, window, cx);
                         })
                 })),
+        )
+    }
+
+    fn render_editor(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        section(
+            "Line numbers",
+            "Cmd+Shift+L shows or hides them in the current window until it closes.",
+            None,
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_4()
+                .h_12()
+                .px_4()
+                .rounded(theme.radius_lg)
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.sidebar.opacity(0.4))
+                .child(div().text_sm().child("Show line numbers"))
+                .child(
+                    Switch::new("line-numbers")
+                        .checked(self.line_numbers)
+                        .accessibility_label("Show line numbers")
+                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            this.line_numbers = *checked;
+                            settings_file::update(cx, |settings| settings.line_numbers = *checked);
+                            cx.emit(LineNumbersChanged(*checked));
+                            cx.notify();
+                        })),
+                ),
         )
     }
 

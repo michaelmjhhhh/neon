@@ -58,6 +58,7 @@ gh attestation verify Neon-<version>-macos.dmg --repo michaelmjhhhh/neon
 | Bold / Italic | <kbd>⌘</kbd> <kbd>B</kbd> / <kbd>⌘</kbd> <kbd>I</kbd> |
 | Indent / outdent list item | <kbd>Tab</kbd> / <kbd>⇧</kbd> <kbd>Tab</kbd> |
 | Toggle sidebar | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>B</kbd> |
+| Toggle line numbers | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>L</kbd> |
 | Settings | <kbd>⌘</kbd> <kbd>,</kbd> |
 | Close window | <kbd>⌘</kbd> <kbd>W</kbd> |
 
