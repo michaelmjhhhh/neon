@@ -29,6 +29,14 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Added
+
+- Each release lists SHA-256 checksums and a build provenance attestation, so a download can be checked against the source it was built from.
+
+### Changed
+
+- Neon is signed with an Apple Developer ID and notarized by Apple, so macOS opens it without asking for approval first.
+
 ## [0.5.0] - 2026-10-19
 
 ### Added
