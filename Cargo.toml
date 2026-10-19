@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+exclude = ["patches"]
 default-members = ["crates/neon"]
 
 [workspace.package]
@@ -33,3 +34,9 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 debug = "line-tables-only"
+
+# block 0.1.6, the last release, declares a static of an empty enum, which a
+# future Rust will reject (rust#74840). GPUI pulls it in through cocoa and
+# metal. patches/block is that release with only the type changed.
+[patch.crates-io]
+block = { path = "patches/block" }
