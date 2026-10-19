@@ -906,7 +906,7 @@ impl Workspace {
             let input = input.clone();
             move |dialog, window, cx| {
                 let name = input.read(cx).value().trim().to_string();
-                let error = folder_name_error(&name).filter(|_| attempted.get());
+                let error = name_problem(&directory, &name).filter(|_| attempted.get());
                 let theme = cx.theme();
                 let (muted, danger) = (theme.muted_foreground, theme.danger);
                 let on_ok = {
@@ -916,7 +916,7 @@ impl Workspace {
                     let directory = directory.clone();
                     move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut gpui_kit::App| {
                         let name = input.read(cx).value().trim().to_string();
-                        if folder_name_error(&name).is_some() {
+                        if name_problem(&directory, &name).is_some() {
                             attempted.set(true);
                             window.refresh();
                             return false;
@@ -941,7 +941,7 @@ impl Workspace {
                                 div()
                                     .text_xs()
                                     .text_color(if error.is_some() { danger } else { muted })
-                                    .child(error.map_or(location.clone(), SharedString::from)),
+                                    .child(error.unwrap_or_else(|| location.clone())),
                             ),
                     )
                     .footer(
@@ -1950,6 +1950,18 @@ fn sidebar_empty_state(icon: IconName, title: &'static str, description: &'stati
                 .title(EmptyTitle::new().child(title))
                 .description(EmptyDescription::new().child(description)),
         )
+}
+
+/// Why `name` cannot name a new folder in `directory`, if it cannot. The
+/// dialog says so in place, rather than failing after it closes.
+fn name_problem(directory: &Path, name: &str) -> Option<SharedString> {
+    if let Some(error) = folder_name_error(name) {
+        return Some(error.into());
+    }
+    directory
+        .join(name)
+        .exists()
+        .then(|| format!("“{name}” already exists here.").into())
 }
 
 fn file_name(path: &Path) -> String {
