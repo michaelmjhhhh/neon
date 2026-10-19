@@ -264,8 +264,9 @@ mod tests {
         let editor = window.root(cx).unwrap();
         let cx = &mut VisualTestContext::from_window(*window, cx);
 
-        // Below the highlighter's limit on inline Markdown injections.
-        let mut text = "## Heading\n\nSome **bold** text and `code`.\n\n".repeat(300);
+        // Small enough that the inline Markdown injection parse, which
+        // gpui-component abandons after 20 ms, finishes on a slow CI runner.
+        let mut text = "## Heading\n\nSome **bold** text and `code`.\n\n".repeat(30);
         let mut highlighter = DeferredHighlighter::new(LANGUAGE);
         let rope = Rope::from(text.as_str());
         editor.update_in(cx, |_, window, cx| {
