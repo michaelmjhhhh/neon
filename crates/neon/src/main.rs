@@ -11,9 +11,9 @@ use gpui_kit::{
 #[cfg(feature = "diagnostics")]
 use workspace::LatencyBench;
 use workspace::{
-    CloseWindow, ExportDocx, ExportHtml, ExportPdf, NewFile, Open, OpenFolder, OpenSettings, Quit,
-    RefreshFolder, Save, SaveAs, ShowEditor, ShowPreview, ShowSplit, ToggleBold, ToggleItalic,
-    ToggleSidebar, ToggleTheme, Workspace,
+    CloseWindow, ExportDocx, ExportHtml, ExportPdf, NewFile, NewFolder, Open, OpenFolder,
+    OpenSettings, Quit, RefreshFolder, Save, SaveAs, ShowEditor, ShowPreview, ShowSplit,
+    ToggleBold, ToggleItalic, ToggleSidebar, ToggleTheme, Workspace,
 };
 
 /// Every open document window, so files opened from Finder can reuse one.
@@ -37,7 +37,7 @@ fn main() {
         .map(PathBuf::from)
         .collect();
 
-    let app = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
+    let app = gpui_kit::application().with_assets(workspace::Assets);
     app.on_open_urls(move |urls| {
         let paths = urls
             .iter()
@@ -231,6 +231,7 @@ fn set_menus(cx: &mut App) {
         ]),
         Menu::new("File").items([
             MenuItem::action("New File…", NewFile),
+            MenuItem::action("New Folder…", NewFolder),
             MenuItem::action("Open File…", Open),
             MenuItem::action("Open Folder…", OpenFolder),
             MenuItem::action("Refresh Folder", RefreshFolder),

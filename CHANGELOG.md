@@ -29,6 +29,14 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Added
+
+- New Folder creates a folder in the sidebar, inside the selected folder or beside the selected file. Use the folder button in the sidebar header, File > New Folder…, or Cmd+Shift+N.
+
+### Changed
+
+- The sidebar shows empty folders, with an "Empty" row inside. Folders that hold only non-Markdown files stay hidden.
+
 ## [0.5.2] - 2026-10-19
 
 ### Fixed

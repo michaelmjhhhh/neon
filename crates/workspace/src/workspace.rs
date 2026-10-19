@@ -5,16 +5,19 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::folder::{is_markdown, scan_folder};
+use crate::folder::{folder_name_error, is_markdown, scan_folder};
 use crate::typography::Typography;
 use export::ExportFormat;
+use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::base::{ResizeHandleRenderer, ResizeHandleState};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::dialog::{DialogAction, DialogClose, DialogFooter};
 use gpui_kit::component::empty::{
     Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
 };
 use gpui_kit::component::input::{
-    EditorState, Enter, Escape, Indent, IndentInline, InputEvent, Outdent, OutdentInline,
+    EditorState, Enter, Escape, Indent, IndentInline, Input, InputEvent, InputState, Outdent,
+    OutdentInline,
 };
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::DropdownMenu as _;
@@ -56,6 +59,7 @@ gpui_kit::actions!(
     workspace,
     [
         NewFile,
+        NewFolder,
         Open,
         OpenFolder,
         RefreshFolder,
@@ -126,6 +130,9 @@ pub struct Workspace {
     folder_task: Option<Task<()>>,
     folder_empty: bool,
     expanded_folders: HashSet<SharedString>,
+    /// A tree item to select once the next scan lands, in place of the
+    /// open document: a folder just created.
+    select_after_scan: Option<SharedString>,
     sidebar_visible: bool,
     /// Settings cover the window's content while open.
     settings_open: bool,
@@ -190,7 +197,7 @@ impl Workspace {
                 let path = tree
                     .read(cx)
                     .selected_entry()
-                    .filter(|entry| !entry.is_folder())
+                    .filter(|entry| !entry.is_folder() && !entry.is_disabled())
                     .map(|entry| PathBuf::from(entry.item().id.as_ref()));
                 if let Some(path) = path
                     && this.document.path() != Some(path.as_path())
@@ -223,6 +230,7 @@ impl Workspace {
             folder_task: None,
             folder_empty: true,
             expanded_folders: HashSet::new(),
+            select_after_scan: None,
             sidebar_visible: true,
             settings_open: false,
             settings,
@@ -754,10 +762,11 @@ impl Workspace {
                         }
                         this.folder = Some(path);
                         this.sidebar_visible |= reveal;
-                        let selected = this
-                            .document
-                            .path()
-                            .map(|path| SharedString::from(path.to_string_lossy().into_owned()));
+                        let selected = this.select_after_scan.take().or_else(|| {
+                            this.document
+                                .path()
+                                .map(|path| SharedString::from(path.to_string_lossy().into_owned()))
+                        });
                         this.tree.update(cx, |tree, cx| {
                             tree.set_items(
                                 entries
@@ -793,10 +802,10 @@ impl Workspace {
         }
     }
 
-    fn prompt_create_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(folder) = self.folder.clone() else {
-            return;
-        };
+    /// Where a new file or folder goes: into the selected folder, beside the
+    /// selected file, or at the top of the open folder.
+    fn target_directory(&self, cx: &gpui_kit::App) -> Option<PathBuf> {
+        let folder = self.folder.as_ref()?;
         let directory = self
             .tree
             .read(cx)
@@ -806,10 +815,17 @@ impl Workspace {
                 if entry.is_folder() {
                     path
                 } else {
-                    path.parent().unwrap_or(&folder).to_path_buf()
+                    path.parent().unwrap_or(folder).to_path_buf()
                 }
             })
-            .unwrap_or(folder);
+            .unwrap_or_else(|| folder.clone());
+        Some(directory)
+    }
+
+    fn prompt_create_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(directory) = self.target_directory(cx) else {
+            return;
+        };
         let path = cx.prompt_for_new_path(&directory, Some("Untitled.md"));
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut path))) = path.await else {
@@ -858,6 +874,111 @@ impl Workspace {
                     .ok();
                 }));
                 cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Ask for a name, then create the folder where a new file would go.
+    fn new_folder(&mut self, _: &NewFolder, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(directory) = self.target_directory(cx) else {
+            return;
+        };
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Folder name"));
+        // The name is checked as typed, but only after the first attempt to
+        // create, so an empty field does not open with an error.
+        let attempted = Rc::new(Cell::new(false));
+        let this = cx.weak_entity();
+        let location: SharedString = format!("In “{}”", file_name(&directory)).into();
+        window.open_dialog(cx, {
+            let input = input.clone();
+            move |dialog, window, cx| {
+                let name = input.read(cx).value().trim().to_string();
+                let error = folder_name_error(&name).filter(|_| attempted.get());
+                let theme = cx.theme();
+                let (muted, danger) = (theme.muted_foreground, theme.danger);
+                let on_ok = {
+                    let input = input.clone();
+                    let attempted = attempted.clone();
+                    let this = this.clone();
+                    let directory = directory.clone();
+                    move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut gpui_kit::App| {
+                        let name = input.read(cx).value().trim().to_string();
+                        if folder_name_error(&name).is_some() {
+                            attempted.set(true);
+                            window.refresh();
+                            return false;
+                        }
+                        this.update(cx, |this, cx| {
+                            this.create_folder(directory.join(name), window, cx)
+                        })
+                        .ok();
+                        true
+                    }
+                };
+                dialog
+                    .title("New Folder")
+                    .w(window.rem_size() * 22.)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(Input::new(&input))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(if error.is_some() { danger } else { muted })
+                                    .child(error.map_or(location.clone(), SharedString::from)),
+                            ),
+                    )
+                    .footer(
+                        DialogFooter::new()
+                            .gap_2()
+                            .child(
+                                DialogClose::new()
+                                    .child(Button::new("cancel").label("Cancel").outline()),
+                            )
+                            .child(
+                                DialogAction::new()
+                                    .child(Button::new("create-folder").label("Create").primary()),
+                            ),
+                    )
+                    .on_ok(on_ok)
+            }
+        });
+        // The dialog takes focus as it opens; hand it to the field.
+        input.update(cx, |input, cx| input.focus(window, cx));
+    }
+
+    /// Create the folder on a background thread, then show it selected and
+    /// open in the tree, so a new file lands inside it.
+    fn create_folder(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let create = cx.background_spawn({
+            let path = path.clone();
+            async move {
+                std::fs::create_dir(&path)?;
+                std::fs::canonicalize(path)
+            }
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = create.await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(path) => {
+                    let id = SharedString::from(path.to_string_lossy().into_owned());
+                    this.expanded_folders.insert(id.clone());
+                    this.select_after_scan = Some(id);
+                    this.refresh_folder(&RefreshFolder, window, cx);
+                }
+                Err(error) => window.push_notification(
+                    Notification::error(format!(
+                        "Couldn’t create “{}”. {}",
+                        file_name(&path),
+                        sentence(&error.to_string())
+                    )),
+                    cx,
+                ),
             })
             .ok();
         })
@@ -1003,7 +1124,7 @@ impl Workspace {
                     Button::new("new-file")
                         .small()
                         .ghost()
-                        .icon(IconName::Plus)
+                        .icon(AssetIcon::FilePlus)
                         .accessibility_label("New file…")
                         .tooltip_with_action("New file…", &NewFile, Some(KEY_CONTEXT))
                         .disabled(self.is_busy())
@@ -1012,22 +1133,35 @@ impl Workspace {
                         ),
                 )
                 .child(
+                    Button::new("new-folder")
+                        .small()
+                        .ghost()
+                        .icon(AssetIcon::FolderPlus)
+                        .accessibility_label("New folder…")
+                        .tooltip_with_action("New folder…", &NewFolder, Some(KEY_CONTEXT))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.new_folder(&NewFolder, window, cx)
+                        })),
+                )
+                .child(
                     Button::new("folder-actions")
                         .small()
                         .ghost()
                         .icon(IconName::Ellipsis)
                         .accessibility_label("Folder actions")
                         .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
-                            menu.menu_with_disabled(
-                                "Open Folder…",
-                                Box::new(OpenFolder),
-                                !can_open_folder,
-                            )
-                            .menu_with_disabled(
-                                "Refresh Folder",
-                                Box::new(RefreshFolder),
-                                reading,
-                            )
+                            menu.menu("New Folder…", Box::new(NewFolder))
+                                .separator()
+                                .menu_with_disabled(
+                                    "Open Folder…",
+                                    Box::new(OpenFolder),
+                                    !can_open_folder,
+                                )
+                                .menu_with_disabled(
+                                    "Refresh Folder",
+                                    Box::new(RefreshFolder),
+                                    reading,
+                                )
                         }),
                 )
         });
@@ -1072,14 +1206,29 @@ impl Workspace {
                 "Files ending in .md in this folder appear here.",
             )
             .child(
-                Button::new("new-file-empty")
-                    .small()
-                    .outline()
-                    .icon(IconName::Plus)
-                    .label("New File…")
-                    .disabled(self.is_busy())
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.new_file(&NewFile, window, cx)),
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        Button::new("new-file-empty")
+                            .small()
+                            .outline()
+                            .icon(AssetIcon::FilePlus)
+                            .label("New File…")
+                            .disabled(self.is_busy())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.new_file(&NewFile, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("new-folder-empty")
+                            .small()
+                            .outline()
+                            .icon(AssetIcon::FolderPlus)
+                            .label("New Folder…")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.new_folder(&NewFolder, window, cx)
+                            })),
                     ),
             )
             .into_any_element()
@@ -1611,6 +1760,7 @@ impl Render for Workspace {
                 }
             }))
             .on_action(cx.listener(Self::new_file))
+            .on_action(cx.listener(Self::new_folder))
             .on_action(cx.listener(Self::open))
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::refresh_folder))

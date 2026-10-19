@@ -28,12 +28,33 @@ pub use settings_file::load as load_settings;
 #[cfg(feature = "memory-bench")]
 pub use workspace::MemoryBench;
 pub use workspace::{
-    CloseSettings, CloseWindow, ExportDocx, ExportHtml, ExportPdf, LayoutMode, NewFile, Open,
-    OpenFolder, OpenSettings, Quit, RefreshFolder, Save, SaveAs, ShowEditor, ShowPreview,
+    CloseSettings, CloseWindow, ExportDocx, ExportHtml, ExportPdf, LayoutMode, NewFile, NewFolder,
+    Open, OpenFolder, OpenSettings, Quit, RefreshFolder, Save, SaveAs, ShowEditor, ShowPreview,
     ShowSplit, ToggleBold, ToggleItalic, ToggleSidebar, ToggleTheme, Workspace,
 };
 
 const KEY_CONTEXT: &str = "Workspace";
+
+gpui_kit::assets::icon_assets!(ExtraIcons, [FilePlus, FolderPlus]);
+
+/// The icons the app draws: GPUI Kit's default set, plus the few beyond it
+/// that the workspace uses.
+pub struct Assets;
+
+impl gpui_kit::AssetSource for Assets {
+    fn load(&self, path: &str) -> gpui_kit::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        match ExtraIcons.load(path)? {
+            Some(data) => Ok(Some(data)),
+            None => gpui_kit::assets::Assets.load(path),
+        }
+    }
+
+    fn list(&self, path: &str) -> gpui_kit::Result<Vec<gpui_kit::SharedString>> {
+        let mut paths = gpui_kit::assets::Assets.list(path)?;
+        paths.extend(ExtraIcons.list(path)?);
+        Ok(paths)
+    }
+}
 const SETTINGS_KEY_CONTEXT: &str = "Settings";
 
 /// The base options for a document window. The workspace draws its own title
@@ -57,6 +78,7 @@ pub fn init(cx: &mut App) {
     markdown_preview::init(cx);
     cx.bind_keys([
         KeyBinding::new("secondary-n", NewFile, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-shift-n", NewFolder, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-shift-o", OpenFolder, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-,", OpenSettings, Some(KEY_CONTEXT)),
         KeyBinding::new("escape", CloseSettings, Some(SETTINGS_KEY_CONTEXT)),
