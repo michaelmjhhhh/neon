@@ -1,3 +1,4 @@
+use crate::settings_file::{self, PaneTypography};
 use gpui_kit::component::{
     ActiveTheme as _,
     select::{SearchableVec, SelectEvent, SelectItem, SelectState},
@@ -101,11 +102,20 @@ impl EventEmitter<TypographyChanged> for Typography {}
 impl Typography {
     pub(super) fn new(_: &mut Window, cx: &mut Context<Self>) -> Self {
         let editor_default = cx.theme().mono_font_family.clone();
+        let saved = settings_file::saved(cx);
+        let font = |saved: &PaneTypography, default: SharedString| {
+            saved.font.clone().map_or(default, Into::into)
+        };
+        let size = |saved: &PaneTypography, default: &'static str| {
+            saved
+                .size
+                .map_or(default.into(), |size| size.to_string().into())
+        };
         Self {
-            editor_font: editor_default.clone(),
-            preview_font: SYSTEM_DEFAULT.into(),
-            editor_size: EDITOR_DEFAULT_SIZE.into(),
-            preview_size: PREVIEW_DEFAULT_SIZE.into(),
+            editor_font: font(&saved.editor, editor_default.clone()),
+            preview_font: font(&saved.preview, SYSTEM_DEFAULT.into()),
+            editor_size: size(&saved.editor, EDITOR_DEFAULT_SIZE),
+            preview_size: size(&saved.preview, PREVIEW_DEFAULT_SIZE),
             editor_default_font: editor_default,
             pickers: None,
         }
@@ -177,6 +187,7 @@ impl Typography {
             subscriptions.push(cx.subscribe(font, move |this, _, event, cx| {
                 if let SelectEvent::Confirm(Some(value)) = event {
                     *this.font_value_mut(pane) = value.clone();
+                    this.save(cx);
                     cx.emit(TypographyChanged);
                     cx.notify();
                 }
@@ -186,6 +197,7 @@ impl Typography {
             subscriptions.push(cx.subscribe(size, move |this, _, event, cx| {
                 if let SelectEvent::Confirm(Some(value)) = event {
                     *this.size_value_mut(pane) = value.clone();
+                    this.save(cx);
                     cx.emit(TypographyChanged);
                     cx.notify();
                 }
@@ -302,6 +314,22 @@ impl Typography {
         }
     }
 
+    /// Save both panes' choices for windows opened later, also after a restart.
+    fn save(&self, cx: &mut App) {
+        let pane = |pane: Pane| PaneTypography {
+            font: (self.font_value(pane) != &self.default_font(pane))
+                .then(|| self.font_value(pane).to_string()),
+            size: (self.size_value(pane) != &Self::default_size(pane))
+                .then(|| self.size_value(pane).parse().ok())
+                .flatten(),
+        };
+        let (editor, preview) = (pane(Pane::Editor), pane(Pane::Preview));
+        settings_file::update(cx, |settings| {
+            settings.editor = editor;
+            settings.preview = preview;
+        });
+    }
+
     /// Whether the pane uses its default font and size.
     pub(crate) fn is_default(&self, pane: Pane, _: &App) -> bool {
         self.font_value(pane) == &self.default_font(pane)
@@ -320,6 +348,7 @@ impl Typography {
         if let Some(state) = self.size_state(pane) {
             state.update(cx, |state, cx| state.set_selected_value(&size, window, cx));
         }
+        self.save(cx);
         cx.emit(TypographyChanged);
         cx.notify();
     }

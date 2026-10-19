@@ -4,6 +4,9 @@
 
 use gpui_kit::component::{Theme, ThemeMode, ThemeRegistry};
 use gpui_kit::{App, Global, Window};
+use serde::{Deserialize, Serialize};
+
+use crate::settings_file;
 
 const THEMES: &str = include_str!("../themes/neon.json");
 const LIGHT: &str = "Neon Light";
@@ -35,7 +38,8 @@ pub(crate) fn install(cx: &mut App) {
 }
 
 /// Which appearance the app shows: the system's, or a fixed one.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Appearance {
     #[default]
     System,
@@ -70,7 +74,13 @@ pub(crate) fn appearance(cx: &App) -> Appearance {
 /// Choose the appearance for every window and show it now.
 pub(crate) fn set_appearance(appearance: Appearance, window: &mut Window, cx: &mut App) {
     cx.set_global(AppearanceSetting(appearance));
+    settings_file::update(cx, |settings| settings.appearance = appearance);
     apply_appearance(window, cx);
+}
+
+/// Start from a saved appearance; windows show it when they open.
+pub(crate) fn restore_appearance(appearance: Appearance, cx: &mut App) {
+    cx.set_global(AppearanceSetting(appearance));
 }
 
 /// Show the chosen appearance; with System, follow the window's current

@@ -55,6 +55,7 @@ fn main() {
     app.run(move |cx| {
         gpui_kit::init(cx);
         workspace::init(cx);
+        workspace::load_settings(cx);
         // Bindings are registered above, so the menus show their shortcuts.
         set_menus(cx);
         cx.set_global(OpenWorkspaces::default());

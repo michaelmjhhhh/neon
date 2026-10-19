@@ -32,6 +32,7 @@ Groups, in this order:
 ### Added
 
 - Enter on a list item starts the next one: `- ` bullets keep their marker and indent, numbered items count up, and tasks continue unchecked. Enter on an empty item ends the list; Shift+Enter inserts a plain newline.
+- Settings are remembered: the appearance and each pane's font and size are saved and restored the next time Neon opens.
 
 ### Fixed
 
