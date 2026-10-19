@@ -1293,6 +1293,7 @@ impl Workspace {
             // the space around the rows, which clears the selection so new
             // files and folders go to the top of the open folder.
             let row_pressed = Rc::new(Cell::new(false));
+            let tree = self.tree.clone();
             div()
                 .id("folder-tree")
                 .flex_1()
@@ -1345,6 +1346,24 @@ impl Workspace {
                             .pl(rem * 0.5)
                             .child(div().w(gpui_kit::px(1.)).h_full().bg(guide))
                     });
+                    // An empty folder's "Empty" row cannot be selected; a press
+                    // on it selects the folder, where a new file would go.
+                    let select_folder = entry.is_disabled().then(|| {
+                        let folder = Path::new(item.id.as_ref())
+                            .parent()
+                            .map(|path| SharedString::from(path.to_string_lossy().into_owned()));
+                        let tree = tree.clone();
+                        let row_pressed = row_pressed.clone();
+                        move |_: &gpui_kit::MouseDownEvent,
+                              _: &mut Window,
+                              cx: &mut gpui_kit::App| {
+                            row_pressed.set(true);
+                            tree.update(cx, |tree, cx| {
+                                let ix = folder.as_ref().and_then(|folder| tree.index_of(folder));
+                                tree.set_selected_index(ix, cx);
+                            });
+                        }
+                    });
                     let row_pressed = row_pressed.clone();
                     ListItem::new(item.id.clone())
                         .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, _| {
@@ -1365,6 +1384,9 @@ impl Workspace {
                                 .items_center()
                                 .w_full()
                                 .min_w_0()
+                                .when_some(select_folder, |this, select_folder| {
+                                    this.on_mouse_down(gpui_kit::MouseButton::Left, select_folder)
+                                })
                                 .children(guides)
                                 .child(
                                     div()
