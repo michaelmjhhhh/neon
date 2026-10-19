@@ -12,8 +12,8 @@ use gpui_kit::{
 use workspace::LatencyBench;
 use workspace::{
     CloseWindow, ExportDocx, ExportHtml, ExportPdf, NewFile, Open, OpenFolder, OpenSettings, Quit,
-    RefreshFolder, Save, SaveAs, ShowEditor, ShowPreview, ShowSplit, ToggleSidebar, ToggleTheme,
-    Workspace,
+    RefreshFolder, Save, SaveAs, ShowEditor, ShowPreview, ShowSplit, ToggleBold, ToggleItalic,
+    ToggleSidebar, ToggleTheme, Workspace,
 };
 
 /// Every open document window, so files opened from Finder can reuse one.
@@ -257,6 +257,9 @@ fn set_menus(cx: &mut App) {
                 gpui_kit::component::input::SelectAll,
                 OsAction::SelectAll,
             ),
+            MenuItem::separator(),
+            MenuItem::action("Bold", ToggleBold),
+            MenuItem::action("Italic", ToggleItalic),
         ]),
         Menu::new("View").items([
             MenuItem::action("Editor", ShowEditor),

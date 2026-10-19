@@ -55,7 +55,9 @@ This removes the quarantine flag the browser added to the download, so macOS ope
 | Open folder | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>O</kbd> |
 | Save / Save As | <kbd>⌘</kbd> <kbd>S</kbd> / <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>S</kbd> |
 | Editor / Split / Preview | <kbd>⌘</kbd> <kbd>1</kbd> / <kbd>⌘</kbd> <kbd>2</kbd> / <kbd>⌘</kbd> <kbd>3</kbd> |
-| Toggle sidebar | <kbd>⌘</kbd> <kbd>B</kbd> |
+| Bold / Italic | <kbd>⌘</kbd> <kbd>B</kbd> / <kbd>⌘</kbd> <kbd>I</kbd> |
+| Indent / outdent list item | <kbd>Tab</kbd> / <kbd>⇧</kbd> <kbd>Tab</kbd> |
+| Toggle sidebar | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>B</kbd> |
 | Settings | <kbd>⌘</kbd> <kbd>,</kbd> |
 | Close window | <kbd>⌘</kbd> <kbd>W</kbd> |
 

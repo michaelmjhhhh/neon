@@ -31,6 +31,15 @@ pub(crate) fn on_enter(text: &Rope, cursor: usize) -> Option<(Range<usize>, Stri
     ))
 }
 
+/// Whether the line at `cursor` is a list item outside a code block.
+pub(crate) fn is_list_item(text: &Rope, cursor: usize) -> bool {
+    let row = text.offset_to_point(cursor).row;
+    let line = text
+        .slice(text.line_start_offset(row)..text.line_end_offset(row))
+        .to_string();
+    ListItem::parse(&line).is_some() && !in_code_block(text, row)
+}
+
 struct ListItem<'a> {
     indent: &'a str,
     marker: Marker,
@@ -134,6 +143,15 @@ mod tests {
         assert_eq!(enter_at_end("---"), None);
         assert_eq!(enter_at_end("2024 was"), None);
         assert_eq!(enter_at_end("```\n- milk"), None);
+    }
+
+    #[test]
+    fn list_items_are_recognized_by_line() {
+        let rope = Rope::from("intro\n  - milk\n3. eggs\n```\n- code\n```");
+        assert!(!is_list_item(&rope, 2));
+        assert!(is_list_item(&rope, 8));
+        assert!(is_list_item(&rope, 16));
+        assert!(!is_list_item(&rope, 28));
     }
 
     #[test]
