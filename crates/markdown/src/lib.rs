@@ -9,6 +9,7 @@
 mod document;
 mod inline;
 mod splice;
+mod word_count;
 
 pub use document::{
     Block, BlockId, BlockKind, CodeBlock, ColumnAlignment, DocumentStats, Heading, Image, ListItem,
@@ -16,3 +17,4 @@ pub use document::{
 };
 pub use inline::{InlineLink, InlineRun, InlineStyle, InlineText};
 pub use splice::BlockSplice;
+pub use word_count::{WordCounter, count_words};

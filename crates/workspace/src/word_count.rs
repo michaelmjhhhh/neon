@@ -4,6 +4,7 @@ use gpui_kit::component::input::Rope;
 use gpui_kit::{
     AppContext as _, Context, IntoElement, ParentElement as _, Render, Task, Window, div,
 };
+use markdown::WordCounter;
 
 /// Source statistics do not need the preview's parsed document. This view
 /// counts shared rope chunks in the background without flattening the file.
@@ -42,18 +43,11 @@ impl WordCount {
             };
             let words = cx
                 .background_spawn(async move {
-                    let mut words = 0;
-                    let mut in_word = false;
+                    let mut counter = WordCounter::default();
                     for chunk in source.chunks() {
-                        for character in chunk.chars() {
-                            let next_in_word = !character.is_whitespace();
-                            if next_in_word && !in_word {
-                                words += 1;
-                            }
-                            in_word = next_in_word;
-                        }
+                        counter.push(chunk);
                     }
-                    words
+                    counter.words()
                 })
                 .await;
             this.update(cx, |this, cx| {
