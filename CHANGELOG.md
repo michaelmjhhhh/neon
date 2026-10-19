@@ -29,6 +29,8 @@ Groups, in this order:
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-19
+
 ### Added
 
 - Each release lists SHA-256 checksums and a build provenance attestation, so a download can be checked against the source it was built from.
