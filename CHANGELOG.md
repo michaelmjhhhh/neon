@@ -29,6 +29,10 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Added
+
+- Enter on a list item starts the next one: `- ` bullets keep their marker and indent, numbered items count up, and tasks continue unchecked. Enter on an empty item ends the list; Shift+Enter inserts a plain newline.
+
 ### Fixed
 
 - Saving with Cmd+S no longer reopens a hidden sidebar. Cmd+B still toggles it.
