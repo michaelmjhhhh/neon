@@ -76,6 +76,10 @@ impl SettingsView {
 
     /// Keep picker entities only while their settings section is visible.
     pub(crate) fn set_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // Another window may have changed the saved setting since this opened.
+        if open {
+            self.line_numbers = settings_file::saved(cx).line_numbers;
+        }
         self.typography.update(cx, |typography, cx| {
             if open && self.section == Section::Typography {
                 typography.show_pickers(window, cx);
