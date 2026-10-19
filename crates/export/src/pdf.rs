@@ -425,7 +425,15 @@ mod tests {
 
     #[test]
     fn rejects_a_worker_that_writes_no_pdf() {
-        let (result, dir) = export_with("/usr/bin/true");
+        // The worker must read the whole document before exiting: one that
+        // exits first, like `/usr/bin/true`, races the parent's write and
+        // fails the export with a broken pipe instead.
+        let scripts = tempfile::tempdir().unwrap();
+        let worker = scripts.path().join("worker");
+        std::fs::write(&worker, "#!/bin/sh\ncat > /dev/null\n").unwrap();
+        std::fs::set_permissions(&worker, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let (result, dir) = export_with(worker.to_str().unwrap());
         let error = result.unwrap_err().to_string();
         assert!(error.contains("incomplete file"), "{error}");
         assert_eq!(files(&dir), 0);
