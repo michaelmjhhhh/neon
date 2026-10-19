@@ -1,5 +1,5 @@
 use gpui_kit::SharedString;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use gpui_kit::component::tree::TreeItem;
@@ -43,6 +43,21 @@ impl FolderEntry {
                     .map(|entry| entry.into_tree_item(expanded)),
             )
             .children(placeholder)
+    }
+
+    /// Record how many Markdown files each folder holds, at any depth, and
+    /// return this entry's count.
+    pub(super) fn count_files(&self, counts: &mut HashMap<SharedString, usize>) -> usize {
+        if !self.is_dir {
+            return 1;
+        }
+        let count = self
+            .children
+            .iter()
+            .map(|child| child.count_files(counts))
+            .sum();
+        counts.insert(self.path.to_string_lossy().into_owned().into(), count);
+        count
     }
 }
 
@@ -146,6 +161,9 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
 
         assert_eq!(names, ["empty", "hidden-only", "notes", "b.md"]);
+        let mut counts = HashMap::new();
+        let total: usize = entries.iter().map(|e| e.count_files(&mut counts)).sum();
+        assert_eq!(total, 2);
     }
 
     #[test]

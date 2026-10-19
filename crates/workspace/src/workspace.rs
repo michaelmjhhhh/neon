@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -130,6 +130,8 @@ pub struct Workspace {
     folder_task: Option<Task<()>>,
     folder_empty: bool,
     expanded_folders: HashSet<SharedString>,
+    /// How many Markdown files each listed folder holds, at any depth.
+    folder_file_counts: Rc<HashMap<SharedString, usize>>,
     /// A tree item to select once the next scan lands, in place of the
     /// open document: a folder just created.
     select_after_scan: Option<SharedString>,
@@ -230,6 +232,7 @@ impl Workspace {
             folder_task: None,
             folder_empty: true,
             expanded_folders: HashSet::new(),
+            folder_file_counts: Rc::default(),
             select_after_scan: None,
             sidebar_visible: true,
             settings_open: false,
@@ -747,7 +750,14 @@ impl Workspace {
             let path = path.clone();
             async move {
                 let path = std::fs::canonicalize(path)?;
-                scan_folder(&path).map(|entries| (path, entries))
+                let entries = scan_folder(&path)?;
+                let mut counts = HashMap::new();
+                let total = entries
+                    .iter()
+                    .map(|entry| entry.count_files(&mut counts))
+                    .sum();
+                counts.insert(path.to_string_lossy().into_owned().into(), total);
+                Ok::<_, std::io::Error>((path, entries, counts))
             }
         });
         self.folder_task = Some(cx.spawn_in(window, async move |this, cx| {
@@ -755,8 +765,9 @@ impl Workspace {
             this.update_in(cx, |this, window, cx| {
                 this.folder_task = None;
                 match result {
-                    Ok((path, entries)) => {
+                    Ok((path, entries, counts)) => {
                         this.folder_empty = entries.is_empty();
+                        this.folder_file_counts = Rc::new(counts);
                         if this.folder.as_ref() != Some(&path) {
                             this.expanded_folders.clear();
                         }
@@ -1100,6 +1111,11 @@ impl Workspace {
         );
 
         let header = self.folder.as_deref().map(|folder| {
+            let total = self
+                .folder_file_counts
+                .get(folder.to_string_lossy().as_ref())
+                .copied()
+                .unwrap_or_default();
             div()
                 .flex()
                 .flex_none()
@@ -1110,12 +1126,28 @@ impl Workspace {
                 .pl_1()
                 .child(
                     div()
+                        .flex()
                         .flex_1()
+                        .items_baseline()
+                        .gap_1p5()
                         .min_w_0()
-                        .truncate()
                         .text_sm()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(file_name(folder)),
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(file_name(folder)),
+                        )
+                        .when(total > 0 && !reading, |this| {
+                            this.child(
+                                div()
+                                    .flex_none()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(format_count(total)),
+                            )
+                        }),
                 )
                 .when(reading, |this| {
                     this.child(Spinner::new().xsmall().color(theme.muted_foreground))
@@ -1233,33 +1265,59 @@ impl Workspace {
             )
             .into_any_element()
         } else {
-            let folder_icon = theme.muted_foreground;
+            let muted = theme.muted_foreground;
             let active_icon = theme.primary;
+            let guide = theme.sidebar_border;
             let row_radius = theme.radius;
+            let counts = self.folder_file_counts.clone();
             div()
                 .flex_1()
                 .min_h_0()
+                .pt_1()
                 .child(Tree::new(&self.tree, move |_, entry, _, window, _| {
                     let item = entry.item();
+                    let rem = window.rem_size();
                     let is_active = active.as_deref() == Some(item.id.as_ref());
-                    let (chevron, icon) = if entry.is_folder() {
+                    let (chevron, icon) = if entry.is_disabled() {
+                        (None, None)
+                    } else if entry.is_folder() {
                         if entry.is_expanded() {
-                            (Some(IconName::ChevronDown), IconName::FolderOpen)
+                            (Some(IconName::ChevronDown), Some(IconName::FolderOpen))
                         } else {
-                            (Some(IconName::ChevronRight), IconName::Folder)
+                            (Some(IconName::ChevronRight), Some(IconName::Folder))
                         }
                     } else {
-                        (None, IconName::FileText)
+                        (None, Some(IconName::FileText))
                     };
-                    let rem = window.rem_size();
+                    // A collapsed folder says how much it holds.
+                    let count = counts
+                        .get(&item.id)
+                        .copied()
+                        .filter(|count| *count > 0 && !entry.is_expanded());
+                    // Files show their extension quietly: every row is Markdown.
+                    let label = item.label.as_ref();
+                    let (stem, extension) = match label.rfind('.') {
+                        Some(ix) if ix > 0 && !entry.is_folder() => {
+                            (&label[..ix], Some(label[ix..].to_string()))
+                        }
+                        _ => (label, None),
+                    };
+                    // One slot per ancestor, each with a hairline under that
+                    // ancestor's chevron, so a nested row reads as a branch.
+                    let guides = (0..entry.depth()).map(|_| {
+                        div()
+                            .flex_none()
+                            .w(rem * 1.25)
+                            .h_7()
+                            .pl(rem * 0.5)
+                            .child(div().w(gpui_kit::px(1.)).h_full().bg(guide))
+                    });
                     ListItem::new(item.id.clone())
                         .h_7()
                         .mx_2()
                         .px_0()
                         .py_0()
-                        // Each level indents by one icon slot, so a child's
-                        // chevron sits under its parent's folder icon.
-                        .pl(rem * (0.25 + entry.depth() as f32 * 1.25))
+                        .pl(rem * 0.25)
                         .pr_2()
                         .rounded(row_radius)
                         .text_sm()
@@ -1268,39 +1326,57 @@ impl Workspace {
                             div()
                                 .flex()
                                 .items_center()
-                                .gap_1()
+                                .w_full()
                                 .min_w_0()
-                                // Fixed slots keep labels on one spine whether
-                                // or not a row has a disclosure chevron.
+                                .children(guides)
                                 .child(
                                     div()
-                                        .flex_none()
-                                        .size_4()
                                         .flex()
+                                        .flex_1()
                                         .items_center()
-                                        .justify_center()
-                                        .text_color(folder_icon)
-                                        .children(chevron.map(|chevron| {
-                                            gpui_kit::component::Icon::new(chevron).xsmall()
-                                        })),
-                                )
-                                .child(
-                                    gpui_kit::component::Icon::new(icon)
-                                        .small()
-                                        .flex_none()
-                                        .text_color(if is_active {
-                                            active_icon
-                                        } else {
-                                            folder_icon
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .ml_1()
+                                        .gap_1()
                                         .min_w_0()
-                                        .truncate()
-                                        .when(is_active, |row| row.font_weight(FontWeight::MEDIUM))
-                                        .child(item.label.clone()),
+                                        // Fixed slots keep labels on one spine
+                                        // whether or not a row has a chevron.
+                                        .child(icon_slot().text_color(muted).children(chevron.map(
+                                            |chevron| {
+                                                gpui_kit::component::Icon::new(chevron).xsmall()
+                                            },
+                                        )))
+                                        .child(icon_slot().children(icon.map(|icon| {
+                                            gpui_kit::component::Icon::new(icon).small().text_color(
+                                                if is_active { active_icon } else { muted },
+                                            )
+                                        })))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .flex_1()
+                                                .ml_1()
+                                                .min_w_0()
+                                                .when(is_active, |row| {
+                                                    row.font_weight(FontWeight::MEDIUM)
+                                                })
+                                                .child(
+                                                    div()
+                                                        .min_w_0()
+                                                        .truncate()
+                                                        .child(stem.to_string()),
+                                                )
+                                                .children(extension.map(|extension| {
+                                                    div()
+                                                        .flex_none()
+                                                        .text_color(muted)
+                                                        .child(extension)
+                                                })),
+                                        )
+                                        .children(count.map(|count| {
+                                            div()
+                                                .flex_none()
+                                                .text_xs()
+                                                .text_color(muted)
+                                                .child(format_count(count))
+                                        })),
                                 ),
                         )
                 }))
@@ -1814,6 +1890,16 @@ fn sidebar_toggle(sidebar_visible: bool, cx: &Context<Workspace>) -> Button {
         .on_click(
             cx.listener(|this, _, window, cx| this.toggle_sidebar(&ToggleSidebar, window, cx)),
         )
+}
+
+/// A one-rem square that centers a tree row's chevron or icon.
+fn icon_slot() -> gpui_kit::Div {
+    div()
+        .flex_none()
+        .size_4()
+        .flex()
+        .items_center()
+        .justify_center()
 }
 
 /// A resize handle that stays out of sight until hovered or dragged, for
