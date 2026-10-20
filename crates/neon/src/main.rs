@@ -11,9 +11,10 @@ use gpui_kit::{
 #[cfg(feature = "diagnostics")]
 use workspace::LatencyBench;
 use workspace::{
-    CloseWindow, ExportDocx, ExportHtml, ExportPdf, NewFile, NewFolder, Open, OpenFolder,
-    OpenSettings, Quit, RefreshFolder, Save, SaveAs, ShowEditor, ShowPreview, ShowSplit,
-    ToggleBold, ToggleItalic, ToggleLineNumbers, ToggleSidebar, ToggleTheme, Workspace,
+    CloseTab, CloseWindow, ExportDocx, ExportHtml, ExportPdf, NewFile, NewFolder, NewTab, NextTab,
+    Open, OpenFolder, OpenSettings, PreviousTab, Quit, RefreshFolder, Save, SaveAs, ShowEditor,
+    ShowPreview, ShowSplit, ToggleBold, ToggleItalic, ToggleLineNumbers, ToggleSidebar,
+    ToggleTheme, Workspace,
 };
 
 /// Every open document window, so files opened from Finder can reuse one.
@@ -102,8 +103,8 @@ fn main() {
     });
 }
 
-/// Show each file: focus a window that already has it, reuse the empty launch
-/// window, or open a new window.
+/// Show each file: bring forward the window and tab that already have it,
+/// reuse the empty launch window, or open a new window.
 fn open_paths(paths: Vec<PathBuf>, cx: &mut App) {
     for path in paths {
         let workspaces: Vec<_> = cx
@@ -119,10 +120,15 @@ fn open_paths(paths: Vec<PathBuf>, cx: &mut App) {
 
         let already_open = workspaces
             .iter()
-            .find(|(_, workspace)| workspace.read(cx).document().path() == Some(path.as_path()));
-        if let Some((window, _)) = already_open {
+            .find(|(_, workspace)| workspace.read(cx).has_open_file(&path));
+        if let Some((window, workspace)) = already_open {
+            let workspace = workspace.clone();
             window
-                .update(cx, |_, window, _| window.activate_window())
+                .update(cx, |_, window, cx| {
+                    // Opening a file a tab already shows switches to that tab.
+                    workspace.update(cx, |workspace, cx| workspace.open_path(path, window, cx));
+                    window.activate_window();
+                })
                 .ok();
             continue;
         }
@@ -242,6 +248,7 @@ fn set_menus(cx: &mut App) {
             MenuItem::action("Quit Neon", Quit),
         ]),
         Menu::new("File").items([
+            MenuItem::action("New Tab", NewTab),
             MenuItem::action("New File…", NewFile),
             MenuItem::action("New Folder…", NewFolder),
             MenuItem::action("Open File…", Open),
@@ -256,6 +263,7 @@ fn set_menus(cx: &mut App) {
                 MenuItem::action("Word Document…", ExportDocx),
             ])),
             MenuItem::separator(),
+            MenuItem::action("Close Tab", CloseTab),
             MenuItem::action("Close Window", CloseWindow),
         ]),
         Menu::new("Edit").items([
@@ -282,6 +290,9 @@ fn set_menus(cx: &mut App) {
             MenuItem::action("Toggle Sidebar", ToggleSidebar),
             MenuItem::action("Toggle Line Numbers", ToggleLineNumbers),
             MenuItem::action("Toggle Dark Mode", ToggleTheme),
+            MenuItem::separator(),
+            MenuItem::action("Show Next Tab", NextTab),
+            MenuItem::action("Show Previous Tab", PreviousTab),
         ]),
     ]);
 }

@@ -29,6 +29,22 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Added
+
+- Open several files in one window as tabs: Cmd+T opens a new tab, and a file picked in the sidebar opens in the tab you are on. Each tab keeps its own edits, undo history and scroll position.
+- Switch tabs by clicking them, with Control-Tab and Control-Shift-Tab, or with Cmd+} and Cmd+{.
+- Close a tab with Cmd+W, its close button or a middle click; a tab with unsaved edits asks first.
+
+### Changed
+
+- Cmd+W closes the current tab, and the window once its last tab closes; Close Window moves to Cmd+Shift+W.
+- Opening a file that a tab already shows, from the sidebar, Open File or Finder, switches to that tab instead of opening it again.
+- Closing a window or quitting asks before discarding unsaved edits in any of its tabs, not only the one shown.
+
+### Fixed
+
+- Show the preview in the font and size saved in Settings as soon as a window opens; they used to apply only after being changed again.
+
 ## [0.7.0] - 2026-10-20
 
 ### Added

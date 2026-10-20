@@ -64,6 +64,21 @@ impl ScrollMetrics {
         }
     }
 
+    /// Measure another tab's editor and preview.
+    pub(crate) fn set_panes(
+        &mut self,
+        editor: Entity<EditorState>,
+        preview: Entity<MarkdownPreview>,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor = editor;
+        self.preview = preview;
+        self.offsets = [0.; 2];
+        self.preview_active = self.layout == LayoutMode::Preview;
+        self.update_viewed_percent(cx);
+        cx.notify();
+    }
+
     pub(crate) fn set_layout(&mut self, layout: LayoutMode, cx: &mut Context<Self>) {
         self.layout = layout;
         self.preview_active = layout == LayoutMode::Preview;

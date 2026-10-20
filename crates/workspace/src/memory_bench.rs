@@ -153,7 +153,7 @@ impl MemoryBench {
         cx: &mut AsyncWindowContext,
     ) -> anyhow::Result<()> {
         let before =
-            workspace.read_with(cx, |workspace, cx| workspace.editor.read(cx).text().len())?;
+            workspace.read_with(cx, |workspace, cx| workspace.editor().read(cx).text().len())?;
         workspace.update_in(cx, |workspace, window, cx| {
             workspace.focus_content(window, cx)
         })?;
@@ -165,7 +165,7 @@ impl MemoryBench {
         }
         self.settle(workspace, cx).await?;
         let after =
-            workspace.read_with(cx, |workspace, cx| workspace.editor.read(cx).text().len())?;
+            workspace.read_with(cx, |workspace, cx| workspace.editor().read(cx).text().len())?;
         anyhow::ensure!(
             after == before + 40,
             "typing did not insert 40 bytes ({before} -> {after})"
@@ -183,7 +183,7 @@ impl MemoryBench {
             let ready = workspace.read_with(cx, |workspace, cx| {
                 !workspace.is_busy()
                     && workspace.folder_task.is_none()
-                    && !workspace.preview.read(cx).is_parsing()
+                    && !workspace.preview().read(cx).is_parsing()
             })?;
             if ready {
                 break;
@@ -208,8 +208,8 @@ impl MemoryBench {
     ) -> anyhow::Result<()> {
         let (bytes, blocks, layout) = workspace.read_with(cx, |workspace, cx| {
             (
-                workspace.editor.read(cx).text().len(),
-                workspace.preview.read(cx).document().blocks().len(),
+                workspace.editor().read(cx).text().len(),
+                workspace.preview().read(cx).document().blocks().len(),
                 format!("{:?}", workspace.layout),
             )
         })?;
