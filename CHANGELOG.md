@@ -29,6 +29,8 @@ Groups, in this order:
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-20
+
 ### Performance
 
 - Keep preview images no wider than the preview can show: a 4,000 × 3,000 photo now takes 12.6 MB of memory instead of 48 MB, and the same reduction applies to its GPU copy.
