@@ -28,6 +28,9 @@ pub(crate) fn install(cx: &mut App) {
     Theme::update(cx, |theme| {
         theme.light_theme = light;
         theme.dark_theme = dark;
+        // Focus shows as the control's border in the accent, without the
+        // soft band around it: the accent stays a thin line, not a glow.
+        theme.focus_ring = false;
     });
     let mode = if Theme::global(cx).is_dark() {
         ThemeMode::Dark
