@@ -33,14 +33,13 @@ use gpui_kit::component::{Disableable as _, IconName, Sizable as _};
 use gpui_kit::{
     Anchor, AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable, FontWeight,
     InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Pixels, Render,
-    SharedString, StyleRefinement, Styled as _, Subscription, Task, Window, div,
+    ScrollHandle, SharedString, StyleRefinement, Styled as _, Subscription, Task, Window, div,
     prelude::FluentBuilder as _,
 };
 use markdown_preview::MarkdownPreview;
 
 use crate::KEY_CONTEXT;
 use crate::document_file::DocumentFile;
-use crate::editor_pane::EditorPane;
 use crate::inline_format::{self, Style};
 use crate::list_continuation;
 use crate::present_now::{self, NativeView};
@@ -49,6 +48,9 @@ use crate::settings::{LineNumbersChanged, SettingsView};
 use crate::slash_commands::{Insertion, SlashCommands};
 use crate::theme::{self, Appearance};
 use crate::word_count::WordCount;
+
+mod tabs;
+use tabs::DocumentTab;
 
 #[cfg(feature = "memory-bench")]
 #[path = "memory_bench.rs"]
@@ -60,6 +62,10 @@ gpui_kit::actions!(
     workspace,
     [
         NewFile,
+        NewTab,
+        CloseTab,
+        NextTab,
+        PreviousTab,
         NewFolder,
         Open,
         OpenFolder,
@@ -132,9 +138,15 @@ impl LayoutMode {
     }
 }
 
-/// One document window: owns the open file, its editor, and its preview.
+/// One document window: owns its open files, each in a tab with its own
+/// editor and preview, and the folder beside them.
 pub struct Workspace {
-    document: DocumentFile,
+    /// Never empty.
+    tabs: Vec<DocumentTab>,
+    active_tab: usize,
+    /// The last tab id handed out.
+    next_tab_id: u64,
+    tab_scroll: ScrollHandle,
     folder: Option<PathBuf>,
     tree: Entity<TreeState>,
     folder_task: Option<Task<()>>,
@@ -150,18 +162,13 @@ pub struct Workspace {
     settings_open: bool,
     settings: Entity<SettingsView>,
     sidebar: Entity<WorkspaceSidebar>,
-    editor: Entity<EditorState>,
-    editor_pane: Entity<EditorPane>,
     typography: Entity<Typography>,
-    preview: Entity<MarkdownPreview>,
     scroll_metrics: Entity<ScrollMetrics>,
     word_count: Entity<WordCount>,
     /// The `/` template menu, kept to place the cursor in what it inserts.
     slash_commands: Rc<SlashCommands>,
     layout: LayoutMode,
     focus_handle: FocusHandle,
-    /// Cursor offset last revealed in the preview, to react to moves only.
-    revealed_cursor: Option<usize>,
     load_task: Option<Task<()>>,
     save_task: Option<Task<()>>,
     export_task: Option<Task<()>>,
@@ -176,23 +183,13 @@ impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let slash_commands = Rc::new(SlashCommands::default());
         let line_numbers = crate::settings_file::saved(cx).line_numbers;
-        let editor = cx.new(|cx| {
-            let mut editor = EditorState::new(window, cx)
-                .language("markdown")
-                .line_number(line_numbers)
-                .placeholder("Start writing, or open a Markdown file…");
-            editor.set_highlighter_factory(crate::highlighter::factory(), cx);
-            editor.lsp_mut().completion_provider = Some(slash_commands.clone());
-            editor
-        });
-        let preview = cx.new(MarkdownPreview::new);
+        let typography = cx.new(|cx| Typography::new(window, cx));
+        let tab = DocumentTab::new(0, line_numbers, &slash_commands, &typography, window, cx);
         let scroll_metrics =
-            cx.new(|cx| ScrollMetrics::new(editor.clone(), preview.clone(), window, cx));
+            cx.new(|cx| ScrollMetrics::new(tab.editor.clone(), tab.preview.clone(), window, cx));
         let word_count = cx.new(|_| WordCount::default());
 
         let tree = cx.new(|cx| TreeState::new(cx));
-        let typography = cx.new(|cx| Typography::new(window, cx));
-        let editor_pane = cx.new(|_| EditorPane::new(editor.clone(), typography.clone()));
         let settings = cx.new(|cx| SettingsView::new(typography.clone(), cx));
         let sidebar = cx.new({
             let workspace = cx.weak_entity();
@@ -214,28 +211,33 @@ impl Workspace {
                     .filter(|entry| !entry.is_folder() && !entry.is_disabled())
                     .map(|entry| PathBuf::from(entry.item().id.as_ref()));
                 if let Some(path) = path
-                    && this.document.path() != Some(path.as_path())
+                    && this.tab().document.path() != Some(path.as_path())
                     && !this.is_busy()
                 {
-                    this.confirm_discard(window, cx, move |this, window, cx| {
-                        this.open_path(path.clone(), window, cx);
-                    });
+                    // A file open in another tab is shown there, not twice.
+                    match this.tab_index_of_path(&path) {
+                        Some(ix) => this.activate_tab(ix, window, cx),
+                        None => this.confirm_discard(window, cx, move |this, window, cx| {
+                            this.open_path(path.clone(), window, cx);
+                        }),
+                    }
                 }
             }),
             cx.subscribe(&typography, |this, state, _, cx| {
                 let state = state.read(cx);
                 let font = state.preview_font(cx);
                 let scale = state.preview_size(cx) / 16.;
-                this.preview
-                    .update(cx, |preview, cx| preview.set_typography(font, scale, cx));
+                for tab in &this.tabs {
+                    let font = font.clone();
+                    tab.preview
+                        .update(cx, |preview, cx| preview.set_typography(font, scale, cx));
+                }
                 cx.notify();
             }),
             cx.subscribe_in(&settings, window, |this, _, event, window, cx| {
                 let LineNumbersChanged(visible) = *event;
                 this.set_line_numbers(visible, window, cx);
             }),
-            cx.subscribe_in(&editor, window, Self::on_editor_event),
-            cx.observe_in(&editor, window, Self::on_editor_notified),
             cx.observe_window_appearance(window, |_, window, cx| {
                 theme::apply_appearance(window, cx);
             }),
@@ -247,7 +249,10 @@ impl Workspace {
         ];
 
         let workspace = Self {
-            document: DocumentFile::default(),
+            tabs: vec![tab],
+            active_tab: 0,
+            next_tab_id: 0,
+            tab_scroll: ScrollHandle::new(),
             folder: None,
             tree,
             folder_task: None,
@@ -259,16 +264,12 @@ impl Workspace {
             settings_open: false,
             settings,
             sidebar,
-            editor,
-            editor_pane,
             typography,
-            preview,
             scroll_metrics,
             word_count,
             slash_commands,
             layout: LayoutMode::default(),
             focus_handle: cx.focus_handle(),
-            revealed_cursor: None,
             load_task: None,
             save_task: None,
             export_task: None,
@@ -285,15 +286,15 @@ impl Workspace {
     }
 
     pub fn editor(&self) -> &Entity<EditorState> {
-        &self.editor
+        &self.tab().editor
     }
 
     pub fn preview(&self) -> &Entity<MarkdownPreview> {
-        &self.preview
+        &self.tab().preview
     }
 
     pub fn document(&self) -> &DocumentFile {
-        &self.document
+        &self.tab().document
     }
 
     pub fn layout(&self) -> LayoutMode {
@@ -308,10 +309,11 @@ impl Workspace {
     /// file opened next can take it over instead of opening another window.
     pub fn is_pristine(&self, cx: &gpui_kit::App) -> bool {
         self.folder.is_none()
-            && self.document.path().is_none()
-            && !self.document.is_dirty()
+            && self.tabs.len() == 1
+            && self.tab().document.path().is_none()
+            && !self.tab().document.is_dirty()
             && !self.is_loading()
-            && self.editor.read(cx).text().len() == 0
+            && self.tab().editor.read(cx).text().len() == 0
     }
 
     /// Focus the pane that takes keyboard input in the current layout, or
@@ -320,10 +322,11 @@ impl Workspace {
         if self.settings_open {
             self.settings.read(cx).focus_handle(cx).focus(window, cx);
         } else if self.layout.shows_editor() {
-            self.editor
+            self.tab()
+                .editor
                 .update(cx, |editor, cx| editor.focus(window, cx));
         } else {
-            let handle = self.preview.read(cx).focus_handle(cx);
+            let handle = self.tab().preview.read(cx).focus_handle(cx);
             handle.focus(window, cx);
         }
     }
@@ -335,6 +338,12 @@ impl Workspace {
         }
         if path.is_dir() {
             self.load_folder(path, true, None, window, cx);
+            return;
+        }
+        // A file already open in a tab is shown there instead. This checks
+        // the path as given; the read checks it again once resolved.
+        if let Some(ix) = self.tab_index_of_path(&path) {
+            self.activate_tab(ix, window, cx);
             return;
         }
         let read = cx.background_spawn({
@@ -351,6 +360,16 @@ impl Workspace {
                 this.load_task = None;
                 this.set_editor_readonly(false, cx);
                 match result {
+                    // Tabs cannot change during a read, so a match here is
+                    // another tab, reached through a different path.
+                    Ok((path, _))
+                        if this.tab().document.path() != Some(path.as_path())
+                            && this.tab_index_of_path(&path).is_some() =>
+                    {
+                        if let Some(ix) = this.tab_index_of_path(&path) {
+                            this.activate_tab(ix, window, cx);
+                        }
+                    }
                     Ok((path, text)) => {
                         let previous_focus = window.focused(cx);
                         this.show_document(Some(path), &text, window, cx);
@@ -375,7 +394,8 @@ impl Workspace {
     }
 
     fn set_editor_readonly(&self, readonly: bool, cx: &mut Context<Self>) {
-        self.editor_pane
+        self.tab()
+            .editor_pane
             .update(cx, |pane, cx| pane.set_readonly(readonly, cx));
     }
 
@@ -386,18 +406,21 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.editor
+        self.tab()
+            .editor
             .update(cx, |editor, cx| editor.set_value(text, window, cx));
-        let source = self.editor.read(cx).text().clone();
+        let source = self.tab().editor.read(cx).text().clone();
         self.word_count
             .update(cx, |count, cx| count.set_source(source.clone(), cx));
         let base_dir = path.as_deref().and_then(Path::parent).map(Arc::from);
-        self.preview
+        self.tab()
+            .preview
             .update(cx, |preview, cx| preview.load_source(source, base_dir, cx));
-        self.document = path.map(DocumentFile::saved).unwrap_or_default();
+        let tab = self.tab_mut();
+        tab.document = path.map(DocumentFile::saved).unwrap_or_default();
+        tab.revealed_cursor = None;
         self.remember_session(cx);
         self.sync_tree_selection(cx);
-        self.revealed_cursor = None;
         self.update_window_title(window);
         self.focus_content(window, cx);
         cx.notify();
@@ -413,10 +436,23 @@ impl Workspace {
         if !matches!(event, InputEvent::Change) {
             return;
         }
-        let was_dirty = self.document.is_dirty();
-        self.document.record_edit();
+        let Some(ix) = self.tab_index_of_editor(editor) else {
+            return;
+        };
+        let tab = &mut self.tabs[ix];
+        let was_dirty = tab.document.is_dirty();
+        tab.document.record_edit();
         // Cloning the rope is O(1); the preview flattens it off the UI thread.
         let source = editor.read(cx).text().clone();
+        tab.preview
+            .update(cx, |preview, cx| preview.set_source(source.clone(), cx));
+        if ix != self.active_tab {
+            if !was_dirty {
+                self.update_window_title(window);
+            }
+            cx.notify();
+            return;
+        }
         let cursor = editor.read(cx).cursor();
         match self.slash_commands.take_insertion(&source, cursor) {
             Some(Insertion::Select(selection)) => {
@@ -436,9 +472,7 @@ impl Workspace {
             None => {}
         }
         self.word_count
-            .update(cx, |count, cx| count.set_source(source.clone(), cx));
-        self.preview
-            .update(cx, |preview, cx| preview.set_source(source, cx));
+            .update(cx, |count, cx| count.set_source(source, cx));
         self.draw_soon(window, cx);
         // Only the first edit changes this view; the cursor position and word
         // count notify through their own paths, so typing stays cheap.
@@ -455,14 +489,18 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let cursor = editor.read(cx).cursor();
-        if self.revealed_cursor == Some(cursor) {
+        if self.tab().editor != editor {
             return;
         }
-        self.revealed_cursor = Some(cursor);
+        let cursor = editor.read(cx).cursor();
+        if self.tab().revealed_cursor == Some(cursor) {
+            return;
+        }
+        self.tab_mut().revealed_cursor = Some(cursor);
         self.draw_soon(window, cx);
         if self.layout == LayoutMode::Split {
-            self.preview
+            self.tab()
+                .preview
                 .update(cx, |preview, cx| preview.reveal_offset(cursor, cx));
         }
         // No notify: the status bar reads the cursor during this view's
@@ -517,20 +555,24 @@ impl Workspace {
     }
 
     fn new_file(&mut self, _: &NewFile, window: &mut Window, cx: &mut Context<Self>) {
-        self.confirm_discard(window, cx, |this, window, cx| {
-            if this.folder.is_some() {
-                this.prompt_create_file(window, cx);
-            } else {
+        if self.folder.is_some() {
+            self.prompt_create_file(window, cx);
+        } else {
+            self.confirm_discard(window, cx, |this, window, cx| {
                 this.show_document(None, "", window, cx);
-            }
-        });
+            });
+        }
     }
 
     fn open(&mut self, _: &Open, window: &mut Window, cx: &mut Context<Self>) {
-        self.confirm_discard(window, cx, |this, window, cx| this.prompt_open(window, cx));
+        self.prompt_open(window, cx);
     }
 
+    /// Ask for a file, then show it in the tab that asked. File panels do
+    /// not block the window, so the tab is found again by id when the panel
+    /// closes; the user may have switched tabs meanwhile.
     fn prompt_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let tab_id = self.tab().id;
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -544,14 +586,24 @@ impl Workspace {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            this.update_in(cx, |this, window, cx| this.open_path(path, window, cx))
-                .ok();
+            this.update_in(cx, |this, window, cx| {
+                // A file open in another tab is shown there, with nothing
+                // to discard.
+                if let Some(ix) = this.tab_index_of_path(&path) {
+                    this.activate_tab(ix, window, cx);
+                } else if this.return_to_tab(tab_id, window, cx) {
+                    this.confirm_discard(window, cx, move |this, window, cx| {
+                        this.open_path(path.clone(), window, cx);
+                    });
+                }
+            })
+            .ok();
         })
         .detach();
     }
 
     fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
-        match self.document.path() {
+        match self.tab().document.path() {
             Some(path) => self.save_to(path.to_path_buf(), window, cx),
             None => self.prompt_save_as(window, cx),
         }
@@ -564,7 +616,8 @@ impl Workspace {
     /// Where save panels open: beside the document, else in the open
     /// folder, else at home.
     fn default_directory(&self) -> PathBuf {
-        self.document
+        self.tab()
+            .document
             .path()
             .and_then(Path::parent)
             .map(Path::to_path_buf)
@@ -575,17 +628,22 @@ impl Workspace {
 
     fn prompt_save_as(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let directory = self.default_directory();
-        let suggested_name = match self.document.path() {
-            Some(_) => self.document.display_name(),
+        let suggested_name = match self.tab().document.path() {
+            Some(_) => self.tab().document.display_name(),
             None => "Untitled.md".to_string(),
         };
+        let tab_id = self.tab().id;
         let path = cx.prompt_for_new_path(&directory, Some(&suggested_name));
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(path))) = path.await else {
                 return;
             };
-            this.update_in(cx, |this, window, cx| this.save_to(path, window, cx))
-                .ok();
+            this.update_in(cx, |this, window, cx| {
+                if this.return_to_tab(tab_id, window, cx) {
+                    this.save_to(path, window, cx);
+                }
+            })
+            .ok();
         })
         .detach();
     }
@@ -596,19 +654,23 @@ impl Workspace {
         }
         let directory = self.default_directory();
         let stem = self
+            .tab()
             .document
             .path()
             .and_then(Path::file_stem)
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Untitled".to_string());
         let suggested_name = format!("{stem}.{}", format.extension());
+        let tab_id = self.tab().id;
         let path = cx.prompt_for_new_path(&directory, Some(&suggested_name));
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(path))) = path.await else {
                 return;
             };
             this.update_in(cx, |this, window, cx| {
-                this.export_to(format, path, window, cx)
+                if this.return_to_tab(tab_id, window, cx) {
+                    this.export_to(format, path, window, cx);
+                }
             })
             .ok();
         })
@@ -627,14 +689,16 @@ impl Workspace {
         if self.export_task.is_some() {
             return;
         }
-        let markdown = self.editor.read(cx).text().to_string();
+        let markdown = self.tab().editor.read(cx).text().to_string();
         let title = self
+            .tab()
             .document
             .path()
             .and_then(Path::file_stem)
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Untitled".to_string());
         let base_dir = self
+            .tab()
             .document
             .path()
             .and_then(Path::parent)
@@ -680,8 +744,31 @@ impl Workspace {
         if self.is_busy() {
             return;
         }
-        let revision = self.document.edit_revision();
-        let text = self.editor.read(cx).text().clone();
+        let tab_id = self.tab().id;
+        // Saving as a file another tab shows would leave two tabs on it.
+        // A clean one closes once the save lands; edits in one stop the save.
+        let mut replaced_tab = None;
+        if self.tab().document.path() != Some(path.as_path())
+            && let Ok(target) = std::fs::canonicalize(&path)
+            && let Some(other) = self
+                .tabs
+                .iter()
+                .find(|tab| tab.id != tab_id && tab.document.path() == Some(target.as_path()))
+        {
+            if other.document.is_dirty() {
+                let name = file_name(&path);
+                window.push_notification(
+                    Notification::error(format!(
+                        "Couldn’t save “{name}”. It is open in another tab with unsaved edits."
+                    )),
+                    cx,
+                );
+                return;
+            }
+            replaced_tab = Some(other.id);
+        }
+        let revision = self.tab().document.edit_revision();
+        let text = self.tab().editor.read(cx).text().clone();
         let write = cx.background_spawn({
             let path = path.clone();
             async move {
@@ -695,12 +782,22 @@ impl Workspace {
                 this.save_task = None;
                 match result {
                     Ok(path) => {
-                        this.document.record_save(path, revision);
+                        // Tabs cannot change while a save runs, but the
+                        // saved tab is found by id all the same.
+                        if let Some(tab) = this.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                            tab.document.record_save(path, revision);
+                            let base_dir =
+                                tab.document.path().and_then(Path::parent).map(Arc::from);
+                            tab.preview
+                                .update(cx, |preview, cx| preview.set_base_dir(base_dir, cx));
+                        }
+                        if let Some(ix) = replaced_tab
+                            .and_then(|id| this.tabs.iter().position(|tab| tab.id == id))
+                        {
+                            this.remove_tab(ix, window, cx);
+                        }
                         this.remember_session(cx);
                         this.update_window_title(window);
-                        let base_dir = this.document.path().and_then(Path::parent).map(Arc::from);
-                        this.preview
-                            .update(cx, |preview, cx| preview.set_base_dir(base_dir, cx));
                         this.refresh_folder(&RefreshFolder, window, cx);
                     }
                     Err(error) => {
@@ -720,6 +817,7 @@ impl Workspace {
 
     fn sync_tree_selection(&self, cx: &mut Context<Self>) {
         let id = self
+            .tab()
             .document
             .path()
             .map(|path| SharedString::from(path.to_string_lossy().into_owned()));
@@ -745,7 +843,7 @@ impl Workspace {
         }
         let session = Session {
             folder: self.folder.clone(),
-            file: self.document.path().map(Path::to_path_buf),
+            file: self.tab().document.path().map(Path::to_path_buf),
         };
         crate::session_file::remember(session, cx);
     }
@@ -819,7 +917,7 @@ impl Workspace {
                         let selected = select
                             .filter(|id| Path::new(id.as_ref()).starts_with(&path))
                             .or_else(|| {
-                                this.document.path().map(|path| {
+                                this.tab().document.path().map(|path| {
                                     SharedString::from(path.to_string_lossy().into_owned())
                                 })
                             });
@@ -884,10 +982,13 @@ impl Workspace {
         Some(directory)
     }
 
+    /// Ask for a new file's name, then create it and show it in the tab
+    /// that asked, once any edits there may be discarded.
     fn prompt_create_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(directory) = self.target_directory(cx) else {
             return;
         };
+        let tab_id = self.tab().id;
         let path = cx.prompt_for_new_path(&directory, Some("Untitled.md"));
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut path))) = path.await else {
@@ -899,47 +1000,56 @@ impl Workspace {
                 path = name.into();
             }
             this.update_in(cx, |this, window, cx| {
-                if this.is_busy() {
-                    return;
+                if this.return_to_tab(tab_id, window, cx) {
+                    this.confirm_discard(window, cx, move |this, window, cx| {
+                        this.create_file(path.clone(), window, cx);
+                    });
                 }
-                let create = cx.background_spawn({
-                    let path = path.clone();
-                    async move {
-                        std::fs::OpenOptions::new()
-                            .write(true)
-                            .create_new(true)
-                            .open(&path)?;
-                        std::fs::canonicalize(path)
-                    }
-                });
-                this.set_editor_readonly(true, cx);
-                this.load_task = Some(cx.spawn_in(window, async move |this, cx| {
-                    let result = create.await;
-                    this.update_in(cx, |this, window, cx| {
-                        this.load_task = None;
-                        this.set_editor_readonly(false, cx);
-                        match result {
-                            Ok(path) => {
-                                this.show_document(Some(path), "", window, cx);
-                                this.refresh_folder(&RefreshFolder, window, cx);
-                            }
-                            Err(error) => window.push_notification(
-                                Notification::error(format!(
-                                    "Couldn’t create “{}”. {error}",
-                                    path.display()
-                                )),
-                                cx,
-                            ),
-                        }
-                        cx.notify();
-                    })
-                    .ok();
-                }));
-                cx.notify();
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Create an empty file at `path` and show it.
+    fn create_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_busy() {
+            return;
+        }
+        let create = cx.background_spawn({
+            let path = path.clone();
+            async move {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)?;
+                std::fs::canonicalize(path)
+            }
+        });
+        self.set_editor_readonly(true, cx);
+        self.load_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = create.await;
+            this.update_in(cx, |this, window, cx| {
+                this.load_task = None;
+                this.set_editor_readonly(false, cx);
+                match result {
+                    Ok(path) => {
+                        this.show_document(Some(path), "", window, cx);
+                        this.refresh_folder(&RefreshFolder, window, cx);
+                    }
+                    Err(error) => window.push_notification(
+                        Notification::error(format!(
+                            "Couldn’t create “{}”. {error}",
+                            path.display()
+                        )),
+                        cx,
+                    ),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
     }
 
     /// Ask for a name, then create the folder where a new file would go.
@@ -1073,7 +1183,7 @@ impl Workspace {
     /// Start the next list item when Enter ends one in the editor, in place of
     /// the editor's plain newline.
     fn continue_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let editor = self.editor.read(cx);
+        let editor = self.tab().editor.read(cx);
         if self.is_loading()
             || !editor.focus_handle(cx).is_focused(window)
             || editor.completion_menu_state().open
@@ -1089,7 +1199,7 @@ impl Workspace {
             return;
         };
         cx.stop_propagation();
-        self.editor.update(cx, |editor, cx| {
+        self.tab().editor.update(cx, |editor, cx| {
             editor.set_selected_range(range, cx);
             editor.replace(text, window, cx);
         });
@@ -1098,7 +1208,7 @@ impl Workspace {
     /// Whether the editor's cursor sits on a list item, where Tab and
     /// Shift+Tab indent the whole item instead of inserting spaces.
     fn on_list_item(&self, window: &Window, cx: &gpui_kit::App) -> bool {
-        let editor = self.editor.read(cx);
+        let editor = self.tab().editor.read(cx);
         let selection = editor.selected_range();
         !self.is_loading()
             && editor.focus_handle(cx).is_focused(window)
@@ -1109,12 +1219,12 @@ impl Workspace {
 
     /// Toggle bold or italic markers on the editor's selection.
     fn toggle_style(&mut self, style: Style, window: &mut Window, cx: &mut Context<Self>) {
-        let editor = self.editor.read(cx);
+        let editor = self.tab().editor.read(cx);
         if self.is_loading() || !editor.focus_handle(cx).is_focused(window) {
             return;
         }
         let edit = inline_format::toggle_in_rope(editor.text(), editor.selected_range(), style);
-        self.editor.update(cx, |editor, cx| {
+        self.tab().editor.update(cx, |editor, cx| {
             editor.set_selected_range(edit.range, cx);
             editor.replace(edit.text, window, cx);
             editor.set_selected_range(edit.selection, cx);
@@ -1140,8 +1250,10 @@ impl Workspace {
 
     fn set_line_numbers(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.line_numbers = visible;
-        self.editor
-            .update(cx, |editor, cx| editor.set_line_number(visible, window, cx));
+        for tab in &self.tabs {
+            tab.editor
+                .update(cx, |editor, cx| editor.set_line_number(visible, window, cx));
+        }
     }
 
     fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
@@ -1159,7 +1271,7 @@ impl Workspace {
         self.settings_open = open;
         self.settings
             .update(cx, |settings, cx| settings.set_open(open, window, cx));
-        self.preview.update(cx, |preview, cx| {
+        self.tab().preview.update(cx, |preview, cx| {
             preview.set_active(!open && self.layout != LayoutMode::Editor, cx);
         });
         // Move focus now: the pane that held it is not rendered next frame,
@@ -1174,6 +1286,7 @@ impl Workspace {
     fn render_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let active = self
+            .tab()
             .document
             .path()
             .map(|path| path.to_string_lossy().into_owned());
@@ -1540,14 +1653,15 @@ impl Workspace {
             return;
         }
         self.layout = layout;
-        self.preview.update(cx, |preview, cx| {
+        self.tab().preview.update(cx, |preview, cx| {
             preview.set_active(!self.settings_open && layout != LayoutMode::Editor, cx);
         });
         self.scroll_metrics
             .update(cx, |metrics, cx| metrics.set_layout(layout, cx));
         if layout != LayoutMode::Editor {
-            let cursor = self.editor.read(cx).cursor();
-            self.preview
+            let cursor = self.tab().editor.read(cx).cursor();
+            self.tab()
+                .preview
                 .update(cx, |preview, cx| preview.reveal_offset(cursor, cx));
         }
         self.focus_content(window, cx);
@@ -1564,11 +1678,11 @@ impl Workspace {
     }
 
     fn close_window(&mut self, _: &CloseWindow, window: &mut Window, cx: &mut Context<Self>) {
-        self.confirm_discard(window, cx, |_, window, _| window.remove_window());
+        self.confirm_discard_all(window, cx, |_, window, _| window.remove_window());
     }
 
     fn quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {
-        self.confirm_discard(window, cx, |_, _, cx| cx.quit());
+        self.confirm_discard_all(window, cx, |_, _, cx| cx.quit());
     }
 
     /// Ask before the platform closes a window with unsaved edits.
@@ -1581,11 +1695,11 @@ impl Workspace {
             if this.read(cx).is_busy() {
                 return false;
             }
-            if !this.read(cx).document.is_dirty() {
+            if !this.read(cx).tabs.iter().any(|tab| tab.document.is_dirty()) {
                 return true;
             }
             this.update(cx, |this, cx| {
-                this.confirm_discard(window, cx, |_, window, _| window.remove_window());
+                this.confirm_discard_all(window, cx, |_, window, _| window.remove_window());
             });
             false
         });
@@ -1601,12 +1715,59 @@ impl Workspace {
         if self.is_busy() {
             return;
         }
-        if !self.document.is_dirty() {
+        if !self.tab().document.is_dirty() {
             then(self, window, cx);
             return;
         }
-        let title: SharedString =
-            format!("Discard changes to “{}”?", self.document.display_name()).into();
+        let title = format!(
+            "Discard changes to “{}”?",
+            self.tab().document.display_name()
+        );
+        // The alert names this tab, so its answer applies to this tab even
+        // if another was shown meanwhile, from the menu bar or Finder.
+        let tab_id = self.tab().id;
+        self.ask_to_discard(title.into(), window, cx, move |this, window, cx| {
+            if this.return_to_tab(tab_id, window, cx) {
+                then(this, window, cx);
+            }
+        });
+    }
+
+    /// Run `then` now, or after the user agrees to drop the unsaved edits in
+    /// every tab. The first edited tab comes to the front, so the alert names
+    /// what the window shows.
+    fn confirm_discard_all(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        then: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        if self.is_busy() {
+            return;
+        }
+        let edited: Vec<usize> = (0..self.tabs.len())
+            .filter(|ix| self.tabs[*ix].document.is_dirty())
+            .collect();
+        let Some(&first) = edited.first() else {
+            then(self, window, cx);
+            return;
+        };
+        self.activate_tab(first, window, cx);
+        if edited.len() == 1 {
+            self.confirm_discard(window, cx, then);
+        } else {
+            let title = format!("Discard changes to {} documents?", edited.len());
+            self.ask_to_discard(title.into(), window, cx, then);
+        }
+    }
+
+    fn ask_to_discard(
+        &mut self,
+        title: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        then: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) {
         let this = cx.weak_entity();
         let then = Rc::new(then);
         window.open_alert_dialog(cx, move |alert, _, _| {
@@ -1635,8 +1796,9 @@ impl Workspace {
     }
 
     fn update_window_title(&self, window: &mut Window) {
-        window.set_window_title(&format!("{} — Neon", self.document.display_name()));
-        window.set_window_edited(self.document.is_dirty());
+        window.set_window_title(&format!("{} — Neon", self.tab().document.display_name()));
+        // The close button's dot warns about edits in any tab.
+        window.set_window_edited(self.tabs.iter().any(|tab| tab.document.is_dirty()));
     }
 
     /// The sheet's header doubles as the window's title bar: it names the
@@ -1648,79 +1810,95 @@ impl Workspace {
             .iter()
             .position(|mode| *mode == self.layout)
             .unwrap_or_default();
-        let is_dirty = self.document.is_dirty();
+        let is_dirty = self.tab().document.is_dirty();
         // Without the sidebar, the window controls sit on this header, so its
         // content starts after them. They do not follow the rem size.
         let clears_window_controls = !self.sidebar_visible && !window.is_fullscreen();
-        let save_label = if self.document.path().is_some() {
+        let save_label = if self.tab().document.path().is_some() {
             "Save"
         } else {
             "Save…"
         };
 
-        let name = self.document.display_name();
-        let (stem, extension) = match name.rsplit_once('.') {
-            Some((stem, extension)) if !stem.is_empty() => {
-                (stem.to_string(), Some(format!(".{extension}")))
-            }
-            _ => (name, None),
-        };
+        let (stem, extension) = split_extension(&self.tab().document.display_name());
 
-        let title = div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .min_w_0()
-            .text_sm()
-            .when_some(
-                self.folder.as_deref().filter(|_| !self.sidebar_visible),
-                |this, folder| {
-                    this.child(
-                        div()
-                            .flex_shrink_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_color(theme.muted_foreground)
-                            .child(file_name(folder)),
-                    )
-                    .child(
-                        gpui_kit::component::Icon::new(IconName::ChevronRight)
-                            .xsmall()
-                            .flex_none()
-                            .text_color(theme.muted_foreground),
-                    )
-                },
-            )
-            .child(
-                // The name leads; its extension is recessive, so names that
-                // share a type still differ at a glance.
-                div()
-                    .flex()
-                    .flex_shrink_0()
-                    .max_w_80()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(stem),
-                    )
-                    .when_some(extension, |this, extension| {
+        // Shown once there are edits to save; it sits by the title, or by
+        // the view controls when tabs take the title's place.
+        let mut save_button = is_dirty.then(|| {
+            Button::new("save-file")
+                .xsmall()
+                .outline()
+                .label(save_label)
+                .tooltip_with_action(save_label, &Save, Some(KEY_CONTEXT))
+                .loading(self.save_task.is_some())
+                .disabled(self.is_busy())
+                .on_click(cx.listener(|this, _, window, cx| this.save(&Save, window, cx)))
+        });
+        // With two or more documents open, tabs take the title's place and
+        // each marks its own unsaved edits.
+        let tabbed = self.tabs.len() > 1;
+
+        // The single title, while no tabs take its place.
+        let title = (!tabbed).then(|| {
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .min_w_0()
+                .text_sm()
+                .when_some(
+                    self.folder.as_deref().filter(|_| !self.sidebar_visible),
+                    |this, folder| {
                         this.child(
                             div()
-                                .flex_none()
+                                .flex_shrink_1()
+                                .min_w_0()
+                                .truncate()
                                 .text_color(theme.muted_foreground)
-                                .child(extension),
+                                .child(file_name(folder)),
                         )
-                    }),
-            );
+                        .child(
+                            gpui_kit::component::Icon::new(IconName::ChevronRight)
+                                .xsmall()
+                                .flex_none()
+                                .text_color(theme.muted_foreground),
+                        )
+                    },
+                )
+                .child(
+                    // The name leads; its extension is recessive, so names that
+                    // share a type still differ at a glance.
+                    div()
+                        .flex()
+                        .flex_shrink_0()
+                        .max_w_80()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(stem),
+                        )
+                        .when_some(extension, |this, extension| {
+                            this.child(
+                                div()
+                                    .flex_none()
+                                    .text_color(theme.muted_foreground)
+                                    .child(extension),
+                            )
+                        }),
+                )
+        });
 
         TitleBar::new()
             .h(window.rem_size() * SHEET_HEADER_REMS)
             .map(|this| {
                 if clears_window_controls {
                     this.pl(WINDOW_CONTROLS_END - window.rem_size() * SHEET_INSET_REMS)
+                } else if tabbed {
+                    // The first tab's name lines up with the single title.
+                    this.pl_1p5()
                 } else {
                     this.pl_4()
                 }
@@ -1739,8 +1917,9 @@ impl Workspace {
                     .when(!self.sidebar_visible, |this| {
                         this.child(sidebar_toggle(false, cx))
                     })
-                    .child(title)
-                    .when(is_dirty, |this| {
+                    .children(title)
+                    .when(tabbed, |this| this.child(self.render_tab_strip(window, cx)))
+                    .when(is_dirty && !tabbed, |this| {
                         // A dot and a word: the state does not rely on color.
                         this.child(
                             div()
@@ -1753,18 +1932,7 @@ impl Workspace {
                                 .child(div().size_1p5().rounded_full().bg(theme.primary))
                                 .child("Edited"),
                         )
-                        .child(
-                            Button::new("save-file")
-                                .xsmall()
-                                .outline()
-                                .label(save_label)
-                                .tooltip_with_action(save_label, &Save, Some(KEY_CONTEXT))
-                                .loading(self.save_task.is_some())
-                                .disabled(self.is_busy())
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| this.save(&Save, window, cx)),
-                                ),
-                        )
+                        .children(save_button.take())
                     }),
             )
             .child(
@@ -1773,6 +1941,9 @@ impl Workspace {
                     .flex_none()
                     .items_center()
                     .gap_3()
+                    // Each tab marks its own edits; Save stays with the view
+                    // controls.
+                    .children(save_button.take())
                     .child(
                         Button::new("settings")
                             .small()
@@ -1849,7 +2020,7 @@ impl Workspace {
             div()
                 .size_full()
                 .min_w_0()
-                .child(self.editor_pane.clone().cached(pane_style()))
+                .child(self.tab().editor_pane.clone().cached(pane_style()))
         };
         let border = cx.theme().border;
         let preview = |divided: bool| {
@@ -1857,7 +2028,7 @@ impl Workspace {
                 .size_full()
                 .min_w_0()
                 .when(divided, |this| this.border_l_1().border_color(border))
-                .child(MarkdownPreview::pane(&self.preview, cx))
+                .child(MarkdownPreview::pane(&self.tab().preview, cx))
         };
 
         let panes = match self.layout {
@@ -1905,7 +2076,7 @@ impl Workspace {
     }
 
     fn render_sheet_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let position = self.editor.read(cx).cursor_position();
+        let position = self.tab().editor.read(cx).cursor_position();
         let theme = cx.theme();
 
         StatusBar::new()
@@ -1975,7 +2146,7 @@ impl Render for Workspace {
             .capture_action(cx.listener(|this, _: &IndentInline, window, cx| {
                 // Tab accepts the highlighted template like Enter, through the
                 // menu, then writes out its command in place of the template.
-                if this.editor.read(cx).completion_menu_state().open
+                if this.tab().editor.read(cx).completion_menu_state().open
                     && this.slash_commands.complete_next()
                 {
                     cx.stop_propagation();
@@ -2001,6 +2172,10 @@ impl Render for Workspace {
                 }
             }))
             .on_action(cx.listener(Self::new_file))
+            .on_action(cx.listener(Self::new_tab))
+            .on_action(cx.listener(Self::close_tab))
+            .on_action(cx.listener(Self::next_tab))
+            .on_action(cx.listener(Self::previous_tab))
             .on_action(cx.listener(Self::new_folder))
             .on_action(cx.listener(Self::open))
             .on_action(cx.listener(Self::open_folder))
@@ -2110,6 +2285,17 @@ fn name_problem(directory: &Path, name: &str) -> Option<SharedString> {
         .join(name)
         .exists()
         .then(|| format!("“{name}” already exists here.").into())
+}
+
+/// `notes.md` as `notes` and `.md`, so the extension can recede. A name
+/// with no stem before its dot, like `.env`, stays whole.
+fn split_extension(name: &str) -> (String, Option<String>) {
+    match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() => {
+            (stem.to_string(), Some(format!(".{extension}")))
+        }
+        _ => (name.to_string(), None),
+    }
 }
 
 fn file_name(path: &Path) -> String {

@@ -30,9 +30,10 @@ pub use settings_file::load as load_settings;
 #[cfg(feature = "memory-bench")]
 pub use workspace::MemoryBench;
 pub use workspace::{
-    CloseSettings, CloseWindow, ExportDocx, ExportHtml, ExportPdf, LayoutMode, NewFile, NewFolder,
-    Open, OpenFolder, OpenSettings, Quit, RefreshFolder, Save, SaveAs, ShowEditor, ShowPreview,
-    ShowSplit, ToggleBold, ToggleItalic, ToggleLineNumbers, ToggleSidebar, ToggleTheme, Workspace,
+    CloseSettings, CloseTab, CloseWindow, ExportDocx, ExportHtml, ExportPdf, LayoutMode, NewFile,
+    NewFolder, NewTab, NextTab, Open, OpenFolder, OpenSettings, PreviousTab, Quit, RefreshFolder,
+    Save, SaveAs, ShowEditor, ShowPreview, ShowSplit, ToggleBold, ToggleItalic, ToggleLineNumbers,
+    ToggleSidebar, ToggleTheme, Workspace,
 };
 
 const KEY_CONTEXT: &str = "Workspace";
@@ -94,7 +95,14 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-1", ShowEditor, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-2", ShowSplit, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-3", ShowPreview, Some(KEY_CONTEXT)),
-        KeyBinding::new("secondary-w", CloseWindow, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-t", NewTab, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-w", CloseTab, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-shift-w", CloseWindow, Some(KEY_CONTEXT)),
+        // The menu shows the first binding: Control-Tab, as in Safari.
+        KeyBinding::new("ctrl-tab", NextTab, Some(KEY_CONTEXT)),
+        KeyBinding::new("ctrl-shift-tab", PreviousTab, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-}", NextTab, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-{", PreviousTab, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-q", Quit, None),
     ]);
 }
