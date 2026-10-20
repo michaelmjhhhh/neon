@@ -4058,6 +4058,7 @@ name = "markdown_preview"
 version = "0.6.0"
 dependencies = [
  "gpui-kit",
+ "image",
  "markdown 0.6.0",
 ]
 

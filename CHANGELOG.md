@@ -29,6 +29,12 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Performance
+
+- Keep preview images no wider than the preview can show: a 4,000 × 3,000 photo now takes 12.6 MB of memory instead of 48 MB, and the same reduction applies to its GPU copy.
+- Shrink the app from 30.1 to 16.2 MB on Apple Silicon by building with full link-time optimization and without debug symbols.
+- Bold and Italic shortcuts read only the selected lines instead of copying the whole document on each press.
+
 ## [0.6.0] - 2026-10-19
 
 ### Added
