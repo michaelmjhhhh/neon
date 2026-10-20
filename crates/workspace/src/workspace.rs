@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::folder::{folder_name_error, is_markdown, scan_folder};
+use crate::session_file::Session;
 use crate::typography::Typography;
 use export::ExportFormat;
 use gpui_kit::assets::IconName as AssetIcon;
@@ -238,6 +239,11 @@ impl Workspace {
             cx.observe_window_appearance(window, |_, window, cx| {
                 theme::apply_appearance(window, cx);
             }),
+            cx.observe_window_activation(window, |this, window, cx| {
+                if window.is_window_active() {
+                    this.remember_session(cx);
+                }
+            }),
         ];
 
         let workspace = Self {
@@ -388,6 +394,7 @@ impl Workspace {
         self.preview
             .update(cx, |preview, cx| preview.load_source(source, base_dir, cx));
         self.document = path.map(DocumentFile::saved).unwrap_or_default();
+        self.remember_session(cx);
         self.sync_tree_selection(cx);
         self.revealed_cursor = None;
         self.update_window_title(window);
@@ -688,6 +695,7 @@ impl Workspace {
                 match result {
                     Ok(path) => {
                         this.document.record_save(path, revision);
+                        this.remember_session(cx);
                         this.update_window_title(window);
                         let base_dir = this.document.path().and_then(Path::parent).map(Arc::from);
                         this.preview
@@ -722,6 +730,16 @@ impl Workspace {
                 tree.set_selected_index(None, cx);
             }
         });
+    }
+
+    /// Save the folder and file this window shows, so the next launch opens
+    /// them again.
+    fn remember_session(&self, cx: &mut Context<Self>) {
+        let session = Session {
+            folder: self.folder.clone(),
+            file: self.document.path().map(Path::to_path_buf),
+        };
+        crate::session_file::remember(session, cx);
     }
 
     fn is_busy(&self) -> bool {
@@ -798,6 +816,7 @@ impl Workspace {
                                 })
                             });
                         this.folder = Some(path);
+                        this.remember_session(cx);
                         this.sidebar_visible |= reveal;
                         this.tree.update(cx, |tree, cx| {
                             tree.set_items(
@@ -1768,10 +1787,7 @@ impl Workspace {
                                         .items_center()
                                         .gap_1()
                                         .text_xs()
-                                        .child(
-                                            gpui_kit::component::Icon::new(mode.icon())
-                                                .xsmall(),
-                                        )
+                                        .child(gpui_kit::component::Icon::new(mode.icon()).xsmall())
                                         .child(mode.label()),
                                 )
                             }))
