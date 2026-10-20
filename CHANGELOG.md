@@ -29,6 +29,8 @@ Groups, in this order:
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-20
+
 ### Added
 
 - Reopen the folder and file you last worked on when Neon starts, or when you click the Dock icon with no windows open. A file opened from Finder or the command line takes their place, and a folder or file that no longer exists is skipped.
