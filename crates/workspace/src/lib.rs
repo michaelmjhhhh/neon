@@ -35,7 +35,7 @@ pub use workspace::{
 
 const KEY_CONTEXT: &str = "Workspace";
 
-gpui_kit::assets::icon_assets!(ExtraIcons, [FilePlus, FolderPlus]);
+gpui_kit::assets::icon_assets!(ExtraIcons, [Columns2, FilePlus, FolderPlus, PenLine]);
 
 /// The icons the app draws: GPUI Kit's default set, plus the few beyond it
 /// that the workspace uses.

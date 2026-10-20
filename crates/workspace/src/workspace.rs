@@ -118,6 +118,14 @@ impl LayoutMode {
         }
     }
 
+    fn icon(self) -> AssetIcon {
+        match self {
+            Self::Editor => AssetIcon::PenLine,
+            Self::Split => AssetIcon::Columns2,
+            Self::Preview => AssetIcon::BookOpen,
+        }
+    }
+
     fn shows_editor(self) -> bool {
         self != Self::Preview
     }
@@ -965,6 +973,9 @@ impl Workspace {
                             .flex()
                             .flex_col()
                             .gap_2()
+                            // The field's 3 px focus ring is drawn outside its
+                            // border, and the dialog body clips at its top edge.
+                            .pt_1()
                             .child(Input::new(&input))
                             .child(
                                 div()
@@ -1617,10 +1628,18 @@ impl Workspace {
             "Save…"
         };
 
+        let name = self.document.display_name();
+        let (stem, extension) = match name.rsplit_once('.') {
+            Some((stem, extension)) if !stem.is_empty() => {
+                (stem.to_string(), Some(format!(".{extension}")))
+            }
+            _ => (name, None),
+        };
+
         let title = div()
             .flex()
             .items_center()
-            .gap_1p5()
+            .gap_1()
             .min_w_0()
             .text_sm()
             .when_some(
@@ -1635,20 +1654,36 @@ impl Workspace {
                             .child(file_name(folder)),
                     )
                     .child(
-                        div()
+                        gpui_kit::component::Icon::new(IconName::ChevronRight)
+                            .xsmall()
                             .flex_none()
-                            .text_color(theme.muted_foreground)
-                            .child("/"),
+                            .text_color(theme.muted_foreground),
                     )
                 },
             )
             .child(
+                // The name leads; its extension is recessive, so names that
+                // share a type still differ at a glance.
                 div()
+                    .flex()
                     .flex_shrink_0()
                     .max_w_80()
-                    .truncate()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(self.document.display_name()),
+                    .min_w_0()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(stem),
+                    )
+                    .when_some(extension, |this, extension| {
+                        this.child(
+                            div()
+                                .flex_none()
+                                .text_color(theme.muted_foreground)
+                                .child(extension),
+                        )
+                    }),
             );
 
         TitleBar::new()
@@ -1707,7 +1742,7 @@ impl Workspace {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap_2()
+                    .gap_3()
                     .child(
                         Button::new("settings")
                             .small()
@@ -1723,7 +1758,23 @@ impl Workspace {
                         TabBar::new("layout")
                             .segmented()
                             .small()
-                            .children(LayoutMode::ALL.map(|mode| Tab::new().label(mode.label())))
+                            .children(LayoutMode::ALL.map(|mode| {
+                                // An icon names each mode at a glance; the label
+                                // keeps it unambiguous. Text one step below the
+                                // control's default fits its 18 px thumb.
+                                Tab::new().aria_label(mode.label()).child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .text_xs()
+                                        .child(
+                                            gpui_kit::component::Icon::new(mode.icon())
+                                                .xsmall(),
+                                        )
+                                        .child(mode.label()),
+                                )
+                            }))
                             .selected_index(selected)
                             .on_click(cx.listener(|this, ix: &usize, window, cx| {
                                 if let Some(mode) = LayoutMode::ALL.get(*ix) {
