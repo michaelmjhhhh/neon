@@ -10,6 +10,7 @@ mod latency_bench;
 mod list_continuation;
 mod present_now;
 mod scroll_metrics;
+mod session_file;
 mod settings;
 mod settings_file;
 mod slash_commands;
@@ -24,6 +25,7 @@ use gpui_kit::{App, KeyBinding, TitlebarOptions, WindowOptions, point, px};
 pub use document_file::DocumentFile;
 #[cfg(feature = "diagnostics")]
 pub use latency_bench::LatencyBench;
+pub use session_file::{Session, load as load_session};
 pub use settings_file::load as load_settings;
 #[cfg(feature = "memory-bench")]
 pub use workspace::MemoryBench;

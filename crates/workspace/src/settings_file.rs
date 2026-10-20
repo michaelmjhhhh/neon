@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use gpui_kit::{App, Global};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::theme::{self, Appearance};
@@ -50,10 +51,10 @@ impl Global for SettingsFile {}
 /// Read the saved settings and apply the appearance. Call once at startup,
 /// before opening windows; from then on, changes are saved as they happen.
 pub fn load(cx: &mut App) {
-    let Some(path) = settings_path() else {
+    let Some(path) = config_dir().map(|dir| dir.join("settings.json")) else {
         return;
     };
-    let settings = read(&path);
+    let settings: Settings = read(&path);
     theme::restore_appearance(settings.appearance, cx);
     cx.set_global(SettingsFile { path, settings });
 }
@@ -81,9 +82,9 @@ pub(crate) fn update(cx: &mut App, change: impl FnOnce(&mut Settings)) {
     }
 }
 
-/// `~/Library/Application Support/Neon/settings.json` on macOS, else under
+/// `~/Library/Application Support/Neon` on macOS, else `neon` under
 /// `$XDG_CONFIG_HOME` or `~/.config`.
-fn settings_path() -> Option<PathBuf> {
+pub(crate) fn config_dir() -> Option<PathBuf> {
     let home = crate::workspace::home_dir();
     let dir = if cfg!(target_os = "macos") {
         home?.join("Library/Application Support/Neon")
@@ -93,28 +94,28 @@ fn settings_path() -> Option<PathBuf> {
             .or_else(|| home.map(|home| home.join(".config")))?
             .join("neon")
     };
-    Some(dir.join("settings.json"))
+    Some(dir)
 }
 
-/// The settings at `path`; defaults when the file is missing or unreadable,
-/// and per field when one is missing or invalid.
-fn read(path: &Path) -> Settings {
+/// The JSON at `path`; defaults when the file is missing or unreadable, and
+/// per field when one is missing or invalid.
+pub(crate) fn read<T: DeserializeOwned + Default>(path: &Path) -> T {
     let Ok(text) = std::fs::read_to_string(path) else {
-        return Settings::default();
+        return T::default();
     };
     serde_json::from_str(&text).unwrap_or_else(|error| {
-        eprintln!("Ignoring settings in {}: {error}", path.display());
-        Settings::default()
+        eprintln!("Ignoring {}: {error}", path.display());
+        T::default()
     })
 }
 
 /// Write through a temporary file, so a failed write never leaves a partial
-/// settings file behind.
-fn write(path: &Path, settings: &Settings) -> std::io::Result<()> {
+/// file behind.
+pub(crate) fn write(path: &Path, value: &impl Serialize) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let json = serde_json::to_string_pretty(settings).map_err(std::io::Error::other)?;
+    let json = serde_json::to_string_pretty(value).map_err(std::io::Error::other)?;
     let temp = path.with_extension("json.tmp");
     std::fs::write(&temp, json)?;
     std::fs::rename(&temp, path)
@@ -138,18 +139,19 @@ mod tests {
             line_numbers: false,
         };
         write(&path, &settings).unwrap();
-        assert_eq!(read(&path), settings);
+        assert_eq!(read::<Settings>(&path), settings);
     }
 
     #[test]
     fn missing_or_invalid_files_use_defaults() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        assert_eq!(read(&path), Settings::default());
+        assert_eq!(read::<Settings>(&path), Settings::default());
         std::fs::write(&path, "not json").unwrap();
-        assert_eq!(read(&path), Settings::default());
+        assert_eq!(read::<Settings>(&path), Settings::default());
         std::fs::write(&path, r#"{"preview": {"size": 20}}"#).unwrap();
-        assert_eq!(read(&path).preview.size, Some(20));
-        assert!(read(&path).line_numbers);
+        let settings: Settings = read(&path);
+        assert_eq!(settings.preview.size, Some(20));
+        assert!(settings.line_numbers);
     }
 }

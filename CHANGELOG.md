@@ -29,6 +29,10 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Added
+
+- Reopen the folder and file you last worked on when Neon starts. A file opened from Finder or the command line takes their place, and a folder or file that no longer exists is skipped.
+
 ### Changed
 
 - Break the line in the preview and in exports wherever the source has a single newline, instead of joining the two lines into one paragraph line.

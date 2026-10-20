@@ -48,7 +48,7 @@ fn main() {
     .on_reopen(|cx| {
         // Clicking the Dock icon with no windows open starts a new document.
         if cx.windows().is_empty() {
-            open_window(None, WindowKind::Normal, cx);
+            open_window(Vec::new(), WindowKind::Normal, cx);
         }
     });
 
@@ -62,7 +62,7 @@ fn main() {
         cx.on_action(|_: &Quit, cx| cx.quit());
         #[cfg(feature = "memory-bench")]
         if let Some(bench) = workspace::MemoryBench::from_env() {
-            open_window_with_focus(None, WindowKind::Normal, false, cx);
+            open_window_with_focus(Vec::new(), WindowKind::Normal, false, cx);
             let (window, workspace) = cx.global::<OpenWorkspaces>().0.last().cloned().unwrap();
             window
                 .update(cx, |_, window, cx| bench.start(workspace, window, cx))
@@ -77,10 +77,17 @@ fn main() {
             start_latency_bench(bench, cx);
             return;
         }
-        if launch_paths.is_empty() {
-            open_window(None, WindowKind::Normal, cx);
+        let session = workspace::load_session(cx);
+        // A file opened from Finder arrives before launch finishes; it takes
+        // the place of the last session, which would otherwise open beside it.
+        let mut requested = launch_paths;
+        while let Ok(paths) = opened.try_recv() {
+            requested.extend(paths);
+        }
+        if requested.is_empty() {
+            open_window(session.existing_paths(), WindowKind::Normal, cx);
         } else {
-            open_paths(launch_paths, cx);
+            open_paths(requested, cx);
         }
 
         cx.spawn(async move |cx| {
@@ -132,16 +139,18 @@ fn open_paths(paths: Vec<PathBuf>, cx: &mut App) {
                     })
                     .ok();
             }
-            None => open_window(Some(path), WindowKind::Normal, cx),
+            None => open_window(vec![path], WindowKind::Normal, cx),
         }
     }
 }
 
-fn open_window(path: Option<PathBuf>, kind: WindowKind, cx: &mut App) {
-    open_window_with_focus(path, kind, true, cx);
+/// Open a window showing `paths`: a folder in the sidebar, a file in the
+/// editor, or both.
+fn open_window(paths: Vec<PathBuf>, kind: WindowKind, cx: &mut App) {
+    open_window_with_focus(paths, kind, true, cx);
 }
 
-fn open_window_with_focus(path: Option<PathBuf>, kind: WindowKind, focus: bool, cx: &mut App) {
+fn open_window_with_focus(paths: Vec<PathBuf>, kind: WindowKind, focus: bool, cx: &mut App) {
     let bounds = Bounds::centered(None, size(gpui_kit::px(1200.), gpui_kit::px(800.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -153,7 +162,7 @@ fn open_window_with_focus(path: Option<PathBuf>, kind: WindowKind, focus: bool, 
     let opened = gpui_kit::open_window(options, cx, |window, cx| {
         cx.new(|cx| {
             let mut workspace = Workspace::new(window, cx);
-            if let Some(path) = path {
+            for path in paths {
                 workspace.open_path(path, window, cx);
             }
             workspace
@@ -180,7 +189,7 @@ fn start_latency_bench(bench: LatencyBench, cx: &mut App) {
         }
     };
     // Stay above other windows: an occluded window stops receiving frames.
-    open_window(Some(path), WindowKind::PopUp, cx);
+    open_window(vec![path], WindowKind::PopUp, cx);
     let Some((window, workspace)) = cx.global::<OpenWorkspaces>().0.last().cloned() else {
         return;
     };
