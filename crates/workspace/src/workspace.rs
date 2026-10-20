@@ -340,9 +340,9 @@ impl Workspace {
             self.load_folder(path, true, None, window, cx);
             return;
         }
-        // A file already open in a tab is shown there instead.
-        let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-        if let Some(ix) = self.tab_index_of_path(&canonical) {
+        // A file already open in a tab is shown there instead. This checks
+        // the path as given; the read checks it again once resolved.
+        if let Some(ix) = self.tab_index_of_path(&path) {
             self.activate_tab(ix, window, cx);
             return;
         }
@@ -360,6 +360,16 @@ impl Workspace {
                 this.load_task = None;
                 this.set_editor_readonly(false, cx);
                 match result {
+                    // Tabs cannot change during a read, so a match here is
+                    // another tab, reached through a different path.
+                    Ok((path, _))
+                        if this.tab().document.path() != Some(path.as_path())
+                            && this.tab_index_of_path(&path).is_some() =>
+                    {
+                        if let Some(ix) = this.tab_index_of_path(&path) {
+                            this.activate_tab(ix, window, cx);
+                        }
+                    }
                     Ok((path, text)) => {
                         let previous_focus = window.focused(cx);
                         this.show_document(Some(path), &text, window, cx);
@@ -437,6 +447,9 @@ impl Workspace {
         tab.preview
             .update(cx, |preview, cx| preview.set_source(source.clone(), cx));
         if ix != self.active_tab {
+            if !was_dirty {
+                self.update_window_title(window);
+            }
             cx.notify();
             return;
         }
@@ -542,20 +555,24 @@ impl Workspace {
     }
 
     fn new_file(&mut self, _: &NewFile, window: &mut Window, cx: &mut Context<Self>) {
-        self.confirm_discard(window, cx, |this, window, cx| {
-            if this.folder.is_some() {
-                this.prompt_create_file(window, cx);
-            } else {
+        if self.folder.is_some() {
+            self.prompt_create_file(window, cx);
+        } else {
+            self.confirm_discard(window, cx, |this, window, cx| {
                 this.show_document(None, "", window, cx);
-            }
-        });
+            });
+        }
     }
 
     fn open(&mut self, _: &Open, window: &mut Window, cx: &mut Context<Self>) {
-        self.confirm_discard(window, cx, |this, window, cx| this.prompt_open(window, cx));
+        self.prompt_open(window, cx);
     }
 
+    /// Ask for a file, then show it in the tab that asked. File panels do
+    /// not block the window, so the tab is found again by id when the panel
+    /// closes; the user may have switched tabs meanwhile.
     fn prompt_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let tab_id = self.tab().id;
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -569,8 +586,18 @@ impl Workspace {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            this.update_in(cx, |this, window, cx| this.open_path(path, window, cx))
-                .ok();
+            this.update_in(cx, |this, window, cx| {
+                // A file open in another tab is shown there, with nothing
+                // to discard.
+                if let Some(ix) = this.tab_index_of_path(&path) {
+                    this.activate_tab(ix, window, cx);
+                } else if this.return_to_tab(tab_id, window, cx) {
+                    this.confirm_discard(window, cx, move |this, window, cx| {
+                        this.open_path(path.clone(), window, cx);
+                    });
+                }
+            })
+            .ok();
         })
         .detach();
     }
@@ -605,13 +632,18 @@ impl Workspace {
             Some(_) => self.tab().document.display_name(),
             None => "Untitled.md".to_string(),
         };
+        let tab_id = self.tab().id;
         let path = cx.prompt_for_new_path(&directory, Some(&suggested_name));
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(path))) = path.await else {
                 return;
             };
-            this.update_in(cx, |this, window, cx| this.save_to(path, window, cx))
-                .ok();
+            this.update_in(cx, |this, window, cx| {
+                if this.return_to_tab(tab_id, window, cx) {
+                    this.save_to(path, window, cx);
+                }
+            })
+            .ok();
         })
         .detach();
     }
@@ -629,13 +661,16 @@ impl Workspace {
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Untitled".to_string());
         let suggested_name = format!("{stem}.{}", format.extension());
+        let tab_id = self.tab().id;
         let path = cx.prompt_for_new_path(&directory, Some(&suggested_name));
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(path))) = path.await else {
                 return;
             };
             this.update_in(cx, |this, window, cx| {
-                this.export_to(format, path, window, cx)
+                if this.return_to_tab(tab_id, window, cx) {
+                    this.export_to(format, path, window, cx);
+                }
             })
             .ok();
         })
@@ -710,6 +745,28 @@ impl Workspace {
             return;
         }
         let tab_id = self.tab().id;
+        // Saving as a file another tab shows would leave two tabs on it.
+        // A clean one closes once the save lands; edits in one stop the save.
+        let mut replaced_tab = None;
+        if self.tab().document.path() != Some(path.as_path())
+            && let Ok(target) = std::fs::canonicalize(&path)
+            && let Some(other) = self
+                .tabs
+                .iter()
+                .find(|tab| tab.id != tab_id && tab.document.path() == Some(target.as_path()))
+        {
+            if other.document.is_dirty() {
+                let name = file_name(&path);
+                window.push_notification(
+                    Notification::error(format!(
+                        "Couldn’t save “{name}”. It is open in another tab with unsaved edits."
+                    )),
+                    cx,
+                );
+                return;
+            }
+            replaced_tab = Some(other.id);
+        }
         let revision = self.tab().document.edit_revision();
         let text = self.tab().editor.read(cx).text().clone();
         let write = cx.background_spawn({
@@ -733,6 +790,11 @@ impl Workspace {
                                 tab.document.path().and_then(Path::parent).map(Arc::from);
                             tab.preview
                                 .update(cx, |preview, cx| preview.set_base_dir(base_dir, cx));
+                        }
+                        if let Some(ix) = replaced_tab
+                            .and_then(|id| this.tabs.iter().position(|tab| tab.id == id))
+                        {
+                            this.remove_tab(ix, window, cx);
                         }
                         this.remember_session(cx);
                         this.update_window_title(window);
@@ -920,10 +982,13 @@ impl Workspace {
         Some(directory)
     }
 
+    /// Ask for a new file's name, then create it and show it in the tab
+    /// that asked, once any edits there may be discarded.
     fn prompt_create_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(directory) = self.target_directory(cx) else {
             return;
         };
+        let tab_id = self.tab().id;
         let path = cx.prompt_for_new_path(&directory, Some("Untitled.md"));
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(mut path))) = path.await else {
@@ -935,47 +1000,56 @@ impl Workspace {
                 path = name.into();
             }
             this.update_in(cx, |this, window, cx| {
-                if this.is_busy() {
-                    return;
+                if this.return_to_tab(tab_id, window, cx) {
+                    this.confirm_discard(window, cx, move |this, window, cx| {
+                        this.create_file(path.clone(), window, cx);
+                    });
                 }
-                let create = cx.background_spawn({
-                    let path = path.clone();
-                    async move {
-                        std::fs::OpenOptions::new()
-                            .write(true)
-                            .create_new(true)
-                            .open(&path)?;
-                        std::fs::canonicalize(path)
-                    }
-                });
-                this.set_editor_readonly(true, cx);
-                this.load_task = Some(cx.spawn_in(window, async move |this, cx| {
-                    let result = create.await;
-                    this.update_in(cx, |this, window, cx| {
-                        this.load_task = None;
-                        this.set_editor_readonly(false, cx);
-                        match result {
-                            Ok(path) => {
-                                this.show_document(Some(path), "", window, cx);
-                                this.refresh_folder(&RefreshFolder, window, cx);
-                            }
-                            Err(error) => window.push_notification(
-                                Notification::error(format!(
-                                    "Couldn’t create “{}”. {error}",
-                                    path.display()
-                                )),
-                                cx,
-                            ),
-                        }
-                        cx.notify();
-                    })
-                    .ok();
-                }));
-                cx.notify();
             })
             .ok();
         })
         .detach();
+    }
+
+    /// Create an empty file at `path` and show it.
+    fn create_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_busy() {
+            return;
+        }
+        let create = cx.background_spawn({
+            let path = path.clone();
+            async move {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)?;
+                std::fs::canonicalize(path)
+            }
+        });
+        self.set_editor_readonly(true, cx);
+        self.load_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = create.await;
+            this.update_in(cx, |this, window, cx| {
+                this.load_task = None;
+                this.set_editor_readonly(false, cx);
+                match result {
+                    Ok(path) => {
+                        this.show_document(Some(path), "", window, cx);
+                        this.refresh_folder(&RefreshFolder, window, cx);
+                    }
+                    Err(error) => window.push_notification(
+                        Notification::error(format!(
+                            "Couldn’t create “{}”. {error}",
+                            path.display()
+                        )),
+                        cx,
+                    ),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
     }
 
     /// Ask for a name, then create the folder where a new file would go.
@@ -1649,7 +1723,14 @@ impl Workspace {
             "Discard changes to “{}”?",
             self.tab().document.display_name()
         );
-        self.ask_to_discard(title.into(), window, cx, then);
+        // The alert names this tab, so its answer applies to this tab even
+        // if another was shown meanwhile, from the menu bar or Finder.
+        let tab_id = self.tab().id;
+        self.ask_to_discard(title.into(), window, cx, move |this, window, cx| {
+            if this.return_to_tab(tab_id, window, cx) {
+                then(this, window, cx);
+            }
+        });
     }
 
     /// Run `then` now, or after the user agrees to drop the unsaved edits in
@@ -1716,7 +1797,8 @@ impl Workspace {
 
     fn update_window_title(&self, window: &mut Window) {
         window.set_window_title(&format!("{} — Neon", self.tab().document.display_name()));
-        window.set_window_edited(self.tab().document.is_dirty());
+        // The close button's dot warns about edits in any tab.
+        window.set_window_edited(self.tabs.iter().any(|tab| tab.document.is_dirty()));
     }
 
     /// The sheet's header doubles as the window's title bar: it names the
@@ -1738,13 +1820,7 @@ impl Workspace {
             "Save…"
         };
 
-        let name = self.tab().document.display_name();
-        let (stem, extension) = match name.rsplit_once('.') {
-            Some((stem, extension)) if !stem.is_empty() => {
-                (stem.to_string(), Some(format!(".{extension}")))
-            }
-            _ => (name, None),
-        };
+        let (stem, extension) = split_extension(&self.tab().document.display_name());
 
         // Shown once there are edits to save; it sits by the title, or by
         // the view controls when tabs take the title's place.
@@ -1762,55 +1838,58 @@ impl Workspace {
         // each marks its own unsaved edits.
         let tabbed = self.tabs.len() > 1;
 
-        let title = div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .min_w_0()
-            .text_sm()
-            .when_some(
-                self.folder.as_deref().filter(|_| !self.sidebar_visible),
-                |this, folder| {
-                    this.child(
-                        div()
-                            .flex_shrink_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_color(theme.muted_foreground)
-                            .child(file_name(folder)),
-                    )
-                    .child(
-                        gpui_kit::component::Icon::new(IconName::ChevronRight)
-                            .xsmall()
-                            .flex_none()
-                            .text_color(theme.muted_foreground),
-                    )
-                },
-            )
-            .child(
-                // The name leads; its extension is recessive, so names that
-                // share a type still differ at a glance.
-                div()
-                    .flex()
-                    .flex_shrink_0()
-                    .max_w_80()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(stem),
-                    )
-                    .when_some(extension, |this, extension| {
+        // The single title, while no tabs take its place.
+        let title = (!tabbed).then(|| {
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .min_w_0()
+                .text_sm()
+                .when_some(
+                    self.folder.as_deref().filter(|_| !self.sidebar_visible),
+                    |this, folder| {
                         this.child(
                             div()
-                                .flex_none()
+                                .flex_shrink_1()
+                                .min_w_0()
+                                .truncate()
                                 .text_color(theme.muted_foreground)
-                                .child(extension),
+                                .child(file_name(folder)),
                         )
-                    }),
-            );
+                        .child(
+                            gpui_kit::component::Icon::new(IconName::ChevronRight)
+                                .xsmall()
+                                .flex_none()
+                                .text_color(theme.muted_foreground),
+                        )
+                    },
+                )
+                .child(
+                    // The name leads; its extension is recessive, so names that
+                    // share a type still differ at a glance.
+                    div()
+                        .flex()
+                        .flex_shrink_0()
+                        .max_w_80()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(stem),
+                        )
+                        .when_some(extension, |this, extension| {
+                            this.child(
+                                div()
+                                    .flex_none()
+                                    .text_color(theme.muted_foreground)
+                                    .child(extension),
+                            )
+                        }),
+                )
+        });
 
         TitleBar::new()
             .h(window.rem_size() * SHEET_HEADER_REMS)
@@ -1838,13 +1917,8 @@ impl Workspace {
                     .when(!self.sidebar_visible, |this| {
                         this.child(sidebar_toggle(false, cx))
                     })
-                    .map(|this| {
-                        if tabbed {
-                            this.child(self.render_tab_strip(window, cx))
-                        } else {
-                            this.child(title)
-                        }
-                    })
+                    .children(title)
+                    .when(tabbed, |this| this.child(self.render_tab_strip(window, cx)))
                     .when(is_dirty && !tabbed, |this| {
                         // A dot and a word: the state does not rely on color.
                         this.child(
@@ -2211,6 +2285,17 @@ fn name_problem(directory: &Path, name: &str) -> Option<SharedString> {
         .join(name)
         .exists()
         .then(|| format!("“{name}” already exists here.").into())
+}
+
+/// `notes.md` as `notes` and `.md`, so the extension can recede. A name
+/// with no stem before its dot, like `.env`, stays whole.
+fn split_extension(name: &str) -> (String, Option<String>) {
+    match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() => {
+            (stem.to_string(), Some(format!(".{extension}")))
+        }
+        _ => (name.to_string(), None),
+    }
 }
 
 fn file_name(path: &Path) -> String {

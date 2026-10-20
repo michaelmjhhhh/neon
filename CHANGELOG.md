@@ -40,6 +40,7 @@ Groups, in this order:
 - Cmd+W closes the current tab, and the window once its last tab closes; Close Window moves to Cmd+Shift+W.
 - Opening a file that a tab already shows, from the sidebar, Open File or Finder, switches to that tab instead of opening it again.
 - Closing a window or quitting asks before discarding unsaved edits in any of its tabs, not only the one shown.
+- Open File and New File ask about unsaved edits after you choose the file instead of before, so choosing a file another tab shows just switches to it.
 
 ### Fixed
 

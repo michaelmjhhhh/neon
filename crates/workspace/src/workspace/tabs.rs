@@ -18,7 +18,7 @@ use gpui_kit::{
 };
 use markdown_preview::MarkdownPreview;
 
-use super::{CloseTab, LayoutMode, NewTab, Workspace, file_name, home_dir};
+use super::{CloseTab, LayoutMode, NewTab, Workspace, file_name, home_dir, split_extension};
 use crate::KEY_CONTEXT;
 use crate::document_file::DocumentFile;
 use crate::editor_pane::EditorPane;
@@ -102,14 +102,6 @@ impl Workspace {
         self.tab_index_of_path(path).is_some()
     }
 
-    pub fn tab_count(&self) -> usize {
-        self.tabs.len()
-    }
-
-    pub fn active_tab_index(&self) -> usize {
-        self.active_tab
-    }
-
     /// Open an empty, untitled tab after the last one and show it.
     pub fn new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_busy() {
@@ -125,8 +117,9 @@ impl Workspace {
             cx,
         );
         self.tabs.push(tab);
-        self.set_settings_open(false, window, cx);
+        // Switch first: closing Settings then turns on only the new preview.
         self.activate_tab(self.tabs.len() - 1, window, cx);
+        self.set_settings_open(false, window, cx);
     }
 
     /// Show the tab at `ix`, keeping the one it replaces as it was.
@@ -139,6 +132,22 @@ impl Workspace {
             .update(cx, |preview, cx| preview.set_active(false, cx));
         self.active_tab = ix;
         self.show_active_tab(window, cx);
+    }
+
+    /// Show the tab with `id` again, for a command that finishes after a
+    /// file panel or an alert, behind which the user may have switched tabs.
+    /// False if that tab has closed, or the window is too busy to switch.
+    pub(super) fn return_to_tab(
+        &mut self,
+        id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(ix) = self.tabs.iter().position(|tab| tab.id == id) else {
+            return false;
+        };
+        self.activate_tab(ix, window, cx);
+        self.active_tab == ix
     }
 
     /// Point the window's shared views at the active tab.
@@ -201,6 +210,7 @@ impl Workspace {
             return;
         }
         self.activate_tab(ix, window, cx);
+        // The confirmation shows this tab again before it runs.
         self.confirm_discard(window, cx, |this, window, cx| {
             this.remove_tab(this.active_tab, window, cx);
         });
@@ -208,7 +218,7 @@ impl Workspace {
 
     /// Drop the tab at `ix`. Closing the shown tab shows its right
     /// neighbor, or its left one at the end.
-    fn remove_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn remove_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.tabs.len() < 2 || ix >= self.tabs.len() {
             return;
         }
@@ -220,6 +230,8 @@ impl Workspace {
         if was_active {
             self.show_active_tab(window, cx);
         } else {
+            // A closed tab may have held the window's only edits.
+            self.update_window_title(window);
             cx.notify();
         }
     }
@@ -244,12 +256,7 @@ impl Workspace {
             let is_active = ix == self.active_tab;
             let is_dirty = tab.document.is_dirty();
             let name = tab.document.display_name();
-            let (stem, extension) = match name.rsplit_once('.') {
-                Some((stem, extension)) if !stem.is_empty() => {
-                    (stem.to_string(), Some(format!(".{extension}")))
-                }
-                _ => (name.clone(), None),
-            };
+            let (stem, extension) = split_extension(&name);
             let parent = tab
                 .document
                 .path()
