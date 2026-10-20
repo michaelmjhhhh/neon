@@ -524,8 +524,9 @@ impl<'a> BlockParser<'a> {
                 inline.push_text(&format!("[{label}]"));
                 inline.pop_style(InlineStyle::LINK);
             }
-            Event::SoftBreak => inline.push_soft_break(),
-            Event::HardBreak => inline.push_hard_break(),
+            // A single newline breaks the line, as in Obsidian and Typora,
+            // rather than joining the lines as CommonMark does.
+            Event::SoftBreak | Event::HardBreak => inline.push_hard_break(),
             Event::TaskListMarker(checked) => self.pending_task = Some(checked),
             Event::Start(Tag::Emphasis) => inline.push_style(InlineStyle::EMPHASIS),
             Event::End(TagEnd::Emphasis) => inline.pop_style(InlineStyle::EMPHASIS),
@@ -644,6 +645,15 @@ mod tests {
         assert_eq!(blocks.len(), 3);
         assert_eq!(&source[blocks[0].source_range()], "# Title\n");
         assert!(matches!(blocks[2].kind(), BlockKind::Rule));
+    }
+
+    #[test]
+    fn a_single_newline_breaks_the_line() {
+        let kinds = kinds("first line\nsecond line  \nthird line");
+        assert_eq!(
+            &**paragraph(&kinds[0]).text(),
+            "first line\nsecond line\nthird line"
+        );
     }
 
     #[test]

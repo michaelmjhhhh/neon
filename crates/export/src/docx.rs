@@ -162,8 +162,8 @@ impl<'a> Writer<'a> {
                     verbatim.push_str(&html);
                 }
             }
-            Event::SoftBreak => self.push_run(self.run(" ")),
-            Event::HardBreak => {
+            // The preview breaks the line at a single newline.
+            Event::SoftBreak | Event::HardBreak => {
                 self.push_run(w::Run::new().add_break(w::BreakType::TextWrapping));
             }
             Event::FootnoteReference(label) => {
@@ -895,6 +895,19 @@ mod tests {
             document.matches("<w:br w:type=\"textWrapping\" />").count(),
             2
         );
+    }
+
+    #[test]
+    fn breaks_the_line_at_a_single_newline_like_the_preview() {
+        let document = part(
+            &export("first\nsecond", &ExportStyle::default()),
+            "word/document.xml",
+        );
+        assert_eq!(
+            document.matches("<w:br w:type=\"textWrapping\" />").count(),
+            1
+        );
+        assert!(!document.contains("> </w:t>"));
     }
 
     #[test]
