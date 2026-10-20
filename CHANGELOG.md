@@ -29,6 +29,8 @@ Groups, in this order:
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-20
+
 ### Added
 
 - Open several files in one window as tabs: Cmd+T opens a new tab, and a file picked in the sidebar opens in the tab you are on. Each tab keeps its own edits, undo history and scroll position.
