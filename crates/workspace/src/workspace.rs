@@ -359,6 +359,7 @@ impl Workspace {
                         }
                     }
                     Err(error) => {
+                        this.remember_session(cx);
                         let name = file_name(&path);
                         window.push_notification(
                             Notification::error(format!("Couldn’t open “{name}”. {error}.")),
@@ -734,7 +735,14 @@ impl Workspace {
 
     /// Save the folder and file this window shows, so the next launch opens
     /// them again.
+    ///
+    /// A window still reading what it was asked to open waits: saving then
+    /// would record an empty or half-open window if the app quit before the
+    /// reads finish. Each read records the state once it ends.
     fn remember_session(&self, cx: &mut Context<Self>) {
+        if self.load_task.is_some() || self.folder_task.is_some() {
+            return;
+        }
         let session = Session {
             folder: self.folder.clone(),
             file: self.document.path().map(Path::to_path_buf),
@@ -832,13 +840,16 @@ impl Workspace {
                             }
                         });
                     }
-                    Err(error) => window.push_notification(
-                        Notification::error(format!(
-                            "Couldn’t read folder “{}”. {error}",
-                            path.display()
-                        )),
-                        cx,
-                    ),
+                    Err(error) => {
+                        this.remember_session(cx);
+                        window.push_notification(
+                            Notification::error(format!(
+                                "Couldn’t read folder “{}”. {error}",
+                                path.display()
+                            )),
+                            cx,
+                        );
+                    }
                 }
                 cx.notify();
             })

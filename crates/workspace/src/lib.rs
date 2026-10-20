@@ -25,7 +25,7 @@ use gpui_kit::{App, KeyBinding, TitlebarOptions, WindowOptions, point, px};
 pub use document_file::DocumentFile;
 #[cfg(feature = "diagnostics")]
 pub use latency_bench::LatencyBench;
-pub use session_file::{Session, load as load_session};
+pub use session_file::{Session, load as load_session, saved as saved_session};
 pub use settings_file::load as load_settings;
 #[cfg(feature = "memory-bench")]
 pub use workspace::MemoryBench;

@@ -46,9 +46,11 @@ fn main() {
         open_requests.unbounded_send(paths).ok();
     })
     .on_reopen(|cx| {
-        // Clicking the Dock icon with no windows open starts a new document.
+        // Clicking the Dock icon with no windows open reopens the last
+        // folder and file, as a launch does.
         if cx.windows().is_empty() {
-            open_window(Vec::new(), WindowKind::Normal, cx);
+            let paths = workspace::saved_session(cx).existing_paths();
+            open_window(paths, WindowKind::Normal, cx);
         }
     });
 
@@ -77,7 +79,7 @@ fn main() {
             start_latency_bench(bench, cx);
             return;
         }
-        let session = workspace::load_session(cx);
+        workspace::load_session(cx);
         // A file opened from Finder arrives before launch finishes; it takes
         // the place of the last session, which would otherwise open beside it.
         let mut requested = launch_paths;
@@ -85,7 +87,8 @@ fn main() {
             requested.extend(paths);
         }
         if requested.is_empty() {
-            open_window(session.existing_paths(), WindowKind::Normal, cx);
+            let paths = workspace::saved_session(cx).existing_paths();
+            open_window(paths, WindowKind::Normal, cx);
         } else {
             open_paths(requested, cx);
         }
