@@ -32,6 +32,12 @@ Groups, in this order:
 ### Changed
 
 - Break the line in the preview and in exports wherever the source has a single newline, instead of joining the two lines into one paragraph line.
+- Polish the title bar: a chevron separates the folder from the file, the file's extension is dimmed so its name stands out, and the settings button sits further from the layout switcher.
+- Show an icon beside each mode in the Editor, Split and Preview switcher, with smaller labels that fit the control.
+
+### Fixed
+
+- Show the full focus ring around the name field in the New Folder dialog; its top edge was cut off.
 
 ## [0.6.1] - 2026-10-20
 
