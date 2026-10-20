@@ -898,6 +898,19 @@ mod tests {
     }
 
     #[test]
+    fn breaks_the_line_at_a_single_newline_like_the_preview() {
+        let document = part(
+            &export("first\nsecond", &ExportStyle::default()),
+            "word/document.xml",
+        );
+        assert_eq!(
+            document.matches("<w:br w:type=\"textWrapping\" />").count(),
+            1
+        );
+        assert!(!document.contains("> </w:t>"));
+    }
+
+    #[test]
     fn escapes_text_and_drops_characters_xml_cannot_hold() {
         let document = part(
             &export("a < b & \"c\" \u{0B}done", &ExportStyle::default()),
