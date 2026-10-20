@@ -2,13 +2,14 @@ use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
 
-use gpui_kit::component::input::{Editor, EditorState, Rope, RopeExt as _};
+use gpui_kit::component::input::{Editor, EditorState, Replace, Rope, RopeExt as _, Search};
 use gpui_kit::{
-    Bounds, Context, ElementInputHandler, Entity, EntityInputHandler, Focusable as _, IntoElement,
-    ParentElement as _, Pixels, Point, Render, SharedString, Styled as _, TextRun, UTF16Selection,
-    Window, canvas, div, point,
+    AppContext as _, Bounds, Context, ElementInputHandler, Entity, EntityInputHandler,
+    Focusable as _, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point,
+    Render, SharedString, Styled as _, TextRun, UTF16Selection, Window, canvas, div, point,
 };
 
+use crate::find_bar::FindBar;
 use crate::typography::Typography;
 
 /// The source editor as its own view, so the workspace can cache it: a
@@ -21,16 +22,24 @@ use crate::typography::Typography;
 pub(crate) struct EditorPane {
     editor: Entity<EditorState>,
     typography: Entity<Typography>,
+    find_bar: Entity<FindBar>,
     readonly: bool,
     /// The editor's text as of its last layout.
     laid_out_text: Rc<RefCell<Rope>>,
 }
 
 impl EditorPane {
-    pub(crate) fn new(editor: Entity<EditorState>, typography: Entity<Typography>) -> Self {
+    pub(crate) fn new(
+        editor: Entity<EditorState>,
+        typography: Entity<Typography>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let find_bar = cx.new(|cx| FindBar::new(editor.clone(), window, cx));
         Self {
             editor,
             typography,
+            find_bar,
             readonly: false,
             laid_out_text: Rc::default(),
         }
@@ -39,6 +48,8 @@ impl EditorPane {
     pub(crate) fn set_readonly(&mut self, readonly: bool, cx: &mut Context<Self>) {
         if self.readonly != readonly {
             self.readonly = readonly;
+            self.find_bar
+                .update(cx, |find_bar, cx| find_bar.set_readonly(readonly, cx));
             cx.notify();
         }
     }
@@ -107,6 +118,16 @@ impl Render for EditorPane {
         let laid_out_text = self.laid_out_text.clone();
         div()
             .size_full()
+            .relative()
+            // From the editor or the find bar itself.
+            .on_action(cx.listener(|this, _: &Search, window, cx| {
+                this.find_bar
+                    .update(cx, |find_bar, cx| find_bar.show(false, window, cx));
+            }))
+            .on_action(cx.listener(|this, _: &Replace, window, cx| {
+                this.find_bar
+                    .update(cx, |find_bar, cx| find_bar.show(true, window, cx));
+            }))
             .child(
                 Editor::new(&self.editor)
                     .readonly(self.readonly)
@@ -130,6 +151,7 @@ impl Render for EditorPane {
                 .absolute()
                 .size_full(),
             )
+            .child(self.find_bar.clone())
     }
 }
 

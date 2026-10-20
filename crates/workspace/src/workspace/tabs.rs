@@ -51,6 +51,8 @@ impl DocumentTab {
             let mut editor = EditorState::new(window, cx)
                 .language("markdown")
                 .line_number(line_numbers)
+                // The find bar over the editor replaces the built-in panel.
+                .searchable(false)
                 .placeholder("Start writing, or open a Markdown file…");
             editor.set_highlighter_factory(crate::highlighter::factory(), cx);
             editor.lsp_mut().completion_provider = Some(slash_commands.clone());
@@ -60,7 +62,8 @@ impl DocumentTab {
         let state = typography.read(cx);
         let (font, scale) = (state.preview_font(cx), state.preview_size(cx) / 16.);
         preview.update(cx, |preview, cx| preview.set_typography(font, scale, cx));
-        let editor_pane = cx.new(|_| EditorPane::new(editor.clone(), typography.clone()));
+        let editor_pane =
+            cx.new(|cx| EditorPane::new(editor.clone(), typography.clone(), window, cx));
         let subscriptions = [
             cx.subscribe_in(&editor, window, Workspace::on_editor_event),
             cx.observe_in(&editor, window, Workspace::on_editor_notified),

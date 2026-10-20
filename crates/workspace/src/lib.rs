@@ -2,6 +2,7 @@
 
 mod document_file;
 mod editor_pane;
+mod find_bar;
 mod folder;
 mod highlighter;
 mod inline_format;
