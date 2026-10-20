@@ -162,7 +162,7 @@ Neon uses GPUI Kit 0.7.3 with GPUI Pre 0.3.9. The implementation was checked
 against that installed dependency, and compared with Zed's official repository
 at `56934ec0560bce8929025497411de7f5322fb6ca`:
 
-- [GPUI image-cache ownership and eviction](https://github.com/zed-industries/zed/blob/56934ec0560bce8929025497411de7f5322fb6ca/crates/gpui/src/elements/image_cache.rs): document-owned caches permit decoded images and GPU tiles to be released together. Neon's cache targets 64 MiB / 128 entries; images needed by the current layout remain pinned, so this is not a hard memory ceiling or decode-size limit.
+- [GPUI image-cache ownership and eviction](https://github.com/zed-industries/zed/blob/56934ec0560bce8929025497411de7f5322fb6ca/crates/gpui/src/elements/image_cache.rs): document-owned caches permit decoded images and GPU tiles to be released together. Neon's cache targets 64 MiB / 128 entries; images needed by the current layout remain pinned, so this is not a hard memory ceiling. Still images wider than 2,048 device pixels are scaled down to that width after decoding; the full-size decode still happens first.
 - [GPUI arena clearing](https://github.com/zed-industries/zed/blob/56934ec0560bce8929025497411de7f5322fb6ca/crates/gpui/src/arena.rs): clearing elements retains arena chunks. Splitting oversized lists into visible chunks avoids growing these retained allocations in the first place.
 - [Zed background parsing](https://github.com/zed-industries/zed/blob/56934ec0560bce8929025497411de7f5322fb6ca/crates/language/src/buffer.rs): keep a small synchronous budget and let background parsing catch up. Neon now records edit coordinates without retaining a Rope snapshot for every intervening edit, and task completion holds weak ownership.
 
@@ -174,6 +174,6 @@ Ordinary builds omit the optional profiler and FPS sampling; use `diagnostics`
 for frame measurements and the latency benchmark.
 
 Large tables, code blocks and single deeply nested list items still render as
-whole blocks. Visible large images still decode at full resolution. Those
+whole blocks. Those
 workloads remain in the matrix so future changes can address their costs
 without hiding them in aggregate averages.

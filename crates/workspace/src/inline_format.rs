@@ -2,6 +2,8 @@
 
 use std::ops::Range;
 
+use gpui_kit::component::input::{Rope, RopeExt as _};
+
 /// An inline style that Markdown marks with asterisks.
 #[derive(Clone, Copy)]
 pub(crate) enum Style {
@@ -74,6 +76,25 @@ pub(crate) fn toggle(text: &str, selection: Range<usize>, style: Style) -> Edit 
     }
 }
 
+/// [`toggle`] on a rope, reading only the lines the selection spans:
+/// asterisk runs never cross a line break, so the rest of the document
+/// cannot change the edit, and a long document is not copied per keypress.
+pub(crate) fn toggle_in_rope(text: &Rope, selection: Range<usize>, style: Style) -> Edit {
+    let start = text.line_start_offset(text.offset_to_point(selection.start).row);
+    let end = text.line_end_offset(text.offset_to_point(selection.end).row);
+    let lines = text.slice(start..end).to_string();
+    let edit = toggle(
+        &lines,
+        selection.start - start..selection.end - start,
+        style,
+    );
+    Edit {
+        range: edit.range.start + start..edit.range.end + start,
+        text: edit.text,
+        selection: edit.selection.start + start..edit.selection.end + start,
+    }
+}
+
 fn stars_before(text: &str) -> usize {
     text.len() - text.trim_end_matches('*').len()
 }
@@ -137,6 +158,16 @@ mod tests {
         assert_eq!(toggle_marked("*[milk]*", Style::Bold), "***[milk]***");
         assert_eq!(toggle_marked("***[milk]***", Style::Bold), "*[milk]*");
         assert_eq!(toggle_marked("***[milk]***", Style::Italic), "**[milk]**");
+    }
+
+    #[test]
+    fn rope_toggle_matches_the_whole_text_away_from_the_first_line() {
+        let text = "intro\nbuy **milk** now\noutro";
+        let selection = text.find("milk").unwrap()..text.find(" now").unwrap() - 2;
+        assert_eq!(
+            toggle_in_rope(&Rope::from(text), selection.clone(), Style::Bold),
+            toggle(text, selection, Style::Bold)
+        );
     }
 
     #[test]
