@@ -105,6 +105,16 @@ impl FindBar {
         self.search(cx);
     }
 
+    /// Hide the bar if it shows. Returns whether it did, so Escape can pass
+    /// on when there was nothing to close.
+    pub(crate) fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.open {
+            return false;
+        }
+        self.hide(window, cx);
+        true
+    }
+
     fn hide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open = false;
         self.editor.update(cx, |editor, cx| {

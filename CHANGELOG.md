@@ -31,7 +31,7 @@ Groups, in this order:
 
 ### Changed
 
-- Find (Cmd+F) and Find and Replace (Cmd+Shift+F) open a compact bar at the editor's top right instead of a strip across the whole editor; it shows the match count as "3 of 12" and Enter reveals the first match before moving on.
+- Find (Cmd+F) and Find and Replace (Cmd+Shift+F) open a compact bar at the editor's top right instead of a strip across the whole editor; it shows the match count as "3 of 12" and Enter reveals the first match before moving on, and Esc closes it from the bar or the editor.
 - Focused fields and controls show a thin accent border instead of a soft orange glow around it.
 
 ## [0.8.0] - 2026-10-20

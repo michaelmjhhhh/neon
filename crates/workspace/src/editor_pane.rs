@@ -2,7 +2,9 @@ use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
 
-use gpui_kit::component::input::{Editor, EditorState, Replace, Rope, RopeExt as _, Search};
+use gpui_kit::component::input::{
+    Editor, EditorState, Escape, Replace, Rope, RopeExt as _, Search,
+};
 use gpui_kit::{
     AppContext as _, Bounds, Context, ElementInputHandler, Entity, EntityInputHandler,
     Focusable as _, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point,
@@ -127,6 +129,16 @@ impl Render for EditorPane {
             .on_action(cx.listener(|this, _: &Replace, window, cx| {
                 this.find_bar
                     .update(cx, |find_bar, cx| find_bar.show(true, window, cx));
+            }))
+            // Escape the editor had no use for, such as with no menu open,
+            // closes the find bar too.
+            .on_action(cx.listener(|this, _: &Escape, window, cx| {
+                if !this
+                    .find_bar
+                    .update(cx, |find_bar, cx| find_bar.dismiss(window, cx))
+                {
+                    cx.propagate();
+                }
             }))
             .child(
                 Editor::new(&self.editor)
