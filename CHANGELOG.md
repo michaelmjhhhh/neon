@@ -31,7 +31,7 @@ Groups, in this order:
 
 ### Added
 
-- Reopen the folder and file you last worked on when Neon starts. A file opened from Finder or the command line takes their place, and a folder or file that no longer exists is skipped.
+- Reopen the folder and file you last worked on when Neon starts, or when you click the Dock icon with no windows open. A file opened from Finder or the command line takes their place, and a folder or file that no longer exists is skipped.
 
 ### Changed
 

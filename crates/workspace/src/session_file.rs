@@ -36,16 +36,19 @@ impl Global for SessionFile {}
 
 /// Read the session the last launch left, and save each change from now on.
 /// Call once at startup, after any benchmark has had its chance to run.
-pub fn load(cx: &mut App) -> Session {
+pub fn load(cx: &mut App) {
     let Some(path) = settings_file::config_dir().map(|dir| dir.join("session.json")) else {
-        return Session::default();
+        return;
     };
-    let session: Session = settings_file::read(&path);
-    cx.set_global(SessionFile {
-        path,
-        session: session.clone(),
-    });
-    session
+    let session = settings_file::read(&path);
+    cx.set_global(SessionFile { path, session });
+}
+
+/// The folder and file to open in place of an empty window.
+pub fn saved(cx: &App) -> Session {
+    cx.try_global::<SessionFile>()
+        .map(|file| file.session.clone())
+        .unwrap_or_default()
 }
 
 /// Record what a window shows and save it, if the session was loaded.
