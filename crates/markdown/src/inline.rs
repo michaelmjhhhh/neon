@@ -116,10 +116,6 @@ impl InlineBuilder {
         self.push_styled(code, style);
     }
 
-    pub(crate) fn push_soft_break(&mut self) {
-        self.push_text(" ");
-    }
-
     pub(crate) fn push_hard_break(&mut self) {
         self.push_text("\n");
     }

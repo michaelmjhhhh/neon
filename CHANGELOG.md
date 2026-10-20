@@ -29,6 +29,10 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Changed
+
+- Break the line in the preview and in exports wherever the source has a single newline, instead of joining the two lines into one paragraph line.
+
 ## [0.6.1] - 2026-10-20
 
 ### Performance

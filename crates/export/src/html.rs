@@ -55,6 +55,8 @@ impl<'a> Iterator for Events<'a, '_> {
             Event::End(TagEnd::HtmlBlock) => Event::Html("</pre>\n".into()),
             Event::Html(html) => Event::Text(html),
             Event::InlineHtml(html) => Event::Code(html),
+            // The preview breaks the line at a single newline.
+            Event::SoftBreak => Event::HardBreak,
             // A glyph rather than a form control, so every format, and
             // print, shows the same mark.
             Event::TaskListMarker(done) => Event::InlineHtml(CowStr::Borrowed(if done {
@@ -270,6 +272,12 @@ mod tests {
         assert!(html.contains("<td style=\"text-align: right\">2</td>"));
         assert!(html.contains("<del>gone</del>"));
         assert!(html.contains("class=\"footnote-definition\""));
+    }
+
+    #[test]
+    fn breaks_the_line_at_a_single_newline_like_the_preview() {
+        let html = export("first\nsecond", &ExportStyle::default());
+        assert!(html.contains("<p>first<br />\nsecond</p>"));
     }
 
     #[test]

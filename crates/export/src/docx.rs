@@ -162,8 +162,8 @@ impl<'a> Writer<'a> {
                     verbatim.push_str(&html);
                 }
             }
-            Event::SoftBreak => self.push_run(self.run(" ")),
-            Event::HardBreak => {
+            // The preview breaks the line at a single newline.
+            Event::SoftBreak | Event::HardBreak => {
                 self.push_run(w::Run::new().add_break(w::BreakType::TextWrapping));
             }
             Event::FootnoteReference(label) => {
