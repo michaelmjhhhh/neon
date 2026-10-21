@@ -21,7 +21,7 @@ use gpui_kit::{
 use markdown::MarkdownDocument;
 
 use crate::KEY_CONTEXT;
-use crate::blocks::render_block;
+use crate::blocks::{BlockLayout, render_block};
 use crate::image_cache::PreviewImageCache;
 use crate::rows::PreviewRows;
 
@@ -72,6 +72,8 @@ pub struct MarkdownPreview {
     pending_reveal_offset: Option<usize>,
     font_family: Option<gpui_kit::SharedString>,
     font_scale: f32,
+    /// Leading and trailing insets that replace the centered reading column.
+    column_insets: Option<(Pixels, Pixels)>,
     list_state: ListState,
     scrollbar: Entity<PreviewScrollbar>,
     focus_handle: FocusHandle,
@@ -114,6 +116,7 @@ impl MarkdownPreview {
             pending_reveal_offset: None,
             font_family: None,
             font_scale: 1.,
+            column_insets: None,
             list_state,
             scrollbar,
             focus_handle: cx.focus_handle(),
@@ -173,6 +176,19 @@ impl MarkdownPreview {
         cx.notify();
     }
 
+    /// Lay blocks across the preview's full width, between these leading and
+    /// trailing insets, instead of in the centered reading column; `None`
+    /// returns to the column. For a host that sets the width itself.
+    pub fn set_column_insets(&mut self, insets: Option<(Pixels, Pixels)>, cx: &mut Context<Self>) {
+        if self.column_insets == insets {
+            return;
+        }
+        self.column_insets = insets;
+        self.list_state
+            .remeasure_items(0..self.rows.len(&self.document));
+        cx.notify();
+    }
+
     /// Update relative resources after Save As without moving the reader.
     pub fn set_base_dir(&mut self, base_dir: Option<Arc<Path>>, cx: &mut Context<Self>) {
         if self.base_dir != base_dir && self.active {
@@ -202,6 +218,12 @@ impl MarkdownPreview {
             .when(show_scrollbar, |this| {
                 this.child(div().absolute().inset_0().child(scrollbar.cached(style())))
             })
+    }
+
+    /// Scroll by `distance`; positive moves toward the end.
+    pub fn scroll_by(&mut self, distance: Pixels, cx: &mut Context<Self>) {
+        self.list_state.scroll_by(distance);
+        cx.notify();
     }
 
     /// The most recently applied parse.
@@ -515,11 +537,14 @@ impl Render for MarkdownPreview {
 
         let document = self.document.clone();
         let rows = self.rows.clone();
-        let font_family = self
-            .font_family
-            .clone()
-            .unwrap_or_else(|| cx.theme().font_family.clone());
-        let font_scale = self.font_scale;
+        let layout = BlockLayout {
+            font_family: self
+                .font_family
+                .clone()
+                .unwrap_or_else(|| cx.theme().font_family.clone()),
+            font_scale: self.font_scale,
+            column_insets: self.column_insets,
+        };
         let base_dir = self.base_dir.clone();
         let is_empty = document.blocks().is_empty() && !self.is_parsing();
         let cache = self.image_cache.clone();
@@ -577,7 +602,7 @@ impl Render for MarkdownPreview {
                             rows.list_items(ix),
                             base_dir.as_ref(),
                             cache,
-                            (font_family.clone(), font_scale),
+                            &layout,
                             cx,
                         )
                     })
