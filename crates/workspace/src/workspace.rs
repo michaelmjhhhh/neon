@@ -31,10 +31,10 @@ use gpui_kit::component::tree::{Tree, TreeEvent, TreeState};
 use gpui_kit::component::{ActiveTheme as _, TitleBar, WindowExt as _};
 use gpui_kit::component::{Disableable as _, IconName, Sizable as _};
 use gpui_kit::{
-    Anchor, AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable, FontWeight,
-    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Pixels, Render,
-    ScrollHandle, SharedString, StyleRefinement, Styled as _, Subscription, Task, Window, div,
-    prelude::FluentBuilder as _,
+    Anchor, AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable, FontFeatures,
+    FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions,
+    Pixels, Render, ScrollHandle, SharedString, StyleRefinement, Styled as _, Subscription, Task,
+    Window, div, prelude::FluentBuilder as _,
 };
 use markdown_preview::MarkdownPreview;
 
@@ -2086,6 +2086,8 @@ impl Workspace {
             .py_0()
             .px_4()
             .gap_4()
+            // Equal-width digits, so counts do not shift as they change.
+            .font_features(FontFeatures(Arc::new(vec![("tnum".into(), 1)])))
             .left(
                 div()
                     .flex()
@@ -2101,8 +2103,8 @@ impl Workspace {
                     .when(self.is_loading(), |this| this.child("Opening…"))
                     .when(self.save_task.is_some(), |this| this.child("Saving…")),
             )
-            .right(self.scroll_metrics.clone())
             .right(self.word_count.clone())
+            .right(self.scroll_metrics.clone())
     }
 }
 

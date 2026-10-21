@@ -33,6 +33,7 @@ Groups, in this order:
 
 - Find (Cmd+F) and Find and Replace (Cmd+Shift+F) open a compact bar at the editor's top right instead of a strip across the whole editor; it shows the match count as "3 of 12" and Enter reveals the first match before moving on, and Esc closes it from the bar or the editor.
 - Focused fields and controls show a thin accent border instead of a soft orange glow around it.
+- The status bar shows how far you have read as a percentage with a small meter at its right edge, without the "Editor" or "Preview" prefix, and its numbers keep their place as they change.
 
 ## [0.8.0] - 2026-10-20
 
