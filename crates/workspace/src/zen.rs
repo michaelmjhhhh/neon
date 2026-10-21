@@ -89,9 +89,15 @@ impl ZenFocus {
     }
 }
 
+/// How far [`paragraph_around`] looks for a blank line in each direction.
+/// It runs on every keystroke, so a long run of text without one, such as a
+/// big list or code block, lights a window of lines around the caret rather
+/// than costing a walk over the whole run.
+const PARAGRAPH_SCAN_LINES: usize = 200;
+
 /// The paragraph containing `offset`: the run of non-blank lines around it,
-/// from the start of its first line to the end of its last. On a blank line,
-/// just that line.
+/// at most [`PARAGRAPH_SCAN_LINES`] each way, from the start of its first
+/// line to the end of its last. On a blank line, just that line.
 pub(crate) fn paragraph_around(text: &Rope, offset: usize) -> Range<usize> {
     let is_blank = |row: usize| text.slice_line(row).chars().all(char::is_whitespace);
     let row = text.offset_to_point(offset.min(text.len())).row;
@@ -100,11 +106,11 @@ pub(crate) fn paragraph_around(text: &Rope, offset: usize) -> Range<usize> {
         return text.line_start_offset(row)..text.line_end_offset(row);
     }
     let mut first = row;
-    while first > 0 && !is_blank(first - 1) {
+    while first > 0 && row - first < PARAGRAPH_SCAN_LINES && !is_blank(first - 1) {
         first -= 1;
     }
     let mut last = row;
-    while last < last_row && !is_blank(last + 1) {
+    while last < last_row && last - row < PARAGRAPH_SCAN_LINES && !is_blank(last + 1) {
         last += 1;
     }
     text.line_start_offset(first)..text.line_end_offset(last)
@@ -145,5 +151,17 @@ mod tests {
         let text = "One\n\nTwo";
         let rope = Rope::from(text);
         assert_eq!(paragraph_around(&rope, text.len()), 5..8);
+    }
+
+    #[test]
+    fn a_long_run_lights_a_window_around_the_caret() {
+        let text = "line\n".repeat(1_000);
+        let rope = Rope::from(text.as_str());
+        let row = 500;
+        let range = paragraph_around(&rope, row * 5);
+        let first = rope.offset_to_point(range.start).row;
+        let last = rope.offset_to_point(range.end).row;
+        assert_eq!(first, row - PARAGRAPH_SCAN_LINES);
+        assert_eq!(last, row + PARAGRAPH_SCAN_LINES);
     }
 }
