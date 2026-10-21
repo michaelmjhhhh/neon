@@ -48,8 +48,10 @@ use crate::settings::{LineNumbersChanged, SettingsView};
 use crate::slash_commands::{Insertion, SlashCommands};
 use crate::theme::{self, Appearance};
 use crate::word_count::WordCount;
+use crate::zen::{Zen, ZenView};
 
 mod tabs;
+mod zen_mode;
 use tabs::DocumentTab;
 
 #[cfg(feature = "memory-bench")]
@@ -85,6 +87,8 @@ gpui_kit::actions!(
         ShowSplit,
         ShowPreview,
         ToggleTheme,
+        ToggleZen,
+        ExitZen,
         CloseWindow,
         Quit
     ]
@@ -168,6 +172,8 @@ pub struct Workspace {
     /// The `/` template menu, kept to place the cursor in what it inserts.
     slash_commands: Rc<SlashCommands>,
     layout: LayoutMode,
+    /// While set, the window shows the editor alone; see [`crate::zen`].
+    zen: Option<Zen>,
     focus_handle: FocusHandle,
     load_task: Option<Task<()>>,
     save_task: Option<Task<()>>,
@@ -241,6 +247,11 @@ impl Workspace {
             cx.observe_window_appearance(window, |_, window, cx| {
                 theme::apply_appearance(window, cx);
             }),
+            cx.observe_window_bounds(window, |this, window, cx| {
+                if this.zen.is_some() {
+                    this.glide_zen_caret(window, cx);
+                }
+            }),
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
                     this.remember_session(cx);
@@ -269,6 +280,7 @@ impl Workspace {
             word_count,
             slash_commands,
             layout: LayoutMode::default(),
+            zen: None,
             focus_handle: cx.focus_handle(),
             load_task: None,
             save_task: None,
@@ -321,7 +333,10 @@ impl Workspace {
     pub fn focus_content(&self, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings_open {
             self.settings.read(cx).focus_handle(cx).focus(window, cx);
-        } else if self.layout.shows_editor() {
+        } else if self
+            .zen_view()
+            .map_or(self.layout.shows_editor(), |view| view == ZenView::Editor)
+        {
             self.tab()
                 .editor
                 .update(cx, |editor, cx| editor.focus(window, cx));
@@ -473,6 +488,7 @@ impl Workspace {
         }
         self.word_count
             .update(cx, |count, cx| count.set_source(source, cx));
+        self.zen_follow_cursor(cx);
         self.draw_soon(window, cx);
         // Only the first edit changes this view; the cursor position and word
         // count notify through their own paths, so typing stays cheap.
@@ -497,6 +513,8 @@ impl Workspace {
             return;
         }
         self.tab_mut().revealed_cursor = Some(cursor);
+        self.zen_follow_cursor(cx);
+        self.glide_zen_caret(window, cx);
         self.draw_soon(window, cx);
         if self.layout == LayoutMode::Split {
             self.tab()
@@ -1232,6 +1250,13 @@ impl Workspace {
     }
 
     fn toggle_sidebar(&mut self, _: &ToggleSidebar, window: &mut Window, cx: &mut Context<Self>) {
+        // Zen hides the sidebar; asking for it leaves Zen and shows it.
+        if self.zen.is_some() {
+            self.exit_zen(window, cx);
+            self.sidebar_visible = true;
+            cx.notify();
+            return;
+        }
         self.sidebar_visible = !self.sidebar_visible;
         if !self.sidebar_visible {
             self.focus_content(window, cx);
@@ -1250,9 +1275,11 @@ impl Workspace {
 
     fn set_line_numbers(&mut self, visible: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.line_numbers = visible;
+        // Zen keeps them hidden until it ends.
+        let shown = visible && self.zen.is_none();
         for tab in &self.tabs {
             tab.editor
-                .update(cx, |editor, cx| editor.set_line_number(visible, window, cx));
+                .update(cx, |editor, cx| editor.set_line_number(shown, window, cx));
         }
     }
 
@@ -1271,9 +1298,10 @@ impl Workspace {
         self.settings_open = open;
         self.settings
             .update(cx, |settings, cx| settings.set_open(open, window, cx));
-        self.tab().preview.update(cx, |preview, cx| {
-            preview.set_active(!open && self.layout != LayoutMode::Editor, cx);
-        });
+        let preview_shown = self.preview_shown();
+        self.tab()
+            .preview
+            .update(cx, |preview, cx| preview.set_active(preview_shown, cx));
         // Move focus now: the pane that held it is not rendered next frame,
         // and keys sent to it would not reach the workspace.
         self.focus_content(window, cx);
@@ -1637,6 +1665,11 @@ impl Workspace {
     }
 
     fn show_editor(&mut self, _: &ShowEditor, window: &mut Window, cx: &mut Context<Self>) {
+        // In Zen, Editor and Preview switch what Zen shows; Split leaves it.
+        if self.zen.is_some() {
+            self.set_zen_view(ZenView::Editor, window, cx);
+            return;
+        }
         self.set_layout(LayoutMode::Editor, window, cx);
     }
 
@@ -1645,17 +1678,24 @@ impl Workspace {
     }
 
     fn show_preview(&mut self, _: &ShowPreview, window: &mut Window, cx: &mut Context<Self>) {
+        if self.zen.is_some() {
+            self.set_zen_view(ZenView::Preview, window, cx);
+            return;
+        }
         self.set_layout(LayoutMode::Preview, window, cx);
     }
 
     pub fn set_layout(&mut self, layout: LayoutMode, window: &mut Window, cx: &mut Context<Self>) {
+        // Choosing a layout leaves Zen, even for the one Zen started from.
+        self.exit_zen(window, cx);
         if self.layout == layout {
             return;
         }
         self.layout = layout;
-        self.tab().preview.update(cx, |preview, cx| {
-            preview.set_active(!self.settings_open && layout != LayoutMode::Editor, cx);
-        });
+        let preview_shown = self.preview_shown();
+        self.tab()
+            .preview
+            .update(cx, |preview, cx| preview.set_active(preview_shown, cx));
         self.scroll_metrics
             .update(cx, |metrics, cx| metrics.set_layout(layout, cx));
         if layout != LayoutMode::Editor {
@@ -1944,6 +1984,7 @@ impl Workspace {
                     // Each tab marks its own edits; Save stays with the view
                     // controls.
                     .children(save_button.take())
+                    .child(zen_mode::enter_zen_button(cx))
                     .child(
                         Button::new("settings")
                             .small()
@@ -2132,6 +2173,8 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = if self.settings_open {
             self.settings.clone().into_any_element()
+        } else if self.zen.is_some() {
+            self.render_zen(window, cx).into_any_element()
         } else {
             self.render_panes(window, cx).into_any_element()
         };
@@ -2205,6 +2248,16 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::show_split))
             .on_action(cx.listener(Self::show_preview))
             .on_action(cx.listener(Self::toggle_theme))
+            .on_action(cx.listener(Self::toggle_zen))
+            .on_action(cx.listener(Self::exit_zen_action))
+            // Escape that nothing inside had a use for leaves Zen.
+            .on_action(cx.listener(|this, _: &Escape, window, cx| {
+                if this.zen.is_some() {
+                    this.exit_zen(window, cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
             .on_action(cx.listener(Self::close_window))
             .on_action(cx.listener(Self::quit))
             .size_full()

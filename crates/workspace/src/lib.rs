@@ -19,6 +19,7 @@ mod theme;
 mod typography;
 mod word_count;
 mod workspace;
+mod zen;
 
 use gpui_kit::component::TitleBar;
 use gpui_kit::{App, KeyBinding, TitlebarOptions, WindowOptions, point, px};
@@ -31,15 +32,15 @@ pub use settings_file::load as load_settings;
 #[cfg(feature = "memory-bench")]
 pub use workspace::MemoryBench;
 pub use workspace::{
-    CloseSettings, CloseTab, CloseWindow, ExportDocx, ExportHtml, ExportPdf, LayoutMode, NewFile,
-    NewFolder, NewTab, NextTab, Open, OpenFolder, OpenSettings, PreviousTab, Quit, RefreshFolder,
-    Save, SaveAs, ShowEditor, ShowPreview, ShowSplit, ToggleBold, ToggleItalic, ToggleLineNumbers,
-    ToggleSidebar, ToggleTheme, Workspace,
+    CloseSettings, CloseTab, CloseWindow, ExitZen, ExportDocx, ExportHtml, ExportPdf, LayoutMode,
+    NewFile, NewFolder, NewTab, NextTab, Open, OpenFolder, OpenSettings, PreviousTab, Quit,
+    RefreshFolder, Save, SaveAs, ShowEditor, ShowPreview, ShowSplit, ToggleBold, ToggleItalic,
+    ToggleLineNumbers, ToggleSidebar, ToggleTheme, ToggleZen, Workspace,
 };
 
 const KEY_CONTEXT: &str = "Workspace";
 
-gpui_kit::assets::icon_assets!(ExtraIcons, [Columns2, FilePlus, FolderPlus, PenLine]);
+gpui_kit::assets::icon_assets!(ExtraIcons, [Columns2, FilePlus, FolderPlus, Focus, PenLine]);
 
 /// The icons the app draws: GPUI Kit's default set, plus the few beyond it
 /// that the workspace uses.
@@ -88,6 +89,10 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("escape", CloseSettings, Some(SETTINGS_KEY_CONTEXT)),
         KeyBinding::new("secondary-shift-b", ToggleSidebar, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-shift-l", ToggleLineNumbers, Some(KEY_CONTEXT)),
+        // Z for Zen. macOS menus cannot show Enter, so not Cmd-Shift-Enter.
+        KeyBinding::new("ctrl-secondary-z", ToggleZen, Some(KEY_CONTEXT)),
+        // Fields and the editor bind Escape themselves and win over this.
+        KeyBinding::new("escape", ExitZen, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-b", ToggleBold, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-i", ToggleItalic, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-o", Open, Some(KEY_CONTEXT)),

@@ -18,12 +18,13 @@ use gpui_kit::{
 };
 use markdown_preview::MarkdownPreview;
 
-use super::{CloseTab, LayoutMode, NewTab, Workspace, file_name, home_dir, split_extension};
+use super::{CloseTab, NewTab, Workspace, file_name, home_dir, split_extension};
 use crate::KEY_CONTEXT;
 use crate::document_file::DocumentFile;
 use crate::editor_pane::EditorPane;
 use crate::slash_commands::SlashCommands;
 use crate::typography::Typography;
+use crate::zen::ZenFocus;
 
 /// One open document and the views that show it.
 pub(super) struct DocumentTab {
@@ -35,6 +36,8 @@ pub(super) struct DocumentTab {
     pub(super) preview: Entity<MarkdownPreview>,
     /// Cursor offset last revealed in the preview, to react to moves only.
     pub(super) revealed_cursor: Option<usize>,
+    /// Made the first time this tab shows in Zen.
+    pub(super) zen_focus: Option<ZenFocus>,
     _subscriptions: [Subscription; 2],
 }
 
@@ -75,6 +78,7 @@ impl DocumentTab {
             editor_pane,
             preview,
             revealed_cursor: None,
+            zen_focus: None,
             _subscriptions: subscriptions,
         }
     }
@@ -120,6 +124,9 @@ impl Workspace {
             cx,
         );
         self.tabs.push(tab);
+        if self.zen.is_some() {
+            self.show_zen_in_editors(window, cx);
+        }
         // Switch first: closing Settings then turns on only the new preview.
         self.activate_tab(self.tabs.len() - 1, window, cx);
         self.set_settings_open(false, window, cx);
@@ -158,7 +165,7 @@ impl Workspace {
         self.slash_commands.dismiss();
         let tab = self.tab();
         let (editor, preview) = (tab.editor.clone(), tab.preview.clone());
-        let preview_shown = !self.settings_open && self.layout != LayoutMode::Editor;
+        let preview_shown = self.preview_shown();
         preview.update(cx, |preview, cx| preview.set_active(preview_shown, cx));
         let source = editor.read(cx).text().clone();
         self.word_count

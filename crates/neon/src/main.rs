@@ -14,7 +14,7 @@ use workspace::{
     CloseTab, CloseWindow, ExportDocx, ExportHtml, ExportPdf, NewFile, NewFolder, NewTab, NextTab,
     Open, OpenFolder, OpenSettings, PreviousTab, Quit, RefreshFolder, Save, SaveAs, ShowEditor,
     ShowPreview, ShowSplit, ToggleBold, ToggleItalic, ToggleLineNumbers, ToggleSidebar,
-    ToggleTheme, Workspace,
+    ToggleTheme, ToggleZen, Workspace,
 };
 
 /// Every open document window, so files opened from Finder can reuse one.
@@ -290,6 +290,7 @@ fn set_menus(cx: &mut App) {
             MenuItem::action("Toggle Sidebar", ToggleSidebar),
             MenuItem::action("Toggle Line Numbers", ToggleLineNumbers),
             MenuItem::action("Toggle Dark Mode", ToggleTheme),
+            MenuItem::action("Toggle Zen Mode", ToggleZen),
             MenuItem::separator(),
             MenuItem::action("Show Next Tab", NextTab),
             MenuItem::action("Show Previous Tab", PreviousTab),
