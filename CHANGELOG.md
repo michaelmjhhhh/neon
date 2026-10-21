@@ -29,6 +29,8 @@ Groups, in this order:
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-21
+
 ### Added
 
 - Zen Mode (Control-Cmd-Z, the Zen button in the header, or View > Toggle Zen Mode) shows the document alone, full screen, in a centered column: the paragraph you are writing stays at full strength while the rest fades back, and the line you type on or click glides to the middle of the screen. A switch under the column, or Cmd+1 and Cmd+3, moves between the source and the preview; Esc, the same shortcut or Exit Zen Mode returns to the layout you left.
