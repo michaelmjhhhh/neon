@@ -27,16 +27,29 @@ use crate::image_cache::PreviewImageCache;
 /// are harder to read than short ones.
 const MAX_READING_WIDTH_REMS: f32 = 40.;
 
+/// How blocks are set: their typeface and scale, and the column they sit in.
+pub(crate) struct BlockLayout {
+    pub(crate) font_family: SharedString,
+    pub(crate) font_scale: f32,
+    /// Leading and trailing insets in place of the centered reading column.
+    pub(crate) column_insets: Option<(Pixels, Pixels)>,
+}
+
 pub(crate) fn render_block(
     block: &Block,
     row_id: u64,
     list_items: Option<Range<usize>>,
     base_dir: Option<&Arc<Path>>,
     image_cache: &Entity<PreviewImageCache>,
-    typography: (SharedString, f32),
+    layout: &BlockLayout,
     cx: &mut App,
 ) -> AnyElement {
-    let (font_family, font_scale) = typography;
+    let BlockLayout {
+        font_family,
+        font_scale,
+        column_insets,
+    } = layout;
+    let (font_scale, column_insets) = (*font_scale, *column_insets);
     let mut renderer = BlockRenderer::new(base_dir, image_cache, cx);
     renderer.font_scale = font_scale;
     let (content, continues_list) = match (block.kind(), list_items) {
@@ -54,16 +67,21 @@ pub(crate) fn render_block(
     // content-derived row ids, so an unchanged chunk keeps its element state.
     div()
         .id(("block", row_id))
-        .font_family(font_family)
+        .font_family(font_family.clone())
         .text_size(rems(font_scale))
         .w_full()
         .flex()
         .justify_center()
-        .px_8()
+        .map(|this| match column_insets {
+            Some((leading, trailing)) => this.pl(leading).pr(trailing),
+            None => this.px_8(),
+        })
         .child(
             div()
                 .w_full()
-                .max_w(rems(MAX_READING_WIDTH_REMS))
+                .when(column_insets.is_none(), |this| {
+                    this.max_w(rems(MAX_READING_WIDTH_REMS))
+                })
                 .map(|this| {
                     if continues_list {
                         // This is the same gap as between items in one list.
