@@ -177,6 +177,10 @@ impl Workspace {
         self.sync_tree_selection(cx);
         self.update_window_title(window);
         self.focus_content(window, cx);
+        // In Zen, light this tab's paragraph and bring its caret line to the
+        // middle; its caret did not move, so the editor would not ask.
+        self.zen_follow_cursor(cx);
+        self.glide_zen_caret(window, cx);
         cx.notify();
     }
 

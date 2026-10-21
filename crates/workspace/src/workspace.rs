@@ -172,7 +172,8 @@ pub struct Workspace {
     /// The `/` template menu, kept to place the cursor in what it inserts.
     slash_commands: Rc<SlashCommands>,
     layout: LayoutMode,
-    /// While set, the window shows the editor alone; see [`crate::zen`].
+    /// While set, the window shows the document alone, as source or
+    /// preview; see [`crate::zen`].
     zen: Option<Zen>,
     focus_handle: FocusHandle,
     load_task: Option<Task<()>>,
