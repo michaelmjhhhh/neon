@@ -92,6 +92,9 @@ gpui_kit::actions!(
         ToggleTheme,
         ToggleZen,
         ExitZen,
+        ZoomIn,
+        ZoomOut,
+        ResetZoom,
         CloseWindow,
         Quit
     ]
@@ -1304,6 +1307,21 @@ impl Workspace {
         }
     }
 
+    fn zoom_in(&mut self, _: &ZoomIn, window: &mut Window, cx: &mut Context<Self>) {
+        self.typography
+            .update(cx, |typography, cx| typography.zoom(1, window, cx));
+    }
+
+    fn zoom_out(&mut self, _: &ZoomOut, window: &mut Window, cx: &mut Context<Self>) {
+        self.typography
+            .update(cx, |typography, cx| typography.zoom(-1, window, cx));
+    }
+
+    fn reset_zoom(&mut self, _: &ResetZoom, window: &mut Window, cx: &mut Context<Self>) {
+        self.typography
+            .update(cx, |typography, cx| typography.reset_sizes(window, cx));
+    }
+
     fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
         self.set_settings_open(true, window, cx);
     }
@@ -2271,6 +2289,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::close_settings))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::toggle_line_numbers))
+            .on_action(cx.listener(Self::zoom_in))
+            .on_action(cx.listener(Self::zoom_out))
+            .on_action(cx.listener(Self::reset_zoom))
             .on_action(cx.listener(|this, _: &ToggleBold, window, cx| {
                 this.toggle_style(Style::Bold, window, cx);
             }))

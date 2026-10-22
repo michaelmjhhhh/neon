@@ -78,11 +78,12 @@ gh attestation verify Neon-<version>-macos.dmg --repo michaelmjhhhh/neon
 | New folder | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>N</kbd> | Toggle sidebar | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>B</kbd> |
 | Open file | <kbd>⌘</kbd> <kbd>O</kbd> | Toggle line numbers | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>L</kbd> |
 | Open folder | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>O</kbd> | Settings | <kbd>⌘</kbd> <kbd>,</kbd> |
-| Save | <kbd>⌘</kbd> <kbd>S</kbd> | **Editing** | |
-| Save As | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>S</kbd> | Bold / Italic | <kbd>⌘</kbd> <kbd>B</kbd> / <kbd>⌘</kbd> <kbd>I</kbd> |
-| Next / previous tab | <kbd>⌃</kbd> <kbd>Tab</kbd> / <kbd>⌃</kbd> <kbd>⇧</kbd> <kbd>Tab</kbd> | Find | <kbd>⌘</kbd> <kbd>F</kbd> |
-| Close tab | <kbd>⌘</kbd> <kbd>W</kbd> | Find and replace | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>F</kbd> |
-| Close window | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>W</kbd> | Indent / outdent list item | <kbd>Tab</kbd> / <kbd>⇧</kbd> <kbd>Tab</kbd> |
+| Save | <kbd>⌘</kbd> <kbd>S</kbd> | Bigger / smaller / default text | <kbd>⌘</kbd> <kbd>=</kbd> / <kbd>⌘</kbd> <kbd>-</kbd> / <kbd>⌘</kbd> <kbd>0</kbd> |
+| Save As | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>S</kbd> | **Editing** | |
+| Next / previous tab | <kbd>⌃</kbd> <kbd>Tab</kbd> / <kbd>⌃</kbd> <kbd>⇧</kbd> <kbd>Tab</kbd> | Bold / Italic | <kbd>⌘</kbd> <kbd>B</kbd> / <kbd>⌘</kbd> <kbd>I</kbd> |
+| Close tab | <kbd>⌘</kbd> <kbd>W</kbd> | Find | <kbd>⌘</kbd> <kbd>F</kbd> |
+| Close window | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>W</kbd> | Find and replace | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>F</kbd> |
+| | | Indent / outdent list item | <kbd>Tab</kbd> / <kbd>⇧</kbd> <kbd>Tab</kbd> |
 
 <kbd>⌘</kbd> <kbd>}</kbd> and <kbd>⌘</kbd> <kbd>{</kbd> also switch tabs. In the preview, <kbd>Space</kbd> and <kbd>⇧</kbd> <kbd>Space</kbd> page down and up, and <kbd>⌘</kbd> <kbd>↑</kbd> <kbd>↓</kbd> jump to the top and bottom.
 

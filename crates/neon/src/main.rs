@@ -12,9 +12,9 @@ use gpui_kit::{
 use workspace::LatencyBench;
 use workspace::{
     CloseTab, CloseWindow, ExportDocx, ExportHtml, ExportPdf, NewFile, NewFolder, NewTab, NextTab,
-    Open, OpenFolder, OpenSettings, PreviousTab, Quit, RefreshFolder, Save, SaveAs, ShowEditor,
-    ShowPreview, ShowSplit, ToggleBold, ToggleItalic, ToggleLineNumbers, ToggleSidebar,
-    ToggleTheme, ToggleZen, Workspace,
+    Open, OpenFolder, OpenSettings, PreviousTab, Quit, RefreshFolder, ResetZoom, Save, SaveAs,
+    ShowEditor, ShowPreview, ShowSplit, ToggleBold, ToggleItalic, ToggleLineNumbers, ToggleSidebar,
+    ToggleTheme, ToggleZen, Workspace, ZoomIn, ZoomOut,
 };
 
 /// Every open document window, so files opened from Finder can reuse one.
@@ -291,6 +291,10 @@ fn set_menus(cx: &mut App) {
             MenuItem::action("Toggle Line Numbers", ToggleLineNumbers),
             MenuItem::action("Toggle Dark Mode", ToggleTheme),
             MenuItem::action("Toggle Zen Mode", ToggleZen),
+            MenuItem::separator(),
+            MenuItem::action("Zoom In", ZoomIn),
+            MenuItem::action("Zoom Out", ZoomOut),
+            MenuItem::action("Actual Size", ResetZoom),
             MenuItem::separator(),
             MenuItem::action("Show Next Tab", NextTab),
             MenuItem::action("Show Previous Tab", PreviousTab),

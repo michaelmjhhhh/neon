@@ -14,6 +14,11 @@ pub(crate) type SizeSelect = SelectState<Vec<SharedString>>;
 const SYSTEM_DEFAULT: &str = "System default";
 const EDITOR_DEFAULT_SIZE: &str = "14";
 const PREVIEW_DEFAULT_SIZE: &str = "16";
+/// How far one zoom step moves each pane's text size, in pixels.
+const ZOOM_STEP: f32 = 2.;
+/// The text sizes zooming and the size pickers stay within, in pixels.
+const MIN_SIZE: f32 = 10.;
+const MAX_SIZE: f32 = 32.;
 
 /// One installed font, listed in its own typeface.
 #[derive(Clone)]
@@ -170,10 +175,16 @@ impl Typography {
         preview_font.update(cx, |state, cx| {
             state.set_selected_value(&self.preview_font, window, cx)
         });
-        let sizes: Vec<SharedString> = ["12", "14", "16", "18", "20", "24"]
-            .into_iter()
-            .map(Into::into)
+        // Every size a zoom step reaches from the defaults, plus any other
+        // size already chosen, so the pickers can show it.
+        let mut sizes: Vec<f32> = (0..)
+            .map(|step| MIN_SIZE + step as f32 * ZOOM_STEP)
+            .take_while(|&size| size <= MAX_SIZE)
             .collect();
+        sizes.extend(Pane::ALL.map(|pane| self.size(pane, cx)));
+        sizes.sort_by(f32::total_cmp);
+        sizes.dedup();
+        let sizes: Vec<SharedString> = sizes.into_iter().map(size_label).collect();
         let editor_size = cx.new(|cx| SelectState::new(sizes.clone(), None, window, cx));
         let preview_size = cx.new(|cx| SelectState::new(sizes, None, window, cx));
         editor_size.update(cx, |state, cx| {
@@ -336,6 +347,44 @@ impl Typography {
             && self.size_value(pane) == &Self::default_size(pane)
     }
 
+    /// Move both panes' text sizes by `steps` zoom steps, keeping each within
+    /// the size range. Both move together, so the editor keeps its size
+    /// relative to the preview.
+    pub(crate) fn zoom(&mut self, steps: i32, window: &mut Window, cx: &mut Context<Self>) {
+        let sizes = Pane::ALL.map(|pane| {
+            let size = self.size(pane, cx);
+            size_label(
+                (size + steps as f32 * ZOOM_STEP).clamp(MIN_SIZE.min(size), MAX_SIZE.max(size)),
+            )
+        });
+        self.set_sizes(sizes, window, cx);
+    }
+
+    /// Return both panes to their default text sizes, keeping their fonts.
+    pub(crate) fn reset_sizes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_sizes(Pane::ALL.map(Self::default_size), window, cx);
+    }
+
+    /// Set each pane's text size, in the order of [`Pane::ALL`].
+    fn set_sizes(&mut self, sizes: [SharedString; 2], window: &mut Window, cx: &mut Context<Self>) {
+        if Pane::ALL
+            .iter()
+            .zip(&sizes)
+            .all(|(&pane, size)| self.size_value(pane) == size)
+        {
+            return;
+        }
+        for (pane, size) in Pane::ALL.into_iter().zip(sizes) {
+            if let Some(state) = self.size_state(pane) {
+                state.update(cx, |state, cx| state.set_selected_value(&size, window, cx));
+            }
+            *self.size_value_mut(pane) = size;
+        }
+        self.save(cx);
+        cx.emit(TypographyChanged);
+        cx.notify();
+    }
+
     /// Return the pane to its default font and size.
     pub(crate) fn reset(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
         let font = self.default_font(pane);
@@ -352,4 +401,9 @@ impl Typography {
         cx.emit(TypographyChanged);
         cx.notify();
     }
+}
+
+/// A size as the pickers and the settings file write it: `14`, not `14.0`.
+fn size_label(size: f32) -> SharedString {
+    size.to_string().into()
 }

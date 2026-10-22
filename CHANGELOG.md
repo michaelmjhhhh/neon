@@ -29,6 +29,10 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Added
+
+- Zoom In (⌘=), Zoom Out (⌘-) and Actual Size (⌘0) in the View menu make the editor and preview text bigger or smaller together, saved like the size chosen in Settings.
+
 ### Changed
 
 - Nested list items in the editor hang from one continuous line under their parent's marker, running past wrapped lines, instead of short ticks beside each line; the line around the item you are editing is a little darker.
