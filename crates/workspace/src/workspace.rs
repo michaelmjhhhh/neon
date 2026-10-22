@@ -1706,6 +1706,16 @@ impl Workspace {
         self.set_layout(LayoutMode::Preview, window, cx);
     }
 
+    /// Run the command for `mode`, so a click on the header's view switch
+    /// does exactly what its shortcut does.
+    fn show_layout(&mut self, mode: LayoutMode, window: &mut Window, cx: &mut Context<Self>) {
+        match mode {
+            LayoutMode::Editor => self.show_editor(&ShowEditor, window, cx),
+            LayoutMode::Split => self.show_split(&ShowSplit, window, cx),
+            LayoutMode::Preview => self.show_preview(&ShowPreview, window, cx),
+        }
+    }
+
     pub fn set_layout(&mut self, layout: LayoutMode, window: &mut Window, cx: &mut Context<Self>) {
         // Choosing a layout leaves Zen, even for the one Zen started from.
         self.exit_zen(window, cx);
@@ -2030,7 +2040,7 @@ impl Workspace {
                                     .selected_index(selected)
                                     .on_click(cx.listener(|this, ix: &usize, window, cx| {
                                         if let Some(mode) = LayoutMode::ALL.get(*ix) {
-                                            this.set_layout(*mode, window, cx);
+                                            this.show_layout(*mode, window, cx);
                                         }
                                     })),
                             )
@@ -2210,7 +2220,7 @@ impl Render for Workspace {
         } else if self.zen.is_some() {
             self.render_zen(window, cx).into_any_element()
         } else {
-            self.render_panes(window, cx).into_any_element()
+            self.render_panes(window, cx)
         };
         let theme = cx.theme();
         div()
