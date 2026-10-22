@@ -6,7 +6,7 @@ default-members = ["crates/neon"]
 
 [workspace.package]
 edition = "2024"
-version = "0.9.0"
+version = "0.9.1"
 license = "Apache-2.0"
 publish = false
 
