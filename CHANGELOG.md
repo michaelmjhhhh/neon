@@ -35,6 +35,13 @@ Groups, in this order:
 - Zen Mode always opens on the source, ready to type in, even from the Preview layout; Cmd+3 still shows the preview.
 - In Zen Mode, the line you type on reaches the middle of the screen from the first line of the document, not only once the text is long enough to scroll.
 - Zen Mode's footer fades away once you start typing and comes back when you move the pointer, and the paragraphs away from the caret fade further back.
+- The header's top right is quieter: the Editor, Split and Preview switch shows icons only, with each name and shortcut in its tooltip, and sits beside the Zen button, with Settings at the far edge.
+- Save always appears at the start of the header's right-hand controls when there are edits to save, instead of moving between the title and the view controls as tabs open and close.
+
+### Fixed
+
+- The sidebar keeps its width when you hide and show it, instead of coming back wider.
+- The split between editor and preview keeps its position when you switch layouts or hide the sidebar.
 
 ## [0.9.0] - 2026-10-21
 
