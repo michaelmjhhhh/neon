@@ -8,6 +8,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _};
 use gpui_kit::{
     AnyElement, App, ElementId, Entity, FontStyle, FontWeight, HighlightStyle, Hsla,
@@ -17,15 +18,19 @@ use gpui_kit::{
     relative, rems,
 };
 use markdown::{
-    Block, BlockKind, CodeBlock, ColumnAlignment, Heading, Image, InlineStyle, InlineText,
-    MarkdownList, Table,
+    Block, BlockKind, Callout, CodeBlock, ColumnAlignment, Heading, Image, InlineStyle, InlineText,
+    MarkdownList, Property, Table,
 };
 
 use crate::image_cache::PreviewImageCache;
 
-/// Width of the reading column, about 75 characters of body text. Long lines
+/// Width of the reading column, about 70 characters of body text. Long lines
 /// are harder to read than short ones.
-const MAX_READING_WIDTH_REMS: f32 = 40.;
+const MAX_READING_WIDTH_REMS: f32 = 38.;
+
+/// Leading for running text. A little more than the UI's, so paragraphs set
+/// in a serif stay open and easy to track from line to line.
+const BODY_LINE_HEIGHT: f32 = 1.7;
 
 /// How blocks are set: their typeface and scale, and the column they sit in.
 pub(crate) struct BlockLayout {
@@ -61,7 +66,10 @@ pub(crate) fn render_block(
     };
     // A heading sits closer to the text it introduces than to the text
     // before it, so each section reads as one group.
-    let is_heading = matches!(block.kind(), BlockKind::Heading(_));
+    let heading_level = match block.kind() {
+        BlockKind::Heading(heading) => Some(heading.level()),
+        _ => None,
+    };
 
     // Each immutable row owns its child identity namespace. Chunked lists use
     // content-derived row ids, so an unchanged chunk keeps its element state.
@@ -86,7 +94,9 @@ pub(crate) fn render_block(
                     if continues_list {
                         // This is the same gap as between items in one list.
                         this.pb_1()
-                    } else if is_heading {
+                    } else if heading_level == Some(1) {
+                        this.pb_3()
+                    } else if heading_level.is_some() {
                         this.pb_2()
                     } else {
                         this.pb_4()
@@ -106,6 +116,12 @@ struct Palette {
     link: Hsla,
     primary: Hsla,
     primary_foreground: Hsla,
+    /// Behind `==highlighted==` text: a wash of the accent.
+    highlight: Hsla,
+    info: Hsla,
+    success: Hsla,
+    warning: Hsla,
+    danger: Hsla,
     table_head: Hsla,
     code_background: Hsla,
     quote_border: Hsla,
@@ -142,6 +158,13 @@ impl<'a> BlockRenderer<'a> {
                 link: theme.link,
                 primary: theme.primary,
                 primary_foreground: theme.primary_foreground,
+                highlight: theme
+                    .primary
+                    .opacity(if theme.is_dark() { 0.3 } else { 0.18 }),
+                info: theme.info,
+                success: theme.success,
+                warning: theme.warning,
+                danger: theme.danger,
                 table_head: theme.table_head,
                 code_background: theme.group_box,
                 quote_border: theme.muted_foreground.opacity(0.4),
@@ -166,6 +189,8 @@ impl<'a> BlockRenderer<'a> {
             BlockKind::Image(image) => self.render_image(image),
             BlockKind::Code(code) => self.render_code(code),
             BlockKind::Quote(children) => self.render_quote(children),
+            BlockKind::Callout(callout) => self.render_callout(callout),
+            BlockKind::FrontMatter(properties) => self.render_properties(properties),
             BlockKind::List(list) => self.render_list(list),
             BlockKind::Table(table) => self.render_table(table),
             BlockKind::Footnote { label, children } => self.render_footnote(label, children),
@@ -191,14 +216,37 @@ impl<'a> BlockRenderer<'a> {
             .into_any_element()
     }
 
+    /// A list item's content. A nested list sits as close to its parent's
+    /// text as items sit to each other, so the list reads as one outline.
+    fn render_item_children(&mut self, children: &[BlockKind]) -> AnyElement {
+        let mut column = div().flex().flex_col().min_w_0();
+        for (ix, kind) in children.iter().enumerate() {
+            let nested_list = matches!(kind, BlockKind::List(_));
+            let element = self.render_kind(kind);
+            column = column.child(
+                div()
+                    .when(ix > 0, |this| {
+                        if nested_list {
+                            this.mt_1()
+                        } else {
+                            this.mt_3()
+                        }
+                    })
+                    .child(element),
+            );
+        }
+        column.into_any_element()
+    }
+
     fn render_heading(&mut self, heading: &Heading) -> AnyElement {
         let text = self.render_inline(heading.text());
         let level = heading.level();
         let scale = self.font_scale;
         div()
+            // Semibold where the face has it: headings lead by size and
+            // space, not by weight alone.
             .font_weight(match level {
-                1 => FontWeight::BOLD,
-                2 | 3 => FontWeight::SEMIBOLD,
+                1..=3 => FontWeight::SEMIBOLD,
                 _ => FontWeight::MEDIUM,
             })
             .map(|this| match level {
@@ -209,11 +257,11 @@ impl<'a> BlockRenderer<'a> {
                 2 => this
                     .pt_6()
                     .line_height(relative(1.25))
-                    .text_size(rems(1.5 * scale)),
+                    .text_size(rems(1.4 * scale)),
                 3 => this
                     .pt_4()
                     .line_height(relative(1.3))
-                    .text_size(rems(1.25 * scale)),
+                    .text_size(rems(1.175 * scale)),
                 4 => this
                     .pt_2()
                     .line_height(relative(1.4))
@@ -234,7 +282,7 @@ impl<'a> BlockRenderer<'a> {
 
     fn render_paragraph(&mut self, text: &InlineText) -> AnyElement {
         div()
-            .line_height(relative(1.65))
+            .line_height(relative(BODY_LINE_HEIGHT))
             .child(self.render_inline(text))
             .into_any_element()
     }
@@ -262,22 +310,58 @@ impl<'a> BlockRenderer<'a> {
         let urls: Vec<Arc<str>> = text.links().iter().map(|link| link.url().clone()).collect();
         let base_dir = self.base_dir.cloned();
         InteractiveText::new(self.next_id("inline"), styled)
-            .on_click(ranges, move |ix, _, cx| {
-                open_link(&urls[ix], base_dir.as_deref(), cx);
+            .on_click(ranges, move |ix, window, cx| {
+                open_link(&urls[ix], base_dir.as_deref(), window, cx);
             })
             .into_any_element()
     }
 
     fn render_image(&mut self, image: &Image) -> AnyElement {
+        // An image that cannot be shown says which file it looked for, so a
+        // wrong path is easy to spot and fix.
         let alt = SharedString::from(image.alt().clone());
-        let muted_foreground = self.palette.muted_foreground;
+        let url = SharedString::from(image.url().clone());
+        let palette = &self.palette;
+        let (foreground, muted, muted_foreground, border, radius) = (
+            palette.foreground,
+            palette.muted,
+            palette.muted_foreground,
+            palette.border,
+            palette.radius_lg,
+        );
         let font_scale = self.font_scale;
         let fallback = move || {
             div()
-                .italic()
+                .flex()
+                .items_center()
+                .gap_3()
+                .px_4()
+                .py_3()
+                .rounded(radius)
+                .border_1()
+                .border_color(border)
+                .bg(muted.opacity(0.5))
                 .text_size(rems(0.875 * font_scale))
                 .text_color(muted_foreground)
-                .child(alt.clone())
+                .child(
+                    Icon::new(AssetIcon::ImageOff)
+                        .small()
+                        .text_color(muted_foreground),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .min_w_0()
+                        .when(!alt.is_empty(), |this| {
+                            this.child(div().text_color(foreground).child(alt.clone()))
+                        })
+                        .child(
+                            div()
+                                .truncate()
+                                .child(SharedString::from(format!("Couldn’t load {url}"))),
+                        ),
+                )
                 .into_any_element()
         };
         match resolve_image(image.url(), self.base_dir.map(|dir| &**dir)) {
@@ -327,6 +411,77 @@ impl<'a> BlockRenderer<'a> {
             .into_any_element()
     }
 
+    /// A callout: a tinted panel with its kind's icon and title, in the
+    /// color of what it means.
+    fn render_callout(&mut self, callout: &Callout) -> AnyElement {
+        let (color, icon) = callout_look(callout.kind(), &self.palette);
+        let title = match callout.title() {
+            Some(title) => self.render_inline(title),
+            None => SharedString::from(capitalized(callout.kind())).into_any_element(),
+        };
+        let children =
+            (!callout.children().is_empty()).then(|| self.render_children(callout.children()));
+        let palette = &self.palette;
+        div()
+            .flex()
+            .flex_col()
+            .gap_1p5()
+            .px_4()
+            .py_3()
+            .rounded(palette.radius_lg)
+            .bg(color.opacity(0.1))
+            .line_height(relative(BODY_LINE_HEIGHT))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(color)
+                    .child(icon.small().text_color(color))
+                    .child(div().min_w_0().child(title)),
+            )
+            .children(children)
+            .into_any_element()
+    }
+
+    /// Front matter as quiet properties above the document: each key in a
+    /// muted lane, its value beside it.
+    fn render_properties(&mut self, properties: &[Property]) -> AnyElement {
+        let palette = &self.palette;
+        let rows = properties.iter().map(|property| {
+            div()
+                .flex()
+                .flex_row()
+                .gap_4()
+                .child(
+                    div()
+                        .flex_none()
+                        .w(rems(7.))
+                        .truncate()
+                        .text_color(palette.muted_foreground)
+                        .child(SharedString::from(property.key().clone())),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(SharedString::from(property.value().clone())),
+                )
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .pb_4()
+            .border_b_1()
+            .border_color(palette.border)
+            .text_size(rems(0.8125 * self.font_scale))
+            .line_height(relative(1.5))
+            .children(rows)
+            .into_any_element()
+    }
+
     fn render_quote(&mut self, children: &[BlockKind]) -> AnyElement {
         let children = self.render_children(children);
         div()
@@ -349,7 +504,11 @@ impl<'a> BlockRenderer<'a> {
             .enumerate()
             .map(|(ix, item)| {
                 let marker = match (item.task(), list.start()) {
-                    (Some(checked), _) => self.render_task_marker(checked),
+                    (Some(checked), _) => div()
+                        // Centered on the first line of the item's text.
+                        .mt(rems((BODY_LINE_HEIGHT * self.font_scale - 1.) / 2.))
+                        .child(self.render_task_marker(checked))
+                        .into_any_element(),
                     (None, Some(start)) => div()
                         .text_color(self.palette.muted_foreground)
                         .child(SharedString::from(format!(
@@ -363,13 +522,13 @@ impl<'a> BlockRenderer<'a> {
                         .into_any_element(),
                 };
                 let done = item.task() == Some(true);
-                let content = self.render_children(item.children());
+                let content = self.render_item_children(item.children());
                 div()
                     .flex()
                     .flex_row()
                     .items_start()
                     .gap_2()
-                    .line_height(relative(1.65))
+                    .line_height(relative(BODY_LINE_HEIGHT))
                     .when(done, |this| this.text_color(self.palette.muted_foreground))
                     // A fixed lane keeps item text aligned whatever the marker.
                     .child(div().flex_none().w_6().flex().justify_end().child(marker))
@@ -390,7 +549,6 @@ impl<'a> BlockRenderer<'a> {
     fn render_task_marker(&self, checked: bool) -> AnyElement {
         let palette = &self.palette;
         div()
-            .mt_1()
             .size_4()
             .flex()
             .items_center()
@@ -514,6 +672,9 @@ fn highlight_style(style: InlineStyle, palette: &Palette) -> HighlightStyle {
     if style.contains(InlineStyle::CODE) {
         highlight.background_color = Some(palette.muted);
     }
+    if style.contains(InlineStyle::HIGHLIGHT) {
+        highlight.background_color = Some(palette.highlight);
+    }
     if style.contains(InlineStyle::LINK) {
         // The text keeps the reading color; the accent underline marks it.
         highlight.underline = Some(UnderlineStyle {
@@ -523,6 +684,32 @@ fn highlight_style(style: InlineStyle, palette: &Palette) -> HighlightStyle {
         });
     }
     highlight
+}
+
+/// The color and icon for a callout kind, following Obsidian's groups. A kind
+/// it does not know looks like a note.
+fn callout_look(kind: &str, palette: &Palette) -> (Hsla, Icon) {
+    match kind {
+        "tip" | "hint" | "important" => (palette.success, Icon::new(AssetIcon::Lightbulb)),
+        "success" | "check" | "done" => (palette.success, Icon::new(IconName::CircleCheck)),
+        "question" | "help" | "faq" => (palette.warning, Icon::new(AssetIcon::CircleQuestionMark)),
+        "warning" | "caution" | "attention" => {
+            (palette.warning, Icon::new(IconName::TriangleAlert))
+        }
+        "failure" | "fail" | "missing" | "danger" | "error" | "bug" => {
+            (palette.danger, Icon::new(IconName::CircleX))
+        }
+        "quote" | "cite" => (palette.muted_foreground, Icon::new(AssetIcon::Quote)),
+        _ => (palette.info, Icon::new(IconName::Info)),
+    }
+}
+
+fn capitalized(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 fn has_scheme(url: &str) -> bool {
@@ -559,16 +746,27 @@ fn resolve_image(url: &str, base_dir: Option<&Path>) -> Option<gpui_kit::ImageSo
 }
 
 /// Open a link the way a browser would: web and mail targets go to the
-/// system, relative paths open the referenced file, in-page anchors do nothing.
-fn open_link(url: &str, base_dir: Option<&Path>, cx: &mut App) {
+/// system, another note opens in Neon, other files open in their own app, and
+/// in-page anchors do nothing.
+fn open_link(url: &str, base_dir: Option<&Path>, window: &mut gpui_kit::Window, cx: &mut App) {
     if url.starts_with('#') {
         return;
     }
     if has_scheme(url) {
         cx.open_url(url);
     } else if let Some(path) = resolve_path(url, base_dir) {
-        cx.open_with_system(&path);
+        if is_markdown_path(&path) {
+            window.dispatch_action(Box::new(crate::OpenLinkedFile { path }), cx);
+        } else {
+            cx.open_with_system(&path);
+        }
     }
+}
+
+fn is_markdown_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
 }
 
 #[cfg(test)]

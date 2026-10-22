@@ -12,6 +12,8 @@ impl InlineStyle {
     pub const STRIKETHROUGH: Self = Self(1 << 2);
     pub const CODE: Self = Self(1 << 3);
     pub const LINK: Self = Self(1 << 4);
+    /// `==marked==` text, as in Obsidian and Typora.
+    pub const HIGHLIGHT: Self = Self(1 << 5);
 
     pub fn is_plain(self) -> bool {
         self.0 == 0
@@ -88,6 +90,38 @@ impl InlineText {
 
     pub fn is_empty(&self) -> bool {
         self.text.is_empty()
+    }
+
+    /// The part of this text in `range`, with the runs and links over it.
+    pub(crate) fn slice(&self, range: Range<usize>) -> InlineText {
+        let clip = |other: Range<usize>| {
+            let start = other.start.max(range.start);
+            let end = other.end.min(range.end);
+            (start < end).then(|| start - range.start..end - range.start)
+        };
+        InlineText {
+            text: self.text[range.clone()].into(),
+            runs: self
+                .runs
+                .iter()
+                .filter_map(|run| {
+                    Some(InlineRun {
+                        range: clip(run.range())?,
+                        style: run.style,
+                    })
+                })
+                .collect(),
+            links: self
+                .links
+                .iter()
+                .filter_map(|link| {
+                    Some(InlineLink {
+                        range: clip(link.range())?,
+                        url: link.url.clone(),
+                    })
+                })
+                .collect(),
+        }
     }
 }
 
@@ -178,11 +212,15 @@ impl InlineBuilder {
     }
 
     pub(crate) fn finish(self) -> InlineText {
-        InlineText {
-            text: self.text.into(),
-            runs: self.runs,
-            links: self.links,
+        let markers = highlight_markers(&self.text, &self.runs);
+        if markers.is_empty() {
+            return InlineText {
+                text: self.text.into(),
+                runs: self.runs,
+                links: self.links,
+            };
         }
+        apply_highlights(&self.text, &self.runs, &self.links, &markers)
     }
 
     fn push_styled(&mut self, text: &str, style: InlineStyle) {
@@ -203,5 +241,110 @@ impl InlineBuilder {
                 style,
             }),
         }
+    }
+}
+
+/// Where `==` opens and closes a highlight, as pairs of marker offsets.
+///
+/// Like strikethrough, an opening marker is followed by text and a closing
+/// one follows text, so `a == b` stays as written. A highlight ends with its
+/// line, and markers inside code are text.
+fn highlight_markers(text: &str, runs: &[InlineRun]) -> Vec<(usize, usize)> {
+    let in_code = |ix: usize| {
+        runs.iter()
+            .any(|run| run.style.contains(InlineStyle::CODE) && run.range.contains(&ix))
+    };
+    let bytes = text.as_bytes();
+    let mut pairs = Vec::new();
+    let mut open = None;
+    let mut ix = 0;
+    while ix < bytes.len() {
+        if bytes[ix] == b'\n' {
+            open = None;
+            ix += 1;
+            continue;
+        }
+        let is_marker = bytes[ix..].starts_with(b"==")
+            && bytes.get(ix + 2) != Some(&b'=')
+            && (ix == 0 || bytes[ix - 1] != b'=')
+            && !in_code(ix);
+        if !is_marker {
+            ix += 1;
+            continue;
+        }
+        let before = text[..ix].chars().next_back();
+        let after = text[ix + 2..].chars().next();
+        match open {
+            Some(start) if ix > start + 2 && before.is_some_and(|c| !c.is_whitespace()) => {
+                pairs.push((start, ix));
+                open = None;
+            }
+            _ if after.is_some_and(|c| !c.is_whitespace()) => open = Some(ix),
+            _ => {}
+        }
+        ix += 2;
+    }
+    pairs
+}
+
+/// `text` without the highlight markers, its runs and links moved to match,
+/// and the text between each pair of markers highlighted.
+fn apply_highlights(
+    text: &str,
+    runs: &[InlineRun],
+    links: &[InlineLink],
+    pairs: &[(usize, usize)],
+) -> InlineText {
+    let markers: Vec<usize> = pairs
+        .iter()
+        .flat_map(|&(open, close)| [open, close])
+        .collect();
+    // Each marker before an offset moves it back by the marker's length.
+    let map = |offset: usize| offset - 2 * markers.partition_point(|&marker| marker < offset);
+
+    let mut stripped = String::with_capacity(text.len());
+    let mut copied = 0;
+    for &marker in &markers {
+        stripped.push_str(&text[copied..marker]);
+        copied = marker + 2;
+    }
+    stripped.push_str(&text[copied..]);
+
+    let mut styles = vec![InlineStyle::default(); stripped.len()];
+    for run in runs {
+        for style in &mut styles[map(run.range.start)..map(run.range.end)] {
+            style.insert(run.style);
+        }
+    }
+    for &(open, close) in pairs {
+        for style in &mut styles[map(open + 2)..map(close)] {
+            style.insert(InlineStyle::HIGHLIGHT);
+        }
+    }
+    let mut runs: Vec<InlineRun> = Vec::new();
+    for (ix, &style) in styles.iter().enumerate() {
+        if style.is_plain() {
+            continue;
+        }
+        match runs.last_mut() {
+            Some(last) if last.style == style && last.range.end == ix => last.range.end = ix + 1,
+            _ => runs.push(InlineRun {
+                range: ix..ix + 1,
+                style,
+            }),
+        }
+    }
+    let links = links
+        .iter()
+        .map(|link| InlineLink {
+            range: map(link.range.start)..map(link.range.end),
+            url: link.url.clone(),
+        })
+        .filter(|link| !link.range.is_empty())
+        .collect();
+    InlineText {
+        text: stripped.into(),
+        runs,
+        links,
     }
 }

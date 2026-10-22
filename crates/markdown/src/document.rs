@@ -5,7 +5,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use pulldown_cmark::{
-    Alignment, CodeBlockKind, Event, HeadingLevel, OffsetIter, Options, Parser, Tag, TagEnd,
+    Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, LinkType, OffsetIter, Options,
+    Parser, Tag, TagEnd,
 };
 
 use crate::inline::{InlineBuilder, InlineStyle, InlineText};
@@ -18,9 +19,9 @@ pub struct MarkdownDocument {
 }
 
 impl MarkdownDocument {
-    /// Parse `source` as CommonMark with the GitHub extensions people expect
-    /// from a Markdown editor: tables, task lists, strikethrough, footnotes
-    /// and YAML front matter.
+    /// Parse `source` as CommonMark with the extensions people expect from a
+    /// Markdown editor: tables, task lists, strikethrough, footnotes, YAML
+    /// front matter, and Obsidian's wikilinks, callouts and highlights.
     pub fn parse(source: &str) -> Self {
         Self::parse_with_cancellation(source, || false)
             .expect("an uncancelled Markdown parse always returns a document")
@@ -37,7 +38,8 @@ impl MarkdownDocument {
             | Options::ENABLE_STRIKETHROUGH
             | Options::ENABLE_TASKLISTS
             | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
-            | Options::ENABLE_GFM;
+            | Options::ENABLE_GFM
+            | Options::ENABLE_WIKILINKS;
         let mut parser = BlockParser {
             events: Parser::new_ext(source, options)
                 .into_offset_iter()
@@ -168,6 +170,8 @@ pub enum BlockKind {
     Image(Image),
     Code(CodeBlock),
     Quote(Vec<BlockKind>),
+    /// A block quote that opens with `[!kind]`, as in Obsidian and GitHub.
+    Callout(Callout),
     List(MarkdownList),
     Table(Table),
     Footnote {
@@ -176,6 +180,50 @@ pub enum BlockKind {
     },
     Html(Arc<str>),
     Rule,
+    /// YAML front matter, read as the document's properties.
+    FrontMatter(Vec<Property>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Callout {
+    kind: Arc<str>,
+    title: Option<InlineText>,
+    children: Vec<BlockKind>,
+}
+
+impl Callout {
+    /// The kind in lowercase, such as `note`, `tip` or `warning`. Any word is
+    /// allowed; renderers pick a look for the ones they know.
+    pub fn kind(&self) -> &Arc<str> {
+        &self.kind
+    }
+
+    /// The text after `[!kind]` on its first line, if any.
+    pub fn title(&self) -> Option<&InlineText> {
+        self.title.as_ref()
+    }
+
+    pub fn children(&self) -> &[BlockKind] {
+        &self.children
+    }
+}
+
+/// One `key: value` entry of the front matter. A list value is joined with
+/// commas; a nested map keeps its lines.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Property {
+    key: Arc<str>,
+    value: Arc<str>,
+}
+
+impl Property {
+    pub fn key(&self) -> &Arc<str> {
+        &self.key
+    }
+
+    pub fn value(&self) -> &Arc<str> {
+        &self.value
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -364,14 +412,30 @@ impl<'a> BlockParser<'a> {
                     code: self.collect_text_until(TagEnd::CodeBlock),
                 }))
             }
-            Tag::MetadataBlock(kind) => Some(BlockKind::Code(CodeBlock {
-                language: Some("yaml".into()),
-                code: self.collect_text_until(TagEnd::MetadataBlock(kind)),
-            })),
+            Tag::MetadataBlock(kind) => {
+                let yaml = self.collect_text_until(TagEnd::MetadataBlock(kind));
+                let properties = parse_properties(&yaml);
+                Some(if properties.is_empty() {
+                    BlockKind::Code(CodeBlock {
+                        language: Some("yaml".into()),
+                        code: yaml,
+                    })
+                } else {
+                    BlockKind::FrontMatter(properties)
+                })
+            }
             Tag::HtmlBlock => Some(BlockKind::Html(self.collect_text_until(TagEnd::HtmlBlock))),
-            Tag::BlockQuote(kind) => Some(BlockKind::Quote(
-                self.collect_blocks_until(TagEnd::BlockQuote(kind)),
-            )),
+            Tag::BlockQuote(kind) => {
+                let children = self.collect_blocks_until(TagEnd::BlockQuote(kind));
+                Some(match kind {
+                    Some(kind) => BlockKind::Callout(Callout {
+                        kind: quote_kind_name(kind).into(),
+                        title: None,
+                        children,
+                    }),
+                    None => callout_or_quote(children),
+                })
+            }
             Tag::List(start) => Some(BlockKind::List(MarkdownList {
                 start,
                 items: self.collect_list_items(TagEnd::List(start.is_some())),
@@ -534,6 +598,11 @@ impl<'a> BlockParser<'a> {
             Event::End(TagEnd::Strong) => inline.pop_style(InlineStyle::STRONG),
             Event::Start(Tag::Strikethrough) => inline.push_style(InlineStyle::STRIKETHROUGH),
             Event::End(TagEnd::Strikethrough) => inline.pop_style(InlineStyle::STRIKETHROUGH),
+            Event::Start(Tag::Link {
+                link_type: LinkType::WikiLink { .. },
+                dest_url,
+                ..
+            }) => inline.start_link(&wiki_target(&dest_url)),
             Event::Start(Tag::Link { dest_url, .. }) => inline.start_link(&dest_url),
             Event::End(TagEnd::Link) => inline.end_link(),
             Event::Start(Tag::Image { dest_url, .. }) => inline.start_image(&dest_url),
@@ -579,6 +648,147 @@ fn paragraph_or_image(inline: InlineBuilder) -> BlockKind {
         Some((url, alt)) => BlockKind::Image(Image { url, alt }),
         None => BlockKind::Paragraph(inline.finish()),
     }
+}
+
+/// A quote whose first line is `[!kind]`, with an optional `+` or `-` and
+/// title after it, as a callout; any other quote as it is.
+fn callout_or_quote(mut children: Vec<BlockKind>) -> BlockKind {
+    let Some(BlockKind::Paragraph(first)) = children.first() else {
+        return BlockKind::Quote(children);
+    };
+    let text = first.text();
+    let line_end = text.find('\n').unwrap_or(text.len());
+    let Some(kind_end) = text[..line_end]
+        .strip_prefix("[!")
+        .and_then(|rest| rest.find(']'))
+        .map(|ix| ix + 2)
+    else {
+        return BlockKind::Quote(children);
+    };
+    let kind = &text[2..kind_end];
+    if kind.is_empty()
+        || !kind
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        return BlockKind::Quote(children);
+    }
+    let kind: Arc<str> = kind.to_lowercase().into();
+    // `+` and `-` fold the callout in Obsidian; the preview shows it open.
+    let mut title_start = kind_end + 1;
+    if text[title_start..line_end].starts_with(['+', '-']) {
+        title_start += 1;
+    }
+    let title_range = trim_range(text, title_start..line_end);
+    let title = (!title_range.is_empty()).then(|| first.slice(title_range));
+    let body = (line_end < text.len()).then(|| first.slice(line_end + 1..text.len()));
+    match body {
+        Some(body) => children[0] = BlockKind::Paragraph(body),
+        None => {
+            children.remove(0);
+        }
+    }
+    BlockKind::Callout(Callout {
+        kind,
+        title,
+        children,
+    })
+}
+
+/// `range` of `text` without whitespace at either end.
+fn trim_range(text: &str, range: std::ops::Range<usize>) -> std::ops::Range<usize> {
+    let slice = &text[range.clone()];
+    let start = range.start + (slice.len() - slice.trim_start().len());
+    let end = range.end - (slice.len() - slice.trim_end().len());
+    start..end.max(start)
+}
+
+fn quote_kind_name(kind: BlockQuoteKind) -> &'static str {
+    match kind {
+        BlockQuoteKind::Note => "note",
+        BlockQuoteKind::Tip => "tip",
+        BlockQuoteKind::Important => "important",
+        BlockQuoteKind::Warning => "warning",
+        BlockQuoteKind::Caution => "caution",
+    }
+}
+
+/// The file a `[[wikilink]]` names: `Note` or `Note#Heading` is a Markdown
+/// file beside the document unless it has an extension of its own.
+fn wiki_target(target: &str) -> String {
+    let (page, anchor) = match target.split_once('#') {
+        Some((page, anchor)) => (page, Some(anchor)),
+        None => (target, None),
+    };
+    let mut url = page.trim().to_string();
+    if !url.is_empty() && std::path::Path::new(&url).extension().is_none() {
+        url.push_str(".md");
+    }
+    if let Some(anchor) = anchor {
+        url.push('#');
+        url.push_str(anchor);
+    }
+    url
+}
+
+/// The top-level `key: value` entries of YAML front matter. This reads the
+/// flat shape notes use, not all of YAML: an indented `- item` list joins
+/// into one value, and other indented lines are kept as written.
+fn parse_properties(yaml: &str) -> Vec<Property> {
+    let mut entries: Vec<(String, String)> = Vec::new();
+    for line in yaml.lines() {
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        let indented = line.starts_with([' ', '\t']);
+        if !indented && let Some((key, value)) = line.split_once(':') {
+            entries.push((key.trim().to_string(), unquote(value.trim()).to_string()));
+            continue;
+        }
+        let Some((_, value)) = entries.last_mut() else {
+            return Vec::new();
+        };
+        let item = line.trim();
+        let item = item.strip_prefix("- ").map(unquote).unwrap_or(item);
+        if !value.is_empty() {
+            value.push_str(if line.trim_start().starts_with("- ") {
+                ", "
+            } else {
+                "\n"
+            });
+        }
+        value.push_str(item);
+    }
+    entries
+        .into_iter()
+        .filter(|(key, _)| !key.is_empty())
+        .map(|(key, value)| {
+            let value = match value.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
+                Some(list) => list
+                    .split(',')
+                    .map(|item| unquote(item.trim()))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                None => value,
+            };
+            Property {
+                key: key.into(),
+                value: value.into(),
+            }
+        })
+        .collect()
+}
+
+fn unquote(value: &str) -> &str {
+    for quote in ['"', '\''] {
+        if let Some(inner) = value
+            .strip_prefix(quote)
+            .and_then(|value| value.strip_suffix(quote))
+        {
+            return inner;
+        }
+    }
+    value
 }
 
 fn is_inline_tag(tag: &Tag) -> bool {
@@ -730,11 +940,89 @@ mod tests {
     }
 
     #[test]
-    fn front_matter_renders_as_yaml() {
-        let kinds = kinds("---\ntitle: Notes\n---\n\nBody\n");
+    fn front_matter_becomes_properties() {
+        let kinds =
+            kinds("---\ntitle: \"Notes\"\ntags:\n  - a\n  - b\naliases: [x, 'y']\n---\n\nBody\n");
+        let BlockKind::FrontMatter(properties) = &kinds[0] else {
+            panic!("expected front matter, got {:?}", kinds[0]);
+        };
+        let pairs: Vec<_> = properties
+            .iter()
+            .map(|p| (&**p.key(), &**p.value()))
+            .collect();
+        assert_eq!(
+            pairs,
+            [("title", "Notes"), ("tags", "a, b"), ("aliases", "x, y")]
+        );
+    }
+
+    #[test]
+    fn front_matter_without_keys_stays_yaml() {
+        let kinds = kinds("---\n- just\n- a list\n---\n");
         assert!(
             matches!(&kinds[0], BlockKind::Code(code) if code.language().map(|l| &**l) == Some("yaml"))
         );
+    }
+
+    #[test]
+    fn obsidian_callouts_keep_kind_title_and_body() {
+        let kinds = kinds("> [!Tip]- Read **this**\n> Body text.\n");
+        let BlockKind::Callout(callout) = &kinds[0] else {
+            panic!("expected a callout, got {:?}", kinds[0]);
+        };
+        assert_eq!(&**callout.kind(), "tip");
+        let title = callout.title().unwrap();
+        assert_eq!(&**title.text(), "Read this");
+        assert_eq!(title.runs()[0].style(), InlineStyle::STRONG);
+        assert_eq!(&**paragraph(&callout.children()[0]).text(), "Body text.");
+    }
+
+    #[test]
+    fn github_alerts_are_callouts() {
+        let kinds = kinds("> [!WARNING]\n> Careful.\n");
+        let BlockKind::Callout(callout) = &kinds[0] else {
+            panic!("expected a callout, got {:?}", kinds[0]);
+        };
+        assert_eq!(&**callout.kind(), "warning");
+        assert!(callout.title().is_none());
+    }
+
+    #[test]
+    fn plain_quotes_stay_quotes() {
+        assert!(matches!(kinds("> [link] text\n")[0], BlockKind::Quote(_)));
+        assert!(matches!(kinds("> just a quote\n")[0], BlockKind::Quote(_)));
+    }
+
+    #[test]
+    fn wikilinks_point_at_markdown_files() {
+        let kinds = kinds("See [[Weekly Review]], [[plan#Goals|the goals]] and [[pic.png]].");
+        let text = paragraph(&kinds[0]);
+        assert_eq!(&**text.text(), "See Weekly Review, the goals and pic.png.");
+        let urls: Vec<_> = text.links().iter().map(|link| &**link.url()).collect();
+        assert_eq!(urls, ["Weekly Review.md", "plan.md#Goals", "pic.png"]);
+    }
+
+    #[test]
+    fn highlights_strip_their_markers() {
+        let kinds = kinds("a ==marked **bold**== b, x == y, `==code==`");
+        let text = paragraph(&kinds[0]);
+        assert_eq!(&**text.text(), "a marked bold b, x == y, ==code==");
+        let styled: Vec<_> = text
+            .runs()
+            .iter()
+            .map(|run| (&text.text()[run.range()], run.style()))
+            .collect();
+        assert_eq!(styled[0], ("marked ", InlineStyle::HIGHLIGHT));
+        assert!(styled[1].1.contains(InlineStyle::HIGHLIGHT));
+        assert!(styled[1].1.contains(InlineStyle::STRONG));
+        assert_eq!(styled[2], ("==code==", InlineStyle::CODE));
+    }
+
+    #[test]
+    fn highlights_keep_links_in_place() {
+        let kinds = kinds("==hi== [link](https://x.dev)");
+        let text = paragraph(&kinds[0]);
+        assert_eq!(&text.text()[text.links()[0].range()], "link");
     }
 
     #[test]

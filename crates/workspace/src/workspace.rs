@@ -39,7 +39,7 @@ use gpui_kit::{
     Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, StyleRefinement,
     Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
 };
-use markdown_preview::MarkdownPreview;
+use markdown_preview::{MarkdownPreview, OpenLinkedFile};
 
 use crate::KEY_CONTEXT;
 use crate::document_file::DocumentFile;
@@ -110,6 +110,11 @@ pub(crate) const SHEET_INSET_REMS: f32 = 0.5;
 pub(crate) const SHEET_HEADER_REMS: f32 = 2.5;
 /// The sidebar's default width, in rems.
 pub(crate) const SIDEBAR_WIDTH_REMS: f32 = 15.;
+/// The editor's widest measure when it has the sheet to itself, in
+/// characters of the editor font: room for prose and most code, short
+/// enough that the eye finds the next line, as Obsidian's readable line
+/// length does.
+const EDITOR_MEASURE_CHARS: f32 = 80.;
 /// Where content may start beside the macOS window controls, measured from
 /// the window's leading edge: three 16 px controls from 20 px, their gaps,
 /// and a small clearance. Platform geometry: it does not follow the rem size.
@@ -896,6 +901,37 @@ impl Workspace {
         self.load_task.is_some() || self.save_task.is_some()
     }
 
+    /// Follow a link to another note, as in Obsidian: a note already open
+    /// comes forward, and otherwise it replaces this tab, or opens in a new
+    /// one when this tab has edits to keep.
+    fn open_linked_file(
+        &mut self,
+        action: &OpenLinkedFile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_busy() {
+            return;
+        }
+        let path = action.path.clone();
+        if let Some(ix) = self.tab_index_of_path(&path) {
+            self.activate_tab(ix, window, cx);
+            return;
+        }
+        if !path.is_file() {
+            let name = file_name(&path);
+            window.push_notification(
+                Notification::warning(format!("There is no note named “{name}” yet.")),
+                cx,
+            );
+            return;
+        }
+        if self.tab().document.is_dirty() {
+            self.new_tab(&NewTab, window, cx);
+        }
+        self.open_path(path, window, cx);
+    }
+
     fn open_folder(&mut self, _: &OpenFolder, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_busy() || self.folder_task.is_some() {
             return;
@@ -1536,7 +1572,6 @@ impl Workspace {
             .into_any_element()
         } else {
             let muted = theme.muted_foreground;
-            let active_icon = theme.primary;
             let guide = theme.sidebar_border;
             let row_radius = theme.radius;
             let counts = self.folder_file_counts.clone();
@@ -1563,29 +1598,30 @@ impl Workspace {
                     let item = entry.item();
                     let rem = window.rem_size();
                     let is_active = active.as_deref() == Some(item.id.as_ref());
-                    let (chevron, icon) = if entry.is_disabled() {
-                        (None, None)
-                    } else if entry.is_folder() {
+                    // Only folders carry a mark, their chevron; as in
+                    // Obsidian, names alone read faster than a column of
+                    // identical icons.
+                    let chevron = (entry.is_folder() && !entry.is_disabled()).then(|| {
                         if entry.is_expanded() {
-                            (Some(IconName::ChevronDown), Some(IconName::FolderOpen))
+                            IconName::ChevronDown
                         } else {
-                            (Some(IconName::ChevronRight), Some(IconName::Folder))
+                            IconName::ChevronRight
                         }
-                    } else {
-                        (None, Some(IconName::FileText))
-                    };
+                    });
                     // A collapsed folder says how much it holds.
                     let count = counts
                         .get(&item.id)
                         .copied()
                         .filter(|count| *count > 0 && !entry.is_expanded());
-                    // Files show their extension quietly: every row is Markdown.
+                    // Every file is Markdown, so names go without `.md`.
                     let label = item.label.as_ref();
-                    let (stem, extension) = match label.rfind('.') {
-                        Some(ix) if ix > 0 && !entry.is_folder() => {
-                            (&label[..ix], Some(label[ix..].to_string()))
+                    let stem = match label.rfind('.') {
+                        Some(ix)
+                            if ix > 0 && !entry.is_folder() && is_markdown(Path::new(label)) =>
+                        {
+                            &label[..ix]
                         }
-                        _ => (label, None),
+                        _ => label,
                     };
                     // One slot per ancestor, each with a hairline under that
                     // ancestor's chevron, so a nested row reads as a branch.
@@ -1653,32 +1689,23 @@ impl Workspace {
                                                 gpui_kit::component::Icon::new(chevron).xsmall()
                                             },
                                         )))
-                                        .child(icon_slot().children(icon.map(|icon| {
-                                            gpui_kit::component::Icon::new(icon).small().text_color(
-                                                if is_active { active_icon } else { muted },
-                                            )
-                                        })))
                                         .child(
                                             div()
                                                 .flex()
                                                 .flex_1()
-                                                .ml_1()
                                                 .min_w_0()
                                                 .when(is_active, |row| {
                                                     row.font_weight(FontWeight::MEDIUM)
+                                                })
+                                                .when(entry.is_disabled(), |row| {
+                                                    row.text_color(muted)
                                                 })
                                                 .child(
                                                     div()
                                                         .min_w_0()
                                                         .truncate()
                                                         .child(stem.to_string()),
-                                                )
-                                                .children(extension.map(|extension| {
-                                                    div()
-                                                        .flex_none()
-                                                        .text_color(muted)
-                                                        .child(extension)
-                                                })),
+                                                ),
                                         )
                                         .children(count.map(|count| {
                                             div()
@@ -2108,6 +2135,35 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// The width of `chars` characters of the editor's font, plus the
+    /// editor's insets beside the text.
+    pub(super) fn editor_measure(&self, chars: f32, window: &Window, cx: &gpui_kit::App) -> Pixels {
+        let typography = self.typography.read(cx);
+        let font = gpui_kit::font(typography.editor_font(cx));
+        let size = window.rem_size() * (typography.editor_size(cx) / 16.);
+        let text_system = window.text_system();
+        let ch = text_system
+            .ch_width(text_system.resolve_font(&font), size)
+            .unwrap_or(size * 0.6);
+        ch * chars + crate::zen::TEXT_LEADING + crate::zen::TEXT_TRAILING
+    }
+
+    fn scroll_editor_from_margin(
+        &mut self,
+        event: &gpui_kit::ScrollWheelEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.tab().editor.update(cx, |editor, cx| {
+            let Some(line_height) = editor.line_height() else {
+                return;
+            };
+            let delta = event.delta.pixel_delta(line_height);
+            let offset = editor.scroll_offset();
+            editor.set_scroll_offset(gpui_kit::point(offset.x, offset.y + delta.y), cx);
+        });
+    }
+
     /// The document as one sheet: its header, the editor and preview, and
     /// a footer with facts about the text. Split mode divides the panes with
     /// a single hairline that the preview owns.
@@ -2134,7 +2190,31 @@ impl Workspace {
         };
 
         let panes = match self.layout {
-            LayoutMode::Editor => editor().into_any_element(),
+            // Centered at a readable measure; the margins beside it scroll
+            // the text too, so the pointer can rest anywhere.
+            LayoutMode::Editor => {
+                let margin = |id: &'static str| {
+                    div()
+                        .id(id)
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .on_scroll_wheel(cx.listener(Self::scroll_editor_from_margin))
+                };
+                div()
+                    .flex()
+                    .size_full()
+                    .child(margin("editor-leading"))
+                    .child(
+                        div()
+                            .w(self.editor_measure(EDITOR_MEASURE_CHARS, window, cx))
+                            .min_w_0()
+                            .h_full()
+                            .child(editor()),
+                    )
+                    .child(margin("editor-trailing"))
+                    .into_any_element()
+            }
             LayoutMode::Preview => preview(false).into_any_element(),
             LayoutMode::Split => h_resizable("split")
                 .with_state(&self.split)
@@ -2285,6 +2365,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::previous_tab))
             .on_action(cx.listener(Self::new_folder))
             .on_action(cx.listener(Self::open))
+            .on_action(cx.listener(Self::open_linked_file))
             .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::refresh_folder))
             .on_action(cx.listener(Self::open_settings))

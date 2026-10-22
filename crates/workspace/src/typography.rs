@@ -13,7 +13,10 @@ pub(crate) type SizeSelect = SelectState<Vec<SharedString>>;
 
 const SYSTEM_DEFAULT: &str = "System default";
 const EDITOR_DEFAULT_SIZE: &str = "14";
-const PREVIEW_DEFAULT_SIZE: &str = "16";
+const PREVIEW_DEFAULT_SIZE: &str = "17";
+/// The preview reads in Charter, a book face that ships with macOS and stays
+/// clear at screen sizes; "System default" in Settings brings back SF Pro.
+const PREVIEW_DEFAULT_FONT: &str = "Charter";
 /// How far one zoom step moves each pane's text size, in pixels.
 const ZOOM_STEP: f32 = 2.;
 /// The text sizes zooming and the size pickers stay within, in pixels.
@@ -118,7 +121,7 @@ impl Typography {
         };
         Self {
             editor_font: font(&saved.editor, editor_default.clone()),
-            preview_font: font(&saved.preview, SYSTEM_DEFAULT.into()),
+            preview_font: font(&saved.preview, PREVIEW_DEFAULT_FONT.into()),
             editor_size: size(&saved.editor, EDITOR_DEFAULT_SIZE),
             preview_size: size(&saved.preview, PREVIEW_DEFAULT_SIZE),
             editor_default_font: editor_default,
@@ -319,7 +322,7 @@ impl Typography {
     fn default_font(&self, pane: Pane) -> SharedString {
         match pane {
             Pane::Editor => self.editor_default_font.clone(),
-            Pane::Preview => SYSTEM_DEFAULT.into(),
+            Pane::Preview => PREVIEW_DEFAULT_FONT.into(),
         }
     }
     fn default_size(pane: Pane) -> SharedString {

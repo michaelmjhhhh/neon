@@ -12,8 +12,8 @@ mod splice;
 mod word_count;
 
 pub use document::{
-    Block, BlockId, BlockKind, CodeBlock, ColumnAlignment, DocumentStats, Heading, Image, ListItem,
-    MarkdownDocument, MarkdownList, Table,
+    Block, BlockId, BlockKind, Callout, CodeBlock, ColumnAlignment, DocumentStats, Heading, Image,
+    ListItem, MarkdownDocument, MarkdownList, Property, Table,
 };
 pub use inline::{InlineLink, InlineRun, InlineStyle, InlineText};
 pub use splice::BlockSplice;
