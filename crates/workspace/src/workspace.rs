@@ -23,18 +23,21 @@ use gpui_kit::component::input::{
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::resizable::{h_resizable, resizable_panel, resize_handle_appearance};
+use gpui_kit::component::resizable::{
+    ResizableState, h_resizable, resizable_panel, resize_handle_appearance,
+};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tab::{Tab, TabBar};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::tree::{Tree, TreeEvent, TreeState};
 use gpui_kit::component::{ActiveTheme as _, TitleBar, WindowExt as _};
 use gpui_kit::component::{Disableable as _, IconName, Sizable as _};
 use gpui_kit::{
     Anchor, AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable, FontFeatures,
     FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions,
-    Pixels, Render, ScrollHandle, SharedString, StyleRefinement, Styled as _, Subscription, Task,
-    Window, div, prelude::FluentBuilder as _,
+    Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, StyleRefinement,
+    Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
 };
 use markdown_preview::MarkdownPreview;
 
@@ -137,6 +140,14 @@ impl LayoutMode {
         }
     }
 
+    fn action(self) -> &'static dyn gpui_kit::Action {
+        match self {
+            Self::Editor => &ShowEditor,
+            Self::Split => &ShowSplit,
+            Self::Preview => &ShowPreview,
+        }
+    }
+
     fn shows_editor(self) -> bool {
         self != Self::Preview
     }
@@ -159,6 +170,11 @@ pub struct Workspace {
     /// How many Markdown files each listed folder holds, at any depth.
     folder_file_counts: Rc<HashMap<SharedString, usize>>,
     sidebar_visible: bool,
+    /// The sidebar and sheet widths, and the split between editor and
+    /// preview. Owned here so they outlive the frames that do not show them:
+    /// hiding the sidebar or leaving Split does not reset them.
+    panes: Entity<ResizableState>,
+    split: Entity<ResizableState>,
     /// Starts from the saved setting; the shortcut changes it for this
     /// window only.
     line_numbers: bool,
@@ -272,6 +288,8 @@ impl Workspace {
             expanded_folders: HashSet::new(),
             folder_file_counts: Rc::default(),
             sidebar_visible: true,
+            panes: cx.new(|_| ResizableState::default()),
+            split: cx.new(|_| ResizableState::default()),
             line_numbers,
             settings_open: false,
             settings,
@@ -1845,8 +1863,8 @@ impl Workspace {
     }
 
     /// The sheet's header doubles as the window's title bar: it names the
-    /// document, shows whether it has unsaved edits next to the command that
-    /// saves them, and holds the view controls.
+    /// document and whether it has unsaved edits, and its trailing edge holds
+    /// Save, then the view controls, then Settings.
     fn render_sheet_header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let selected = LayoutMode::ALL
@@ -1865,9 +1883,9 @@ impl Workspace {
 
         let (stem, extension) = split_extension(&self.tab().document.display_name());
 
-        // Shown once there are edits to save; it sits by the title, or by
-        // the view controls when tabs take the title's place.
-        let mut save_button = is_dirty.then(|| {
+        // Shown once there are edits to save, always in the same place: it
+        // leads the trailing controls, so it appears without moving them.
+        let save_button = is_dirty.then(|| {
             Button::new("save-file")
                 .xsmall()
                 .outline()
@@ -1964,6 +1982,7 @@ impl Workspace {
                     .when(tabbed, |this| this.child(self.render_tab_strip(window, cx)))
                     .when(is_dirty && !tabbed, |this| {
                         // A dot and a word: the state does not rely on color.
+                        // With tabs, each tab marks its own edits.
                         this.child(
                             div()
                                 .flex()
@@ -1975,19 +1994,48 @@ impl Workspace {
                                 .child(div().size_1p5().rounded_full().bg(theme.primary))
                                 .child("Edited"),
                         )
-                        .children(save_button.take())
                     }),
             )
             .child(
+                // Three groups, separated more widely than their members:
+                // the document command, how to view it, and the app.
                 div()
                     .flex()
                     .flex_none()
                     .items_center()
                     .gap_3()
-                    // Each tab marks its own edits; Save stays with the view
-                    // controls.
-                    .children(save_button.take())
-                    .child(zen_mode::enter_zen_button(cx))
+                    .children(save_button)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                TabBar::new("layout")
+                                    .segmented()
+                                    .small()
+                                    .children(LayoutMode::ALL.map(|mode| {
+                                        // Icons keep the switch compact; the
+                                        // tooltip names each mode and its
+                                        // shortcut.
+                                        Tab::new()
+                                            .icon(mode.icon())
+                                            .aria_label(mode.label())
+                                            .tooltip(move |window, cx| {
+                                                Tooltip::new(mode.label())
+                                                    .action(mode.action(), Some(KEY_CONTEXT))
+                                                    .build(window, cx)
+                                            })
+                                    }))
+                                    .selected_index(selected)
+                                    .on_click(cx.listener(|this, ix: &usize, window, cx| {
+                                        if let Some(mode) = LayoutMode::ALL.get(*ix) {
+                                            this.set_layout(*mode, window, cx);
+                                        }
+                                    })),
+                            )
+                            .child(zen_mode::enter_zen_button(cx)),
+                    )
                     .child(
                         Button::new("settings")
                             .small()
@@ -1998,56 +2046,36 @@ impl Workspace {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_settings(&OpenSettings, window, cx)
                             })),
-                    )
-                    .child(
-                        TabBar::new("layout")
-                            .segmented()
-                            .small()
-                            .children(LayoutMode::ALL.map(|mode| {
-                                // An icon names each mode at a glance; the label
-                                // keeps it unambiguous. Text one step below the
-                                // control's default fits its 18 px thumb.
-                                Tab::new().aria_label(mode.label()).child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap_1()
-                                        .text_xs()
-                                        .child(gpui_kit::component::Icon::new(mode.icon()).xsmall())
-                                        .child(mode.label()),
-                                )
-                            }))
-                            .selected_index(selected)
-                            .on_click(cx.listener(|this, ix: &usize, window, cx| {
-                                if let Some(mode) = LayoutMode::ALL.get(*ix) {
-                                    this.set_layout(*mode, window, cx);
-                                }
-                            })),
                     ),
             )
     }
 
-    /// The folder sidebar beside the document sheet.
-    fn render_panes(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The folder sidebar beside the document sheet. Without the sidebar the
+    /// sheet stands alone, and the group's sizes wait untouched for its
+    /// return: a group with one panel would forget the sidebar's width.
+    fn render_panes(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        if !self.sidebar_visible {
+            return self.render_sheet(window, cx);
+        }
         h_resizable("workspace-panes")
+            .with_state(&self.panes)
             .with_handle_appearance(quiet_resize_handle())
-            .when(self.sidebar_visible, |panes| {
-                panes.child(
-                    resizable_panel()
-                        .size(window.rem_size() * SIDEBAR_WIDTH_REMS)
-                        .size_range(window.rem_size() * 12. ..window.rem_size() * 22.)
-                        .child(
-                            self.sidebar
-                                .clone()
-                                .cached(StyleRefinement::default().size_full()),
-                        ),
-                )
-            })
+            .child(
+                resizable_panel()
+                    .size(window.rem_size() * SIDEBAR_WIDTH_REMS)
+                    .size_range(window.rem_size() * 12. ..window.rem_size() * 22.)
+                    .child(
+                        self.sidebar
+                            .clone()
+                            .cached(StyleRefinement::default().size_full()),
+                    ),
+            )
             .child(
                 resizable_panel()
                     .size_range(window.rem_size() * 20. ..Pixels::MAX)
                     .child(self.render_sheet(window, cx)),
             )
+            .into_any_element()
     }
 
     /// The document as one sheet: its header, the editor and preview, and
@@ -2079,6 +2107,7 @@ impl Workspace {
             LayoutMode::Editor => editor().into_any_element(),
             LayoutMode::Preview => preview(false).into_any_element(),
             LayoutMode::Split => h_resizable("split")
+                .with_state(&self.split)
                 .with_handle_appearance(quiet_resize_handle())
                 .child(
                     resizable_panel()
