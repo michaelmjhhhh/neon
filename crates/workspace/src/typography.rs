@@ -175,16 +175,7 @@ impl Typography {
         preview_font.update(cx, |state, cx| {
             state.set_selected_value(&self.preview_font, window, cx)
         });
-        // Every size a zoom step reaches from the defaults, plus any other
-        // size already chosen, so the pickers can show it.
-        let mut sizes: Vec<f32> = (0..)
-            .map(|step| MIN_SIZE + step as f32 * ZOOM_STEP)
-            .take_while(|&size| size <= MAX_SIZE)
-            .collect();
-        sizes.extend(Pane::ALL.map(|pane| self.size(pane, cx)));
-        sizes.sort_by(f32::total_cmp);
-        sizes.dedup();
-        let sizes: Vec<SharedString> = sizes.into_iter().map(size_label).collect();
+        let sizes = self.size_items(cx);
         let editor_size = cx.new(|cx| SelectState::new(sizes.clone(), None, window, cx));
         let preview_size = cx.new(|cx| SelectState::new(sizes, None, window, cx));
         editor_size.update(cx, |state, cx| {
@@ -221,6 +212,19 @@ impl Typography {
             preview_size,
             _subscriptions: subscriptions,
         });
+    }
+
+    /// Every size a zoom step reaches from the defaults, plus any other size
+    /// in use, so the size pickers can show it.
+    fn size_items(&self, cx: &App) -> Vec<SharedString> {
+        let mut sizes: Vec<f32> = (0..)
+            .map(|step| MIN_SIZE + step as f32 * ZOOM_STEP)
+            .take_while(|&size| size <= MAX_SIZE)
+            .collect();
+        sizes.extend(Pane::ALL.map(|pane| self.size(pane, cx)));
+        sizes.sort_by(f32::total_cmp);
+        sizes.dedup();
+        sizes.into_iter().map(size_label).collect()
     }
 
     pub(crate) fn hide_pickers(&mut self) {
@@ -330,15 +334,20 @@ impl Typography {
         let pane = |pane: Pane| PaneTypography {
             font: (self.font_value(pane) != &self.default_font(pane))
                 .then(|| self.font_value(pane).to_string()),
-            size: (self.size_value(pane) != &Self::default_size(pane))
-                .then(|| self.size_value(pane).parse().ok())
-                .flatten(),
+            size: self.saved_size(pane),
         };
         let (editor, preview) = (pane(Pane::Editor), pane(Pane::Preview));
         settings_file::update(cx, |settings| {
             settings.editor = editor;
             settings.preview = preview;
         });
+    }
+
+    /// The pane's size as the settings file keeps it: `None` for the default.
+    fn saved_size(&self, pane: Pane) -> Option<u32> {
+        (self.size_value(pane) != &Self::default_size(pane))
+            .then(|| self.size_value(pane).parse().ok())
+            .flatten()
     }
 
     /// Whether the pane uses its default font and size.
@@ -375,12 +384,29 @@ impl Typography {
             return;
         }
         for (pane, size) in Pane::ALL.into_iter().zip(sizes) {
-            if let Some(state) = self.size_state(pane) {
-                state.update(cx, |state, cx| state.set_selected_value(&size, window, cx));
-            }
             *self.size_value_mut(pane) = size;
         }
-        self.save(cx);
+        // A size set by hand in the settings file can step outside the list.
+        let items = self.size_items(cx);
+        for pane in Pane::ALL {
+            let size = self.size_value(pane).clone();
+            if let Some(state) = self.size_state(pane) {
+                state.update(cx, |state, cx| {
+                    state.set_items(items.clone(), window, cx);
+                    state.set_selected_value(&size, window, cx);
+                });
+            }
+        }
+        // Only the sizes: another window may have saved a font since this one
+        // opened, and a zoom step should not put this window's back.
+        let (editor, preview) = (
+            self.saved_size(Pane::Editor),
+            self.saved_size(Pane::Preview),
+        );
+        settings_file::update(cx, |settings| {
+            settings.editor.size = editor;
+            settings.preview.size = preview;
+        });
         cx.emit(TypographyChanged);
         cx.notify();
     }
