@@ -27,7 +27,7 @@ Neon is a Markdown editor built on [GPUI](https://github.com/zed-industries/zed/
 - **Slash commands**: type `/` on an empty line to insert a list, task list, code block, link, image or table. `/table 4x5` sets the columns and rows; `/bullet 5` sets the number of items.
 - **Live preview**: headings, emphasis, links, task lists, nested and numbered lists, block quotes, code blocks, tables with column alignment, images, footnotes and YAML front matter.
 - **Three layouts**: Editor, Split and Preview. In Split, the preview follows the cursor.
-- **Zen Mode**: the document alone, full screen, in a centered column. The paragraph you are writing stays at full strength while the rest fades, and the line you type on stays at the middle of the screen. Switch between the source and the preview without leaving it.
+- **Zen Mode**: the document alone, full screen, in a centered column, ready to type in. The paragraph you are writing stays at full strength while the rest fades, the line you type on stays at the middle of the screen from the first line on, and the footer fades away while you write. Switch between the source and the preview without leaving it.
 - **Folder sidebar** to browse nested Markdown files, create new ones and refresh the tree.
 - **Export** to HTML, PDF or Word from File > Export, set in the preview's font and size. Local images are embedded; a failed export never leaves a partial file.
 - **Settings**: separate fonts and sizes for the editor and the preview, in light and dark mode.

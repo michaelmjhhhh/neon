@@ -490,6 +490,7 @@ impl Workspace {
         self.word_count
             .update(cx, |count, cx| count.set_source(source, cx));
         self.zen_follow_cursor(cx);
+        self.hide_zen_chrome(cx);
         self.draw_soon(window, cx);
         // Only the first edit changes this view; the cursor position and word
         // count notify through their own paths, so typing stays cheap.
@@ -509,6 +510,7 @@ impl Workspace {
         if self.tab().editor != editor {
             return;
         }
+        self.settle_zen_lift(cx);
         let cursor = editor.read(cx).cursor();
         if self.tab().revealed_cursor == Some(cursor) {
             return;

@@ -7,9 +7,10 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::RopeExt as _;
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, TitleBar};
 use gpui_kit::{
-    AnyElement, App, Context, EntityInputHandler as _, InteractiveElement as _, IntoElement,
-    MouseButton, MouseDownEvent, MouseUpEvent, ParentElement as _, Pixels, ScrollWheelEvent,
-    StyleRefinement, Styled as _, Window, div, point, px,
+    Animation, AnimationExt as _, AnyElement, App, Context, EntityInputHandler as _,
+    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement as _, Pixels, ScrollWheelEvent, StyleRefinement, Styled as _,
+    Window, div, ease_in_out, point, px,
 };
 use markdown_preview::MarkdownPreview;
 
@@ -45,8 +46,8 @@ impl Workspace {
         }
     }
 
-    /// Show the current document alone, full screen: as source, or as the
-    /// preview when that is the layout Zen starts from.
+    /// Show the current document alone, full screen, as source to write in,
+    /// whatever the layout. The preview is a shortcut away.
     fn enter_zen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.zen.is_some() {
             return;
@@ -55,17 +56,15 @@ impl Workspace {
         if exits_fullscreen {
             window.toggle_fullscreen();
         }
-        let view = if self.layout == LayoutMode::Preview {
-            ZenView::Preview
-        } else {
-            ZenView::Editor
-        };
         self.zen = Some(Zen {
             exits_fullscreen,
-            view,
+            view: ZenView::Editor,
             pointer_down: false,
             gliding: false,
             last_glide: None,
+            lift: px(0.),
+            chrome_hidden: false,
+            pointer_at: None,
         });
         // Zen covers Settings rather than waiting behind them.
         self.set_settings_open(false, window, cx);
@@ -104,6 +103,9 @@ impl Workspace {
         self.focus_content(window, cx);
         if !preview_shown {
             self.glide_zen_caret(window, cx);
+            // From the preview, the editor has no layout to measure the caret
+            // in until it is drawn.
+            cx.on_next_frame(window, |this, window, cx| this.glide_zen_caret(window, cx));
         }
         cx.notify();
     }
@@ -135,6 +137,7 @@ impl Workspace {
         }
         let now = Instant::now();
         let last_glide = zen.last_glide;
+        let lift = zen.lift;
         // Without motion, the line lands in one step.
         let share = if cx.reduce_motion() {
             1.
@@ -147,25 +150,34 @@ impl Workspace {
             let cursor = editor.text().offset_to_offset_utf16(editor.cursor());
             let caret = editor.bounds_for_range(cursor..cursor, content, window, cx)?;
             let offset = editor.scroll_offset();
-            // The editor stops scrolling at the top and bottom of the text,
-            // where the line cannot reach the middle.
-            let stuck = last_glide.is_some_and(|(_, last)| (offset.y - last).abs() < px(0.01));
-            let shift = editor.input_bounds().center().y - caret.center().y;
-            // Near the top the line cannot reach the middle. An offset past
-            // the top would draw for a frame before the editor clamps it.
-            let remaining = (offset.y + shift).min(px(0.)) - offset.y;
-            if remaining.abs() < px(1.) || stuck {
+            // The editor clamps an offset past the end of its text at its
+            // next layout, where the line cannot reach the middle.
+            let clamped =
+                last_glide.is_some_and(|(_, asked)| (offset.y - asked).abs() > px(0.01));
+            // The lift moves the editor within the column, not the middle.
+            let middle = editor.input_bounds().center().y - lift;
+            let remaining = middle - caret.center().y;
+            if remaining.abs() < px(1.) || clamped {
                 return None;
             }
-            editor.set_scroll_offset(point(offset.x, offset.y + remaining * share), cx);
-            Some(offset.y)
+            // Where the text sits: scrolled up while below zero, lowered by
+            // the lift above it. An offset past the top would draw for a
+            // frame before the editor clamps it.
+            let position = offset.y + lift + remaining * share;
+            let scroll = position.min(px(0.));
+            editor.set_scroll_offset(point(offset.x, scroll), cx);
+            Some((scroll, position.max(px(0.))))
         });
         let Some(zen) = &mut self.zen else {
             return;
         };
         match stepped {
-            Some(offset) => {
+            Some((offset, lift)) => {
                 zen.last_glide = Some((now, offset));
+                if zen.lift != lift {
+                    zen.lift = lift;
+                    cx.notify();
+                }
                 cx.on_next_frame(window, |this, window, cx| {
                     this.glide_zen_caret_step(window, cx)
                 });
@@ -179,6 +191,63 @@ impl Workspace {
         if let Some(zen) = &mut self.zen {
             zen.gliding = false;
         }
+    }
+
+    /// Raise lowered text before the editor scrolls it. While lowered, the
+    /// glide keeps the editor at its top, so a scroll toward the end, from
+    /// the wheel or the editor keeping the caret in view, spends the lift
+    /// first and the text never moves twice. The glide moves both itself,
+    /// and its scroll only lands at the editor's next layout.
+    pub(super) fn settle_zen_lift(&mut self, cx: &mut Context<Self>) {
+        let Some(zen) = &self.zen else {
+            return;
+        };
+        let lift = zen.lift;
+        if zen.gliding || lift <= px(0.) {
+            return;
+        }
+        let editor = self.tab().editor.clone();
+        let offset = editor.read(cx).scroll_offset();
+        let taken = (-offset.y).min(lift);
+        if taken <= px(0.) {
+            return;
+        }
+        editor.update(cx, |editor, cx| {
+            editor.set_scroll_offset(point(offset.x, offset.y + taken), cx);
+        });
+        if let Some(zen) = &mut self.zen {
+            zen.lift -= taken;
+        }
+        cx.notify();
+    }
+
+    /// Writing hides the footer, so only the text is left on the screen.
+    pub(super) fn hide_zen_chrome(&mut self, cx: &mut Context<Self>) {
+        if let Some(zen) = &mut self.zen
+            && !zen.chrome_hidden
+        {
+            zen.chrome_hidden = true;
+            zen.pointer_at = None;
+            cx.notify();
+        }
+    }
+
+    /// Moving the pointer brings the footer back with it.
+    fn show_zen_chrome(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        let Some(zen) = &mut self.zen else {
+            return;
+        };
+        let at = event.position;
+        let Some(last) = zen.pointer_at.replace(at) else {
+            return;
+        };
+        let travel = (at.x - last.x).abs().max((at.y - last.y).abs());
+        if !zen.chrome_hidden || travel < zen::POINTER_TRAVEL {
+            zen.pointer_at = Some(last);
+            return;
+        }
+        zen.chrome_hidden = false;
+        cx.notify();
     }
 
     fn set_zen_pointer_down(&mut self, down: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -291,14 +360,16 @@ impl Workspace {
     ) {
         self.stop_zen_glide();
         match self.zen_view() {
-            Some(ZenView::Editor) => self.tab().editor.update(cx, |editor, cx| {
-                let Some(line_height) = editor.line_height() else {
-                    return;
-                };
-                let delta = event.delta.pixel_delta(line_height);
-                let offset = editor.scroll_offset();
-                editor.set_scroll_offset(point(offset.x, offset.y + delta.y), cx);
-            }),
+            Some(ZenView::Editor) => {
+                self.tab().editor.update(cx, |editor, cx| {
+                    let Some(line_height) = editor.line_height() else {
+                        return;
+                    };
+                    let delta = event.delta.pixel_delta(line_height);
+                    let offset = editor.scroll_offset();
+                    editor.set_scroll_offset(point(offset.x, offset.y + delta.y), cx);
+                });
+            }
             Some(ZenView::Preview) => {
                 let delta = event.delta.pixel_delta(window.line_height());
                 self.tab()
@@ -311,7 +382,8 @@ impl Workspace {
 
     /// The document on the sheet's surface, edge to edge: a strip to drag
     /// the window by, the column with the source or the preview, and one
-    /// quiet line beneath it that shares the column's edges.
+    /// quiet line beneath it that shares the column's edges and fades out
+    /// while writing.
     pub(super) fn render_zen(
         &self,
         window: &mut Window,
@@ -321,6 +393,10 @@ impl Workspace {
         let band = rem * SHEET_HEADER_REMS;
         let column = self.zen_column_width(window, cx);
         let view = self.zen_view().unwrap_or(ZenView::Editor);
+        let (lift, chrome_hidden) = self
+            .zen
+            .as_ref()
+            .map_or((px(0.), false), |zen| (zen.lift, zen.chrome_hidden));
         let theme = cx.theme();
 
         let margin = |id: &'static str, cx: &mut Context<Self>| {
@@ -333,11 +409,17 @@ impl Workspace {
         };
 
         let body: AnyElement = match view {
-            ZenView::Editor => self
-                .tab()
-                .editor_pane
-                .clone()
-                .cached(StyleRefinement::default().size_full())
+            // Lowered by the lift, its foot clipped by the column.
+            ZenView::Editor => div()
+                .relative()
+                .top(lift)
+                .size_full()
+                .child(
+                    self.tab()
+                        .editor_pane
+                        .clone()
+                        .cached(StyleRefinement::default().size_full()),
+                )
                 .into_any_element(),
             ZenView::Preview => MarkdownPreview::pane(&self.tab().preview, cx).into_any_element(),
         };
@@ -396,6 +478,25 @@ impl Workspace {
                     .tooltip_with_action("Exit Zen Mode", &ToggleZen, Some(KEY_CONTEXT))
                     .on_click(cx.listener(|this, _, window, cx| this.exit_zen(window, cx))),
             );
+        // It leaves slowly, once writing has started, and comes back quickly
+        // when wanted.
+        let footer = if chrome_hidden {
+            footer
+                .with_animation(
+                    "zen-footer-out",
+                    Animation::new(zen::CHROME_FADE_OUT).with_easing(ease_in_out),
+                    |footer, delta| footer.opacity(1. - delta),
+                )
+                .into_any_element()
+        } else {
+            footer
+                .with_animation(
+                    "zen-footer-in",
+                    Animation::new(zen::CHROME_FADE_IN).with_easing(ease_in_out),
+                    |footer, delta| footer.opacity(delta),
+                )
+                .into_any_element()
+        };
 
         div()
             .id("zen")
@@ -418,6 +519,7 @@ impl Workspace {
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| this.set_zen_pointer_down(false, window, cx)),
             )
+            .on_mouse_move(cx.listener(|this, event, _, cx| this.show_zen_chrome(event, cx)))
             .child(
                 TitleBar::new()
                     .h(band)
@@ -442,6 +544,7 @@ impl Workspace {
                                     .id("zen-body")
                                     .flex_1()
                                     .min_h_0()
+                                    .overflow_hidden()
                                     // A scroll of its own ends the glide.
                                     .on_scroll_wheel(
                                         cx.listener(|this, _, _, _| this.stop_zen_glide()),
