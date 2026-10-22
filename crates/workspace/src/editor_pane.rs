@@ -12,6 +12,7 @@ use gpui_kit::{
 };
 
 use crate::find_bar::FindBar;
+use crate::list_guides;
 use crate::typography::Typography;
 
 /// The source editor as its own view, so the workspace can cache it: a
@@ -117,6 +118,7 @@ impl Render for EditorPane {
         let typography = self.typography.read(cx);
         let pane = cx.entity();
         let editor = self.editor.clone();
+        let typography_entity = self.typography.clone();
         let laid_out_text = self.laid_out_text.clone();
         div()
             .size_full()
@@ -151,10 +153,12 @@ impl Render for EditorPane {
             )
             .child(
                 // Paints after the editor, so this handler replaces the one
-                // the editor registered for the frame.
+                // the editor registered for the frame, and the list guides
+                // use the editor's layout for this frame.
                 canvas(
                     |_, _, _| {},
                     move |bounds, _, window, cx| {
+                        list_guides::paint(&editor, &typography_entity, bounds, window, cx);
                         *laid_out_text.borrow_mut() = editor.read(cx).text().clone();
                         let focus = editor.read(cx).focus_handle(cx);
                         window.handle_input(&focus, ElementInputHandler::new(bounds, pane), cx);

@@ -29,6 +29,10 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Changed
+
+- Nested list items in the editor hang from one continuous line under their parent's marker, running past wrapped lines, instead of short ticks beside each line; the line around the item you are editing is a little darker.
+
 ## [0.9.1] - 2026-10-22
 
 ### Changed

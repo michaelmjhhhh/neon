@@ -9,6 +9,7 @@ mod inline_format;
 #[cfg(feature = "diagnostics")]
 mod latency_bench;
 mod list_continuation;
+mod list_guides;
 mod present_now;
 mod scroll_metrics;
 mod session_file;
