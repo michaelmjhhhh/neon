@@ -40,10 +40,18 @@ pub(crate) fn is_list_item(text: &Rope, cursor: usize) -> bool {
     ListItem::parse(&line).is_some() && !in_code_block(text, row)
 }
 
+/// The byte range of the marker, such as `-` or `12.`, if `line` is a list item.
+pub(crate) fn marker(line: &str) -> Option<Range<usize>> {
+    let item = ListItem::parse(line)?;
+    Some(item.indent.len()..item.marker_end)
+}
+
 struct ListItem<'a> {
     indent: &'a str,
     marker: Marker,
     task: bool,
+    /// Bytes from the line start to the end of the marker.
+    marker_end: usize,
     /// Bytes from the line start to the item's text.
     prefix_len: usize,
 }
@@ -74,6 +82,7 @@ impl<'a> ListItem<'a> {
                 (Marker::Ordered { number, delimiter }, &rest[digits + 1..])
             }
         };
+        let marker_end = line.len() - rest.len();
         let rest = rest.strip_prefix(' ')?;
         let after_task = ["[ ] ", "[x] ", "[X] "]
             .iter()
@@ -83,6 +92,7 @@ impl<'a> ListItem<'a> {
             indent,
             marker,
             task: after_task.is_some(),
+            marker_end,
             prefix_len: line.len() - rest.len(),
         })
     }
