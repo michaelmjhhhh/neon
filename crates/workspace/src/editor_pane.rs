@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -13,6 +13,7 @@ use gpui_kit::{
 
 use crate::find_bar::FindBar;
 use crate::list_guides;
+use crate::scroll_anchor::ScrollAnchor;
 use crate::typography::Typography;
 
 /// The source editor as its own view, so the workspace can cache it: a
@@ -29,6 +30,10 @@ pub(crate) struct EditorPane {
     readonly: bool,
     /// The editor's text as of its last layout.
     laid_out_text: Rc<RefCell<Rope>>,
+    /// The text size of the editor's last layout; zero before the first.
+    laid_out_size: Rc<Cell<f32>>,
+    /// The line to keep in place while a typography change takes effect.
+    scroll_anchor: Rc<Cell<Option<ScrollAnchor>>>,
 }
 
 impl EditorPane {
@@ -45,7 +50,29 @@ impl EditorPane {
             find_bar,
             readonly: false,
             laid_out_text: Rc::default(),
+            laid_out_size: Rc::default(),
+            scroll_anchor: Rc::default(),
         }
+    }
+
+    /// Keep the line at the top of the editor in place after a typography
+    /// change. Call before the editor lays out with the new typography.
+    pub(crate) fn anchor_scroll(&mut self, cx: &mut Context<Self>) {
+        let laid_out_size = self.laid_out_size.get();
+        if laid_out_size == 0. {
+            return;
+        }
+        // Changes since the last layout keep the line found before them.
+        let Some(anchor) = self
+            .scroll_anchor
+            .get()
+            .or_else(|| ScrollAnchor::capture(self.editor.read(cx), laid_out_size))
+        else {
+            return;
+        };
+        let size = self.typography.read(cx).editor_size(cx);
+        let anchor = anchor.estimate(&self.editor, laid_out_size, size, cx);
+        self.scroll_anchor.set(Some(anchor));
     }
 
     pub(crate) fn set_readonly(&mut self, readonly: bool, cx: &mut Context<Self>) {
@@ -120,6 +147,9 @@ impl Render for EditorPane {
         let editor = self.editor.clone();
         let typography_entity = self.typography.clone();
         let laid_out_text = self.laid_out_text.clone();
+        let laid_out_size = self.laid_out_size.clone();
+        let scroll_anchor = self.scroll_anchor.clone();
+        let size = typography.editor_size(cx);
         div()
             .size_full()
             .relative()
@@ -160,6 +190,10 @@ impl Render for EditorPane {
                     move |bounds, _, window, cx| {
                         list_guides::paint(&editor, &typography_entity, bounds, window, cx);
                         *laid_out_text.borrow_mut() = editor.read(cx).text().clone();
+                        laid_out_size.set(size);
+                        if let Some(anchor) = scroll_anchor.take() {
+                            scroll_anchor.set(anchor.restore(&editor, cx));
+                        }
                         let focus = editor.read(cx).focus_handle(cx);
                         window.handle_input(&focus, ElementInputHandler::new(bounds, pane), cx);
                     },

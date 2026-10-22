@@ -32,6 +32,7 @@ Groups, in this order:
 ### Added
 
 - Zoom In (⌘=), Zoom Out (⌘-) and Actual Size (⌘0) in the View menu make the editor and preview text bigger or smaller together, saved like the size chosen in Settings.
+- The editor stays on the line you were reading when the text size or font changes, instead of jumping hundreds of lines in a long document.
 
 ### Changed
 

@@ -257,6 +257,8 @@ impl Workspace {
                     let font = font.clone();
                     tab.preview
                         .update(cx, |preview, cx| preview.set_typography(font, scale, cx));
+                    tab.editor_pane
+                        .update(cx, |pane, cx| pane.anchor_scroll(cx));
                 }
                 cx.notify();
             }),
