@@ -3,16 +3,16 @@
 //! fades back, and the caret line stays at the middle of the window.
 
 use std::ops::Range;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui_kit::HighlightStyle;
 use gpui_kit::component::input::{
     EditorState, Rope, RopeExt as _, TextDecoration, TextDecorationCollection,
 };
-use gpui_kit::{App, Entity, Pixels, px};
+use gpui_kit::{App, Entity, Pixels, Point, px};
 
 /// How much of their ink the paragraphs away from the caret lose.
-const UNLIT_FADE: f32 = 0.62;
+const UNLIT_FADE: f32 = 0.74;
 
 /// The text column's narrowest measure, in characters of the editor font.
 pub(crate) const MEASURE_CHARS: f32 = 72.;
@@ -39,6 +39,11 @@ pub(crate) enum ZenView {
     Preview,
 }
 
+/// How long the footer takes to fade out once writing starts, and to come
+/// back when the pointer moves.
+pub(crate) const CHROME_FADE_OUT: Duration = Duration::from_millis(700);
+pub(crate) const CHROME_FADE_IN: Duration = Duration::from_millis(160);
+
 /// Zen's view, whether the window entered full screen for Zen, so leaving
 /// Zen leaves full screen too, and the caret line's glide to the middle.
 pub(crate) struct Zen {
@@ -48,9 +53,22 @@ pub(crate) struct Zen {
     /// not move under it.
     pub(crate) pointer_down: bool,
     pub(crate) gliding: bool,
-    /// When the glide last stepped, and the scroll offset it left.
+    /// When the glide last stepped, and the scroll offset it asked for.
     pub(crate) last_glide: Option<(Instant, Pixels)>,
+    /// How far the editor starts below the top of the column. The editor
+    /// cannot scroll above its first line, so near the top of the text the
+    /// glide lowers the editor's top instead, and the caret line still
+    /// reaches the middle.
+    pub(crate) lift: Pixels,
+    /// Hidden from the first keystroke until the pointer moves.
+    pub(crate) chrome_hidden: bool,
+    /// Where the pointer last brought the footer back, so a pointer that
+    /// barely moves while typing does not.
+    pub(crate) pointer_at: Option<Point<Pixels>>,
 }
+
+/// How far the pointer moves before the footer comes back.
+pub(crate) const POINTER_TRAVEL: Pixels = px(6.);
 
 /// Dims one editor's text outside the paragraphs its selection touches.
 pub(crate) struct ZenFocus {

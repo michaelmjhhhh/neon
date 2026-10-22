@@ -180,7 +180,7 @@ impl Workspace {
         // In Zen, light this tab's paragraph and bring its caret line to the
         // middle; its caret did not move, so the editor would not ask.
         self.zen_follow_cursor(cx);
-        self.glide_zen_caret(window, cx);
+        self.glide_zen_caret_once_drawn(window, cx);
         cx.notify();
     }
 

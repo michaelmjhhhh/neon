@@ -32,6 +32,9 @@ Groups, in this order:
 ### Changed
 
 - Zen Mode's footer shows Editor · Preview and Exit Zen Mode as plain muted words instead of a boxed switch, with the current view in full ink and no background on hover.
+- Zen Mode always opens on the source, ready to type in, even from the Preview layout; Cmd+3 still shows the preview.
+- In Zen Mode, the line you type on reaches the middle of the screen from the first line of the document, not only once the text is long enough to scroll.
+- Zen Mode's footer fades away once you start typing and comes back when you move the pointer, and the paragraphs away from the caret fade further back.
 
 ## [0.9.0] - 2026-10-21
 
