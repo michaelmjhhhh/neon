@@ -54,6 +54,8 @@ impl DocumentTab {
             let mut editor = EditorState::new(window, cx)
                 .language("markdown")
                 .line_number(line_numbers)
+                // The editor pane draws guides for nested list items instead.
+                .indent_guides(false)
                 // The find bar over the editor replaces the built-in panel.
                 .searchable(false)
                 .placeholder("Start writing, or open a Markdown file…");
