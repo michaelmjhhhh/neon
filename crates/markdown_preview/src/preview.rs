@@ -42,7 +42,13 @@ gpui_kit::actions!(
 #[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
 #[action(namespace = markdown_preview, no_json)]
 pub struct OpenLinkedFile {
+    /// The file beside the document, or the link as written when the
+    /// document has not been saved yet.
     pub path: std::path::PathBuf,
+    /// The link as written, such as `Note.md` or `sub/Note.md`, so the
+    /// window can look for the note elsewhere in its folder, as Obsidian
+    /// resolves `[[Note]]` by name.
+    pub link: std::path::PathBuf,
 }
 
 /// How far beyond the viewport blocks are laid out ahead of scrolling, so fast

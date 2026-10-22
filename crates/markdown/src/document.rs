@@ -733,36 +733,54 @@ fn wiki_target(target: &str) -> String {
 
 /// The top-level `key: value` entries of YAML front matter. This reads the
 /// flat shape notes use, not all of YAML: an indented `- item` list joins
-/// into one value, and other indented lines are kept as written.
+/// into one value, a `|` or `>` block keeps or folds its lines, and other
+/// indented lines are kept as written.
 fn parse_properties(yaml: &str) -> Vec<Property> {
-    let mut entries: Vec<(String, String)> = Vec::new();
+    struct Entry {
+        key: String,
+        value: String,
+        /// What joins the value's indented lines: a newline, or for a `>`
+        /// block, a space.
+        joiner: &'static str,
+    }
+    let mut entries: Vec<Entry> = Vec::new();
     for line in yaml.lines() {
         if line.trim().is_empty() || line.trim_start().starts_with('#') {
             continue;
         }
         let indented = line.starts_with([' ', '\t']);
         if !indented && let Some((key, value)) = line.split_once(':') {
-            entries.push((key.trim().to_string(), unquote(value.trim()).to_string()));
+            let value = value.trim();
+            let (value, joiner) = match value {
+                "|" | "|-" | "|+" => ("", "\n"),
+                ">" | ">-" | ">+" => ("", " "),
+                value => (unquote(value), "\n"),
+            };
+            entries.push(Entry {
+                key: key.trim().to_string(),
+                value: value.to_string(),
+                joiner,
+            });
             continue;
         }
-        let Some((_, value)) = entries.last_mut() else {
+        let Some(entry) = entries.last_mut() else {
             return Vec::new();
         };
         let item = line.trim();
-        let item = item.strip_prefix("- ").map(unquote).unwrap_or(item);
-        if !value.is_empty() {
-            value.push_str(if line.trim_start().starts_with("- ") {
+        let list_item = item.strip_prefix("- ").map(unquote);
+        if !entry.value.is_empty() {
+            entry.value.push_str(if list_item.is_some() {
                 ", "
             } else {
-                "\n"
+                entry.joiner
             });
         }
-        value.push_str(item);
+        entry.value.push_str(list_item.unwrap_or(item));
     }
     entries
         .into_iter()
-        .filter(|(key, _)| !key.is_empty())
-        .map(|(key, value)| {
+        .filter(|entry| !entry.key.is_empty())
+        .map(|Entry { key, value, .. }| {
             let value = match value.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
                 Some(list) => list
                     .split(',')
@@ -953,6 +971,21 @@ mod tests {
         assert_eq!(
             pairs,
             [("title", "Notes"), ("tags", "a, b"), ("aliases", "x, y")]
+        );
+    }
+
+    #[test]
+    fn front_matter_blocks_keep_or_fold_their_lines() {
+        let kinds = kinds(
+            "---\nsummary: >\n  One line\n  continued.\npoem: |\n  First\n  Second\nurl: https://x.dev/a\n---\n",
+        );
+        let BlockKind::FrontMatter(properties) = &kinds[0] else {
+            panic!("expected front matter, got {:?}", kinds[0]);
+        };
+        let values: Vec<_> = properties.iter().map(|p| &**p.value()).collect();
+        assert_eq!(
+            values,
+            ["One line continued.", "First\nSecond", "https://x.dev/a"]
         );
     }
 

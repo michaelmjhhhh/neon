@@ -35,8 +35,8 @@ Groups, in this order:
 - The preview shows Obsidian and GitHub callouts (`> [!tip] Title`) as tinted panels with an icon, in the color of their kind.
 - `==Highlighted==` text shows with a soft accent wash in the preview.
 - Inline `code` and highlights in the preview sit on rounded chips a little shorter than the line, instead of square blocks the full line height.
-- `[[Wikilinks]]` and links to other Markdown files open the note in Neon: a note already open comes forward, and a tab with unsaved edits is kept by opening the note in a new tab.
-- Front matter shows as quiet properties above the document, keys beside values, instead of a YAML code block.
+- `[[Wikilinks]]` and links to other Markdown files open the note in Neon: a note already open comes forward, and a tab with unsaved edits is kept by opening the note in a new tab. A note that is not beside the document is found by name anywhere in the open folder, as in Obsidian.
+- Front matter shows as quiet properties above the document, keys beside values, instead of a YAML code block; lists join with commas and `|` and `>` blocks keep or fold their lines.
 
 ### Changed
 
@@ -51,6 +51,7 @@ Groups, in this order:
 
 ### Fixed
 
+- Links and images with escaped characters, such as `My%20Note.md`, open the file they name.
 - The editor stays on the line you were reading when the text size or font changes, instead of jumping hundreds of lines in a long document.
 
 ## [0.9.1] - 2026-10-22

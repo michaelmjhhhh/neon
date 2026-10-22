@@ -116,8 +116,14 @@ struct Palette {
     link: Hsla,
     primary: Hsla,
     primary_foreground: Hsla,
-    /// Behind `==highlighted==` text: a wash of the accent.
+    /// Behind `==highlighted==` text: a wash of the accent, or inside a
+    /// callout, a deeper wash of the callout's own color.
     highlight: Hsla,
+    /// How strong a highlight's wash is; stronger on a dark background.
+    highlight_opacity: f32,
+    /// Behind inline code: a film of the text color, so the chip shows on
+    /// the page and on a tinted callout alike.
+    code_chip: Hsla,
     info: Hsla,
     success: Hsla,
     warning: Hsla,
@@ -147,6 +153,7 @@ impl<'a> BlockRenderer<'a> {
         cx: &App,
     ) -> Self {
         let theme = cx.theme();
+        let highlight_opacity = if theme.is_dark() { 0.3 } else { 0.18 };
         Self {
             base_dir,
             image_cache,
@@ -158,9 +165,11 @@ impl<'a> BlockRenderer<'a> {
                 link: theme.link,
                 primary: theme.primary,
                 primary_foreground: theme.primary_foreground,
-                highlight: theme
-                    .primary
-                    .opacity(if theme.is_dark() { 0.3 } else { 0.18 }),
+                highlight: theme.primary.opacity(highlight_opacity),
+                highlight_opacity,
+                code_chip: theme
+                    .foreground
+                    .opacity(if theme.is_dark() { 0.1 } else { 0.07 }),
                 info: theme.info,
                 success: theme.success,
                 warning: theme.warning,
@@ -439,12 +448,19 @@ impl<'a> BlockRenderer<'a> {
     /// color of what it means.
     fn render_callout(&mut self, callout: &Callout) -> AnyElement {
         let (color, icon) = callout_look(callout.kind(), &self.palette);
+        // The accent wash would muddy against the panel's tint; a deeper
+        // shade of the panel's color marks highlights instead.
+        let highlight = std::mem::replace(
+            &mut self.palette.highlight,
+            color.opacity(self.palette.highlight_opacity + 0.1),
+        );
         let title = match callout.title() {
             Some(title) => self.render_inline(title),
             None => SharedString::from(capitalized(callout.kind())).into_any_element(),
         };
         let children =
             (!callout.children().is_empty()).then(|| self.render_children(callout.children()));
+        self.palette.highlight = highlight;
         let palette = &self.palette;
         div()
             .flex()
@@ -731,7 +747,7 @@ fn capitalized(word: &str) -> String {
 }
 
 /// The ranges of `text` that sit on a tinted background, and their tints:
-/// code on the muted surface, highlights on the accent wash. Neighboring
+/// code on a film of the text color, highlights on the accent wash. Neighboring
 /// runs of one tint merge, so `**bold** code` reads as one chip.
 fn run_backgrounds(text: &InlineText, palette: &Palette) -> Vec<(Range<usize>, Hsla)> {
     let mut backgrounds: Vec<(Range<usize>, Hsla)> = Vec::new();
@@ -739,7 +755,7 @@ fn run_backgrounds(text: &InlineText, palette: &Palette) -> Vec<(Range<usize>, H
         let tint = if run.style().contains(InlineStyle::HIGHLIGHT) {
             palette.highlight
         } else if run.style().contains(InlineStyle::CODE) {
-            palette.muted
+            palette.code_chip
         } else {
             continue;
         };
@@ -755,6 +771,10 @@ fn run_backgrounds(text: &InlineText, palette: &Palette) -> Vec<(Range<usize>, H
 
 /// Paint each background as a rounded chip per visual line it covers, a
 /// little shorter than the line and a little wider than its text.
+///
+/// Positions come from the text's layout, which scans a line per lookup, so
+/// this asks only for each range's ends and, when it wraps, binary-searches
+/// for where each line breaks.
 fn paint_run_backgrounds(
     layout: &TextLayout,
     text: &str,
@@ -766,6 +786,7 @@ fn paint_run_backgrounds(
     let height = line_height * 0.78;
     let inset = (line_height - height) / 2.;
     let pad = px(3.);
+    let left = layout.bounds().origin.x;
     let mut chip = |start: Point<Pixels>, end_x: Pixels, color: Hsla| {
         let bounds = Bounds::new(
             point(start.x - pad, start.y + inset),
@@ -777,65 +798,117 @@ fn paint_run_backgrounds(
         let Some(slice) = text.get(range.clone()) else {
             continue;
         };
-        // Wrapped text moves down a line mid-range; each line gets a chip,
-        // ending one character width past its last character. The index
-        // where a line wraps reads as the end of the line above, so a range
-        // that starts there begins on the next line instead.
-        let mut line: Option<(Point<Pixels>, Pixels, usize)> = None;
-        let mut advance = height * 0.5;
-        let first_char_len = slice.chars().next().map_or(0, char::len_utf8);
-        for (offset, _) in slice.char_indices() {
-            let Some(position) = layout.position_for_index(range.start + offset) else {
-                continue;
+        // Character boundaries of the range, its end included.
+        let boundaries: Vec<usize> = slice
+            .char_indices()
+            .map(|(offset, _)| range.start + offset)
+            .chain([range.end])
+            .collect();
+        let Some(end) = layout.position_for_index(range.end) else {
+            continue;
+        };
+        let mut first = 0;
+        while let Some(start) = line_start(layout, &boundaries, first, left) {
+            if end.y <= start.y {
+                chip(start, end.x, *color);
+                break;
+            }
+            // The last boundary on this line is where it wraps; it reads as
+            // the line's end.
+            let on_line = boundaries[first + 1..].partition_point(|&ix| {
+                layout
+                    .position_for_index(ix)
+                    .is_some_and(|position| position.y <= start.y)
+            });
+            if on_line == 0 {
+                break;
+            }
+            first += on_line;
+            let Some(wrap) = layout.position_for_index(boundaries[first]) else {
+                break;
             };
-            line = match line {
-                Some((start, last_x, chars)) if start.y == position.y => {
-                    if position.x > last_x {
-                        advance = position.x - last_x;
-                    }
-                    Some((start, position.x, chars + 1))
-                }
-                Some((_, _, 1)) if offset == first_char_len => {
-                    Some((point(position.x - advance, position.y), position.x, 2))
-                }
-                Some((start, last_x, _)) => {
-                    chip(start, last_x + advance, *color);
-                    Some((position, position.x, 1))
-                }
-                None => Some((position, position.x, 1)),
-            };
-        }
-        if let Some((start, last_x, _)) = line {
-            let end_x = layout
-                .position_for_index(range.end)
-                .filter(|end| end.y == start.y)
-                .map_or(last_x + advance, |end| end.x);
-            chip(start, end_x, *color);
+            chip(start, wrap.x, *color);
         }
     }
 }
 
-fn has_scheme(url: &str) -> bool {
-    url.split_once(':').is_some_and(|(scheme, _)| {
-        scheme.len() > 1
-            && scheme
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
-    })
+/// Where the text from `boundaries[ix]` starts. The index where a line
+/// wraps reads as the end of the line above, so when the next character is
+/// a line lower, the text starts at that line's leading edge.
+fn line_start(
+    layout: &TextLayout,
+    boundaries: &[usize],
+    ix: usize,
+    left: Pixels,
+) -> Option<Point<Pixels>> {
+    let here = layout.position_for_index(*boundaries.get(ix)?)?;
+    match boundaries
+        .get(ix + 1)
+        .and_then(|&next| layout.position_for_index(next))
+    {
+        Some(next) if next.y > here.y => Some(point(left, next.y)),
+        _ => Some(here),
+    }
 }
 
-/// Resolve a document-relative path; absolute paths are kept.
-fn resolve_path(url: &str, base_dir: Option<&Path>) -> Option<PathBuf> {
+/// Whether `url` names a scheme, as `https:` does. A URL has no spaces, so
+/// a note title like `Re: meeting` is a path, not a scheme.
+fn has_scheme(url: &str) -> bool {
+    !url.contains(char::is_whitespace)
+        && url.split_once(':').is_some_and(|(scheme, _)| {
+            scheme.len() > 1
+                && scheme
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        })
+}
+
+/// The file a link or image names, without its `#anchor` or `?query`, and
+/// with `%20`-style escapes decoded: `My%20Note.md` is `My Note.md`.
+fn link_path(url: &str) -> Option<PathBuf> {
     let path = url
         .split(['#', '?'])
         .next()
         .filter(|path| !path.is_empty())?;
-    let path = Path::new(path);
+    Some(PathBuf::from(percent_decoded(path).into_owned()))
+}
+
+/// Resolve a document-relative path; absolute paths are kept.
+fn resolve_path(url: &str, base_dir: Option<&Path>) -> Option<PathBuf> {
+    let path = link_path(url)?;
     if path.is_absolute() {
-        Some(path.to_path_buf())
+        Some(path)
     } else {
         base_dir.map(|dir| dir.join(path))
     }
+}
+
+/// `text` with each `%XX` escape decoded; as written if that is not UTF-8.
+fn percent_decoded(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains('%') {
+        return text.into();
+    }
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut ix = 0;
+    while ix < bytes.len() {
+        let hex = |offset: usize| {
+            bytes
+                .get(ix + offset)
+                .and_then(|&b| (b as char).to_digit(16))
+        };
+        match (bytes[ix], hex(1), hex(2)) {
+            (b'%', Some(high), Some(low)) => {
+                decoded.push((high * 16 + low) as u8);
+                ix += 3;
+            }
+            (byte, _, _) => {
+                decoded.push(byte);
+                ix += 1;
+            }
+        }
+    }
+    String::from_utf8(decoded).map_or(text.into(), Into::into)
 }
 
 fn resolve_image(url: &str, base_dir: Option<&Path>) -> Option<gpui_kit::ImageSource> {
@@ -857,12 +930,18 @@ fn open_link(url: &str, base_dir: Option<&Path>, window: &mut gpui_kit::Window, 
     }
     if has_scheme(url) {
         cx.open_url(url);
+        return;
+    }
+    let Some(link) = link_path(url) else {
+        return;
+    };
+    if is_markdown_path(&link) {
+        // An unsaved document has no folder of its own; the window looks
+        // for the note in the folder it shows.
+        let path = resolve_path(url, base_dir).unwrap_or_else(|| link.clone());
+        window.dispatch_action(Box::new(crate::OpenLinkedFile { path, link }), cx);
     } else if let Some(path) = resolve_path(url, base_dir) {
-        if is_markdown_path(&path) {
-            window.dispatch_action(Box::new(crate::OpenLinkedFile { path }), cx);
-        } else {
-            cx.open_with_system(&path);
-        }
+        cx.open_with_system(&path);
     }
 }
 
@@ -881,6 +960,7 @@ mod tests {
         assert!(has_scheme("https://example.com"));
         assert!(has_scheme("mailto:me@example.com"));
         assert!(!has_scheme("notes/today.md"));
+        assert!(!has_scheme("Re: meeting.md"));
         assert!(!has_scheme("C:\\notes.md"));
     }
 
@@ -896,6 +976,14 @@ mod tests {
             Some(PathBuf::from("/docs/other.md"))
         );
         assert_eq!(resolve_path("cat.png", None), None);
+        assert_eq!(
+            resolve_path("My%20Notes/caf%C3%A9.md", Some(base)),
+            Some(PathBuf::from("/docs/My Notes/café.md"))
+        );
+        assert_eq!(
+            resolve_path("100%25%zz.md", Some(base)),
+            Some(PathBuf::from("/docs/100%%zz.md"))
+        );
         assert_eq!(
             resolve_path("/abs/cat.png", None),
             Some(PathBuf::from("/abs/cat.png"))

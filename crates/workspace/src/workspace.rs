@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::folder::{folder_name_error, is_markdown, scan_folder};
+use crate::folder::{find_note, folder_name_error, is_markdown, scan_folder};
 use crate::session_file::Session;
 use crate::typography::Typography;
 use export::ExportFormat;
@@ -901,9 +901,9 @@ impl Workspace {
         self.load_task.is_some() || self.save_task.is_some()
     }
 
-    /// Follow a link to another note, as in Obsidian: a note already open
-    /// comes forward, and otherwise it replaces this tab, or opens in a new
-    /// one when this tab has edits to keep.
+    /// Follow a link to another note, as in Obsidian. The note beside the
+    /// document comes first; failing that, the open folder is searched for
+    /// it by name, off the main thread.
     fn open_linked_file(
         &mut self,
         action: &OpenLinkedFile,
@@ -913,23 +913,52 @@ impl Workspace {
         if self.is_busy() {
             return;
         }
-        let path = action.path.clone();
-        if let Some(ix) = self.tab_index_of_path(&path) {
-            self.activate_tab(ix, window, cx);
+        // A relative path is a link from an unsaved document: it names no
+        // file yet, only a note to look for.
+        if action.path.is_absolute() && action.path.is_file() {
+            self.open_linked_note(action.path.clone(), window, cx);
             return;
         }
-        if !path.is_file() {
-            let name = file_name(&path);
-            window.push_notification(
-                Notification::warning(format!("There is no note named “{name}” yet.")),
-                cx,
-            );
+        let name = file_name(&action.link);
+        let Some(folder) = self.folder.clone() else {
+            Self::report_missing_note(&name, window, cx);
+            return;
+        };
+        let link = action.link.clone();
+        let search = cx.background_spawn(async move { find_note(&folder, &link) });
+        cx.spawn_in(window, async move |this, cx| {
+            let found = search.await;
+            this.update_in(cx, |this, window, cx| match found {
+                Some(path) => this.open_linked_note(path, window, cx),
+                None => Self::report_missing_note(&name, window, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Show a linked note: a note already open comes forward; otherwise it
+    /// replaces this tab, or opens in a new one when this tab has edits to
+    /// keep.
+    fn open_linked_note(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_busy() {
+            return;
+        }
+        if let Some(ix) = self.tab_index_of_path(&path) {
+            self.activate_tab(ix, window, cx);
             return;
         }
         if self.tab().document.is_dirty() {
             self.new_tab(&NewTab, window, cx);
         }
         self.open_path(path, window, cx);
+    }
+
+    fn report_missing_note(name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        window.push_notification(
+            Notification::warning(format!("There is no note named “{name}” yet.")),
+            cx,
+        );
     }
 
     fn open_folder(&mut self, _: &OpenFolder, window: &mut Window, cx: &mut Context<Self>) {
