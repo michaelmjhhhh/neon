@@ -9,25 +9,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::theme::{self, Appearance};
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Settings {
     pub(crate) appearance: Appearance,
     pub(crate) editor: PaneTypography,
     pub(crate) preview: PaneTypography,
-    /// Whether new windows show line numbers beside the editor.
+    /// Whether new windows show line numbers beside the editor. Off by
+    /// default: prose reads better without a gutter, as in Typora.
     pub(crate) line_numbers: bool,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            appearance: Appearance::default(),
-            editor: PaneTypography::default(),
-            preview: PaneTypography::default(),
-            line_numbers: true,
-        }
-    }
 }
 
 /// A pane's chosen font and size; `None` keeps the default, so a default
@@ -136,7 +126,7 @@ mod tests {
                 size: Some(18),
             },
             preview: PaneTypography::default(),
-            line_numbers: false,
+            line_numbers: true,
         };
         write(&path, &settings).unwrap();
         assert_eq!(read::<Settings>(&path), settings);
@@ -152,6 +142,6 @@ mod tests {
         std::fs::write(&path, r#"{"preview": {"size": 20}}"#).unwrap();
         let settings: Settings = read(&path);
         assert_eq!(settings.preview.size, Some(20));
-        assert!(settings.line_numbers);
+        assert!(!settings.line_numbers);
     }
 }

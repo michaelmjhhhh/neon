@@ -116,6 +116,40 @@ pub(super) fn is_markdown(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
 }
 
+/// The Markdown file in `folder` that a link such as `Note.md` or
+/// `sub/Note.md` names, the way Obsidian resolves `[[Note]]`: a file whose
+/// path ends with the link, compared without case, and of several, the one
+/// nearest the top of the folder.
+pub(super) fn find_note(folder: &Path, link: &Path) -> Option<PathBuf> {
+    fn lowercase(path: &Path) -> Vec<String> {
+        path.components()
+            .map(|part| part.as_os_str().to_string_lossy().to_lowercase())
+            .collect()
+    }
+    fn walk(entries: Vec<FolderEntry>, files: &mut Vec<PathBuf>) {
+        for entry in entries {
+            if entry.is_dir {
+                walk(entry.children, files);
+            } else {
+                files.push(entry.path);
+            }
+        }
+    }
+    let wanted = lowercase(link);
+    if wanted.is_empty() {
+        return None;
+    }
+    let mut files = Vec::new();
+    walk(scan_folder(folder).ok()?, &mut files);
+    files
+        .into_iter()
+        .filter(|path| {
+            let relative = path.strip_prefix(folder).unwrap_or(path);
+            lowercase(relative).ends_with(&wanted)
+        })
+        .min_by_key(|path| path.components().count())
+}
+
 /// Why `name` cannot name a new folder, if it cannot.
 pub(super) fn folder_name_error(name: &str) -> Option<&'static str> {
     if name.is_empty() {
@@ -164,6 +198,32 @@ mod tests {
         let mut counts = HashMap::new();
         let total: usize = entries.iter().map(|e| e.count_files(&mut counts)).sum();
         assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn finds_linked_notes_anywhere_in_the_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        std::fs::create_dir_all(root.join("projects/old")).unwrap();
+        std::fs::write(root.join("projects/Plan.md"), b"").unwrap();
+        std::fs::write(root.join("projects/old/plan.md"), b"").unwrap();
+        std::fs::write(root.join("projects/old/Notes.md"), b"").unwrap();
+
+        // By name, the shallowest match wins, whatever its case.
+        assert_eq!(
+            find_note(root, Path::new("plan.md")),
+            Some(root.join("projects/Plan.md"))
+        );
+        // A path narrows the match to that folder.
+        assert_eq!(
+            find_note(root, Path::new("old/Plan.md")),
+            Some(root.join("projects/old/plan.md"))
+        );
+        assert_eq!(
+            find_note(root, Path::new("notes.md")),
+            Some(root.join("projects/old/Notes.md"))
+        );
+        assert_eq!(find_note(root, Path::new("Missing.md")), None);
     }
 
     #[test]

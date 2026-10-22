@@ -35,8 +35,9 @@ Neon is built on [GPUI](https://github.com/zed-industries/zed/tree/main/crates/g
 
 **Reading**
 
-- **Live preview** of headings, links, nested and numbered lists, task lists, block quotes, code, tables with alignment, images, footnotes and YAML front matter.
-- **Three layouts:** Editor, Split and Preview. In Split, the preview follows the cursor.
+- **Live preview** in Charter, a book face, of headings, links, nested and numbered lists, task lists, block quotes, code, tables with alignment, images and footnotes.
+- **Obsidian-style notes:** callouts (`> [!tip]`), `==highlights==`, front matter as properties, and `[[wikilinks]]` that open the linked note in Neon.
+- **Three layouts:** Editor, Split and Preview. In Split, the preview follows the cursor; in Editor, the text sits in a centered column of readable width.
 - **Zen Mode.** The document alone, full screen, in a centered column. The paragraph you are writing stays bright while the rest fades, and the line you type on stays at the middle of the screen.
 
 **Files**

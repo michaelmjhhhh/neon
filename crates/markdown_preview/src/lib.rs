@@ -13,8 +13,8 @@ mod rows;
 use gpui_kit::{App, KeyBinding};
 
 pub use preview::{
-    MarkdownPreview, MarkdownPreviewEvent, ScrollDown, ScrollPageDown, ScrollPageUp,
-    ScrollToBottom, ScrollToTop, ScrollUp,
+    MarkdownPreview, MarkdownPreviewEvent, OpenLinkedFile, ScrollDown, ScrollPageDown,
+    ScrollPageUp, ScrollToBottom, ScrollToTop, ScrollUp,
 };
 
 const KEY_CONTEXT: &str = "MarkdownPreview";

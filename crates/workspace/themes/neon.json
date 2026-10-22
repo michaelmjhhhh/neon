@@ -65,8 +65,8 @@
 
         "list.background": "#00000000",
         "list.hover.background": "#e2e3e7",
-        "list.active.background": "#eb4b101f",
-        "list.active.border": "#eb4b1066",
+        "list.active.background": "#1a1b2012",
+        "list.active.border": "#1a1b2000",
         "list.even.background": "#f8f8fa",
         "list.head.background": "#f6f6f8",
 
@@ -108,8 +108,8 @@
         "editor.gutter.background": "#ffffff",
         "syntax": {
           "title": { "color": "#111216", "font_weight": 700 },
-          "punctuation.special": { "color": "#eb4b10" },
-          "punctuation.list_marker": { "color": "#c2552a" },
+          "punctuation.special": { "color": "#a3a6af" },
+          "punctuation.list_marker": { "color": "#8a8d97" },
           "punctuation.delimiter": { "color": "#9a9da6" },
           "punctuation.bracket": { "color": "#6b6e78" },
           "punctuation": { "color": "#6b6e78" },
@@ -207,8 +207,8 @@
 
         "list.background": "#00000000",
         "list.hover.background": "#363c46",
-        "list.active.background": "#ff5a1f24",
-        "list.active.border": "#ff5a1f80",
+        "list.active.background": "#ffffff14",
+        "list.active.border": "#ffffff00",
         "list.even.background": "#2b3038",
         "list.head.background": "#2f343e",
 
@@ -250,8 +250,8 @@
         "editor.gutter.background": "#282c33",
         "syntax": {
           "title": { "color": "#f6f3ef", "font_weight": 700 },
-          "punctuation.special": { "color": "#ff6a33" },
-          "punctuation.list_marker": { "color": "#d9784f" },
+          "punctuation.special": { "color": "#6b717e" },
+          "punctuation.list_marker": { "color": "#848a97" },
           "punctuation.delimiter": { "color": "#878a98" },
           "punctuation.bracket": { "color": "#8e919b" },
           "punctuation": { "color": "#8e919b" },

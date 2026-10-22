@@ -351,14 +351,7 @@ impl Workspace {
     /// the measure in the editor's font plus the editor's insets beside the
     /// text.
     fn zen_column_width(&self, window: &Window, cx: &App) -> Pixels {
-        let typography = self.typography.read(cx);
-        let font = gpui_kit::font(typography.editor_font(cx));
-        let size = window.rem_size() * (typography.editor_size(cx) / 16.);
-        let text_system = window.text_system();
-        let ch = text_system
-            .ch_width(text_system.resolve_font(&font), size)
-            .unwrap_or(size * 0.6);
-        let measure = ch * zen::MEASURE_CHARS + zen::TEXT_LEADING + zen::TEXT_TRAILING;
+        let measure = self.editor_measure(zen::MEASURE_CHARS, window, cx);
         measure.max(window.viewport_size().width * zen::COLUMN_SHARE)
     }
 

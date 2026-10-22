@@ -32,13 +32,26 @@ Groups, in this order:
 ### Added
 
 - Zoom In (⌘=), Zoom Out (⌘-) and Actual Size (⌘0) in the View menu make the editor and preview text bigger or smaller together, saved like the size chosen in Settings.
+- The preview shows Obsidian and GitHub callouts (`> [!tip] Title`) as tinted panels with an icon, in the color of their kind.
+- `==Highlighted==` text shows with a soft accent wash in the preview.
+- Inline `code` and highlights in the preview sit on rounded chips a little shorter than the line, instead of square blocks the full line height.
+- `[[Wikilinks]]` and links to other Markdown files open the note in Neon: a note already open comes forward, and a tab with unsaved edits is kept by opening the note in a new tab. A note that is not beside the document is found by name anywhere in the open folder, as in Obsidian.
+- Front matter shows as quiet properties above the document, keys beside values, instead of a YAML code block; lists join with commas and `|` and `>` blocks keep or fold their lines.
 
 ### Changed
 
+- The preview reads in Charter at size 17 with more open leading and lighter, semibold headings; choose System default in Settings for SF Pro.
+- The Editor layout centers the text in a column about 80 characters wide, and the margins beside it scroll the text.
+- Markdown symbols in the editor (`#`, `>`, `1.`, `---`) are a quiet gray instead of the accent color, so the words lead.
+- Line numbers are off by default for new settings; Cmd+Shift+L or Settings turns them on.
+- The sidebar lists notes by name alone, without file icons or the `.md` extension, and the selected row is a neutral gray instead of an orange tint.
+- A nested list sits as close to its parent item as the items sit to each other.
+- An image that cannot load shows which path it looked for.
 - Nested list items in the editor hang from one continuous line under their parent's marker, running past wrapped lines, instead of short ticks beside each line; the line around the item you are editing is a little darker.
 
 ### Fixed
 
+- Links and images with escaped characters, such as `My%20Note.md`, open the file they name.
 - The editor stays on the line you were reading when the text size or font changes, instead of jumping hundreds of lines in a long document.
 
 ## [0.9.1] - 2026-10-22
