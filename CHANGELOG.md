@@ -29,6 +29,10 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Changed
+
+- Zen Mode's footer shows Editor · Preview and Exit Zen Mode as plain muted words instead of a boxed switch, with the current view in full ink and no background on hover.
+
 ## [0.9.0] - 2026-10-21
 
 ### Added

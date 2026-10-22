@@ -5,7 +5,6 @@ use std::time::Instant;
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::RopeExt as _;
-use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, TitleBar};
 use gpui_kit::{
     AnyElement, App, Context, EntityInputHandler as _, InteractiveElement as _, IntoElement,
@@ -343,47 +342,57 @@ impl Workspace {
             ZenView::Preview => MarkdownPreview::pane(&self.tab().preview, cx).into_any_element(),
         };
 
-        // Zen's two views, named and drawn as in the header's layout control.
-        let views = [
-            (ZenView::Editor, LayoutMode::Editor),
-            (ZenView::Preview, LayoutMode::Preview),
-        ];
-        let view_switch = TabBar::new("zen-view")
-            .segmented()
-            .small()
-            .children(views.map(|(_, mode)| {
-                Tab::new().aria_label(mode.label()).child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .text_xs()
-                        .child(Icon::new(mode.icon()).xsmall())
-                        .child(mode.label()),
+        // Plain words in the text's quiet ink, the shown view in full ink:
+        // no box around them, at rest or under the pointer, to compete with
+        // the page.
+        let quiet = theme.muted_foreground;
+        let view_button = |id: &'static str, item: ZenView, mode: LayoutMode| {
+            let shown = item == view;
+            Button::new(id)
+                .xsmall()
+                .text()
+                .label(mode.label())
+                .toggled(shown)
+                .text_color(if shown { theme.foreground } else { quiet })
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.set_zen_view(item, window, cx)),
                 )
-            }))
-            .selected_index(views.iter().position(|(v, _)| *v == view).unwrap_or(0))
-            .on_click(cx.listener(move |this, ix: &usize, window, cx| {
-                if let Some((view, _)) = views.get(*ix) {
-                    this.set_zen_view(*view, window, cx);
-                }
-            }));
+        };
 
+        // Text buttons have no inset, so the words line up with the text
+        // above them.
         let footer = div()
             .flex_none()
             .h(band)
             .flex()
             .items_center()
             .justify_between()
-            // The controls line up with the text above them.
             .pl(zen::TEXT_LEADING)
             .pr(zen::TEXT_TRAILING)
-            .child(view_switch)
+            .text_xs()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(view_button(
+                        "zen-editor",
+                        ZenView::Editor,
+                        LayoutMode::Editor,
+                    ))
+                    .child(div().text_color(quiet).child("·"))
+                    .child(view_button(
+                        "zen-preview",
+                        ZenView::Preview,
+                        LayoutMode::Preview,
+                    )),
+            )
             .child(
                 Button::new("exit-zen")
                     .xsmall()
-                    .ghost()
+                    .text()
                     .label("Exit Zen Mode")
+                    .text_color(quiet)
                     .tooltip_with_action("Exit Zen Mode", &ToggleZen, Some(KEY_CONTEXT))
                     .on_click(cx.listener(|this, _, window, cx| this.exit_zen(window, cx))),
             );
