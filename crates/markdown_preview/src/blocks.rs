@@ -11,11 +11,11 @@ use std::sync::Arc;
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _};
 use gpui_kit::{
-    AnyElement, App, ElementId, Entity, FontStyle, FontWeight, HighlightStyle, Hsla,
+    AnyElement, App, Bounds, ElementId, Entity, FontStyle, FontWeight, HighlightStyle, Hsla,
     InteractiveElement as _, InteractiveText, IntoElement, ObjectFit, ParentElement as _, Pixels,
-    SharedString, StatefulInteractiveElement as _, StrikethroughStyle, Styled as _,
-    StyledImage as _, StyledText, UnderlineStyle, div, img, prelude::FluentBuilder as _, px,
-    relative, rems,
+    Point, SharedString, StatefulInteractiveElement as _, StrikethroughStyle, Styled as _,
+    StyledImage as _, StyledText, TextLayout, UnderlineStyle, canvas, div, fill, img, point,
+    prelude::FluentBuilder as _, px, relative, rems, size,
 };
 use markdown::{
     Block, BlockKind, Callout, CodeBlock, ColumnAlignment, Heading, Image, InlineStyle, InlineText,
@@ -301,18 +301,42 @@ impl<'a> BlockRenderer<'a> {
         let styled = StyledText::new(SharedString::from(text.text().clone()))
             .with_highlights(highlights)
             .with_font_family_overrides(code_fonts);
+        let backgrounds = run_backgrounds(text, palette);
+        let layout = styled.layout().clone();
+        let radius = palette.radius * 0.75;
 
-        if text.links().is_empty() {
-            return styled.into_any_element();
+        let element = if text.links().is_empty() {
+            styled.into_any_element()
+        } else {
+            let ranges = text.links().iter().map(|link| link.range()).collect();
+            let urls: Vec<Arc<str>> = text.links().iter().map(|link| link.url().clone()).collect();
+            let base_dir = self.base_dir.cloned();
+            InteractiveText::new(self.next_id("inline"), styled)
+                .on_click(ranges, move |ix, window, cx| {
+                    open_link(&urls[ix], base_dir.as_deref(), window, cx);
+                })
+                .into_any_element()
+        };
+        if backgrounds.is_empty() {
+            return element;
         }
-
-        let ranges = text.links().iter().map(|link| link.range()).collect();
-        let urls: Vec<Arc<str>> = text.links().iter().map(|link| link.url().clone()).collect();
-        let base_dir = self.base_dir.cloned();
-        InteractiveText::new(self.next_id("inline"), styled)
-            .on_click(ranges, move |ix, window, cx| {
-                open_link(&urls[ix], base_dir.as_deref(), window, cx);
-            })
+        // Code and highlights get rounded backgrounds, painted before the
+        // text from its layout; the text's own run backgrounds are square
+        // and fill the whole line height.
+        let source = text.text().clone();
+        div()
+            .relative()
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |_, _, window, _| {
+                        paint_run_backgrounds(&layout, &source, &backgrounds, radius, window);
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
+            .child(element)
             .into_any_element()
     }
 
@@ -669,12 +693,6 @@ fn highlight_style(style: InlineStyle, palette: &Palette) -> HighlightStyle {
             color: Some(palette.foreground),
         });
     }
-    if style.contains(InlineStyle::CODE) {
-        highlight.background_color = Some(palette.muted);
-    }
-    if style.contains(InlineStyle::HIGHLIGHT) {
-        highlight.background_color = Some(palette.highlight);
-    }
     if style.contains(InlineStyle::LINK) {
         // The text keeps the reading color; the accent underline marks it.
         highlight.underline = Some(UnderlineStyle {
@@ -709,6 +727,91 @@ fn capitalized(word: &str) -> String {
     match chars.next() {
         Some(first) => first.to_uppercase().chain(chars).collect(),
         None => String::new(),
+    }
+}
+
+/// The ranges of `text` that sit on a tinted background, and their tints:
+/// code on the muted surface, highlights on the accent wash. Neighboring
+/// runs of one tint merge, so `**bold** code` reads as one chip.
+fn run_backgrounds(text: &InlineText, palette: &Palette) -> Vec<(Range<usize>, Hsla)> {
+    let mut backgrounds: Vec<(Range<usize>, Hsla)> = Vec::new();
+    for run in text.runs() {
+        let tint = if run.style().contains(InlineStyle::HIGHLIGHT) {
+            palette.highlight
+        } else if run.style().contains(InlineStyle::CODE) {
+            palette.muted
+        } else {
+            continue;
+        };
+        match backgrounds.last_mut() {
+            Some((range, last)) if *last == tint && range.end == run.range().start => {
+                range.end = run.range().end;
+            }
+            _ => backgrounds.push((run.range(), tint)),
+        }
+    }
+    backgrounds
+}
+
+/// Paint each background as a rounded chip per visual line it covers, a
+/// little shorter than the line and a little wider than its text.
+fn paint_run_backgrounds(
+    layout: &TextLayout,
+    text: &str,
+    backgrounds: &[(Range<usize>, Hsla)],
+    radius: Pixels,
+    window: &mut gpui_kit::Window,
+) {
+    let line_height = layout.line_height();
+    let height = line_height * 0.78;
+    let inset = (line_height - height) / 2.;
+    let pad = px(3.);
+    let mut chip = |start: Point<Pixels>, end_x: Pixels, color: Hsla| {
+        let bounds = Bounds::new(
+            point(start.x - pad, start.y + inset),
+            size(end_x - start.x + pad * 2., height),
+        );
+        window.paint_quad(fill(bounds, color).corner_radii(radius));
+    };
+    for (range, color) in backgrounds {
+        let Some(slice) = text.get(range.clone()) else {
+            continue;
+        };
+        // Wrapped text moves down a line mid-range; each line gets a chip,
+        // ending one character width past its last character. The index
+        // where a line wraps reads as the end of the line above, so a range
+        // that starts there begins on the next line instead.
+        let mut line: Option<(Point<Pixels>, Pixels, usize)> = None;
+        let mut advance = height * 0.5;
+        let first_char_len = slice.chars().next().map_or(0, char::len_utf8);
+        for (offset, _) in slice.char_indices() {
+            let Some(position) = layout.position_for_index(range.start + offset) else {
+                continue;
+            };
+            line = match line {
+                Some((start, last_x, chars)) if start.y == position.y => {
+                    if position.x > last_x {
+                        advance = position.x - last_x;
+                    }
+                    Some((start, position.x, chars + 1))
+                }
+                Some((_, _, 1)) if offset == first_char_len => {
+                    Some((point(position.x - advance, position.y), position.x, 2))
+                }
+                Some((start, last_x, _)) => {
+                    chip(start, last_x + advance, *color);
+                    Some((position, position.x, 1))
+                }
+                None => Some((position, position.x, 1)),
+            };
+        }
+        if let Some((start, last_x, _)) = line {
+            let end_x = layout
+                .position_for_index(range.end)
+                .filter(|end| end.y == start.y)
+                .map_or(last_x + advance, |end| end.x);
+            chip(start, end_x, *color);
+        }
     }
 }
 
