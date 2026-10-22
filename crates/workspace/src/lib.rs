@@ -11,6 +11,7 @@ mod latency_bench;
 mod list_continuation;
 mod list_guides;
 mod present_now;
+mod scroll_anchor;
 mod scroll_metrics;
 mod session_file;
 mod settings;
@@ -35,8 +36,9 @@ pub use workspace::MemoryBench;
 pub use workspace::{
     CloseSettings, CloseTab, CloseWindow, ExitZen, ExportDocx, ExportHtml, ExportPdf, LayoutMode,
     NewFile, NewFolder, NewTab, NextTab, Open, OpenFolder, OpenSettings, PreviousTab, Quit,
-    RefreshFolder, Save, SaveAs, ShowEditor, ShowPreview, ShowSplit, ToggleBold, ToggleItalic,
-    ToggleLineNumbers, ToggleSidebar, ToggleTheme, ToggleZen, Workspace,
+    RefreshFolder, ResetZoom, Save, SaveAs, ShowEditor, ShowPreview, ShowSplit, ToggleBold,
+    ToggleItalic, ToggleLineNumbers, ToggleSidebar, ToggleTheme, ToggleZen, Workspace, ZoomIn,
+    ZoomOut,
 };
 
 const KEY_CONTEXT: &str = "Workspace";
@@ -94,6 +96,11 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-secondary-z", ToggleZen, Some(KEY_CONTEXT)),
         // Fields and the editor bind Escape themselves and win over this.
         KeyBinding::new("escape", ExitZen, Some(KEY_CONTEXT)),
+        // The menu shows the first binding; Cmd-+ also works, as in Safari.
+        KeyBinding::new("secondary-=", ZoomIn, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-+", ZoomIn, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary--", ZoomOut, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-0", ResetZoom, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-b", ToggleBold, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-i", ToggleItalic, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-o", Open, Some(KEY_CONTEXT)),

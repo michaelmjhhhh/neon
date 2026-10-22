@@ -170,7 +170,8 @@ impl MarkdownPreview {
         cx: &mut Context<Self>,
     ) {
         self.font_family = Some(family);
-        self.font_scale = scale.clamp(0.75, 1.5);
+        // Only guards against nonsense; the host decides the sizes it offers.
+        self.font_scale = scale.clamp(0.5, 4.);
         self.list_state
             .remeasure_items(0..self.rows.len(&self.document));
         cx.notify();
