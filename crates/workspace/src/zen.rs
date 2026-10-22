@@ -55,10 +55,10 @@ pub(crate) struct Zen {
     pub(crate) gliding: bool,
     /// When the glide last stepped, and the scroll offset it asked for.
     pub(crate) last_glide: Option<(Instant, Pixels)>,
-    /// How far the editor sits below the top of the column. The editor
+    /// How far the editor starts below the top of the column. The editor
     /// cannot scroll above its first line, so near the top of the text the
-    /// glide lowers the editor instead, and the caret line still reaches the
-    /// middle.
+    /// glide lowers the editor's top instead, and the caret line still
+    /// reaches the middle.
     pub(crate) lift: Pixels,
     /// Hidden from the first keystroke until the pointer moves.
     pub(crate) chrome_hidden: bool,

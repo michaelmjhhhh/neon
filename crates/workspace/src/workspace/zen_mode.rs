@@ -102,12 +102,24 @@ impl Workspace {
         });
         self.focus_content(window, cx);
         if !preview_shown {
-            self.glide_zen_caret(window, cx);
-            // From the preview, the editor has no layout to measure the caret
-            // in until it is drawn.
-            cx.on_next_frame(window, |this, window, cx| this.glide_zen_caret(window, cx));
+            self.glide_zen_caret_once_drawn(window, cx);
         }
         cx.notify();
+    }
+
+    /// Glide now, and again once the editor is drawn: an editor that was not
+    /// on screen, behind the preview or in another tab, has no layout to
+    /// measure the caret in until then.
+    pub(super) fn glide_zen_caret_once_drawn(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.zen.is_none() {
+            return;
+        }
+        self.glide_zen_caret(window, cx);
+        cx.on_next_frame(window, |this, window, cx| this.glide_zen_caret(window, cx));
     }
 
     /// Glide the caret line to the middle of the screen, one step a frame.
@@ -152,10 +164,10 @@ impl Workspace {
             let offset = editor.scroll_offset();
             // The editor clamps an offset past the end of its text at its
             // next layout, where the line cannot reach the middle.
-            let clamped =
-                last_glide.is_some_and(|(_, asked)| (offset.y - asked).abs() > px(0.01));
-            // The lift moves the editor within the column, not the middle.
-            let middle = editor.input_bounds().center().y - lift;
+            let clamped = last_glide.is_some_and(|(_, asked)| (offset.y - asked).abs() > px(0.01));
+            // The lift shortens the editor from the top, moving its center
+            // half as far; the middle stays the column's.
+            let middle = editor.input_bounds().center().y - lift / 2.;
             let remaining = middle - caret.center().y;
             if remaining.abs() < px(1.) || clamped {
                 return None;
@@ -409,10 +421,11 @@ impl Workspace {
         };
 
         let body: AnyElement = match view {
-            // Lowered by the lift, its foot clipped by the column.
+            // Shortened from the top by the lift, so the editor's view is
+            // still exactly what shows, and it scrolls a selection dragged
+            // past the bottom.
             ZenView::Editor => div()
-                .relative()
-                .top(lift)
+                .pt(lift)
                 .size_full()
                 .child(
                     self.tab()
@@ -544,7 +557,6 @@ impl Workspace {
                                     .id("zen-body")
                                     .flex_1()
                                     .min_h_0()
-                                    .overflow_hidden()
                                     // A scroll of its own ends the glide.
                                     .on_scroll_wheel(
                                         cx.listener(|this, _, _, _| this.stop_zen_glide()),
