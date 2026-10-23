@@ -31,6 +31,7 @@ Groups, in this order:
 
 ### Added
 
+- A folder in a Git repository gets a Changes view in the sidebar (⌃⇧G; ⌘⇧E returns to Files): check the files to stage, write a message, Commit (⌘↩) and Push. Picking a file shows what changed since the last commit in the sheet, with changed words marked inside each line; Escape or Edit goes back to writing.
 - Right-click a file or folder in the sidebar to Copy, Paste, Duplicate, Copy Path or Reveal in Finder; with the sidebar focused, ⌘C, ⌘V, ⌘D, ⌥⌘C and ⌥⌘R do the same, and the folder's ⋯ menu can paste too. A copy never overwrites: a taken name becomes "name copy", "name copy 2" and so on, a folder copy brings its images and other files along, and a folder cannot be pasted into itself.
 
 ## [0.10.0] - 2026-10-23

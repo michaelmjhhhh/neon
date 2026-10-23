@@ -4,6 +4,7 @@ mod document_file;
 mod editor_pane;
 mod find_bar;
 mod folder;
+mod git;
 mod highlighter;
 mod inline_format;
 #[cfg(feature = "diagnostics")]
@@ -34,12 +35,13 @@ pub use settings_file::load as load_settings;
 #[cfg(feature = "memory-bench")]
 pub use workspace::MemoryBench;
 pub use workspace::{
-    CloseSettings, CloseTab, CloseWindow, ExitZen, ExportDocx, ExportHtml, ExportPdf, LayoutMode,
-    NewFile, NewFolder, NewTab, NextTab, Open, OpenFolder, OpenSettings, PreviousTab, Quit,
-    RefreshFolder, ResetZoom, Save, SaveAs, ShowEditor, ShowPreview, ShowSplit, ToggleBold,
+    CloseSettings, CloseTab, CloseWindow, Commit, ExitZen, ExportDocx, ExportHtml, ExportPdf,
+    LayoutMode, NewFile, NewFolder, NewTab, NextTab, Open, OpenFolder, OpenSettings, PreviousTab,
+    Quit, RefreshFolder, ResetZoom, Save, SaveAs, ShowEditor, ShowPreview, ShowSplit, ToggleBold,
     ToggleItalic, ToggleLineNumbers, ToggleSidebar, ToggleTheme, ToggleZen, Workspace, ZoomIn,
     ZoomOut,
 };
+pub use workspace::{Push, ShowChanges, ShowFiles, StageAll, UnstageAll};
 
 const KEY_CONTEXT: &str = "Workspace";
 /// The sidebar's file tree while it has focus. Its Copy and Paste act on
@@ -54,6 +56,8 @@ gpui_kit::assets::icon_assets!(
         FilePlus,
         FolderPlus,
         Focus,
+        GitBranch,
+        GitCompare,
         ImageOff,
         Lightbulb,
         PenLine,
@@ -125,6 +129,9 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-,", OpenSettings, Some(KEY_CONTEXT)),
         KeyBinding::new("escape", CloseSettings, Some(SETTINGS_KEY_CONTEXT)),
         KeyBinding::new("secondary-shift-b", ToggleSidebar, Some(KEY_CONTEXT)),
+        // The sidebar's two views, with VS Code's shortcuts on macOS.
+        KeyBinding::new("secondary-shift-e", ShowFiles, Some(KEY_CONTEXT)),
+        KeyBinding::new("ctrl-shift-g", ShowChanges, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-shift-l", ToggleLineNumbers, Some(KEY_CONTEXT)),
         // Z for Zen. macOS menus cannot show Enter, so not Cmd-Shift-Enter.
         KeyBinding::new("ctrl-secondary-z", ToggleZen, Some(KEY_CONTEXT)),

@@ -44,6 +44,7 @@ Neon is built on [GPUI](https://github.com/zed-industries/zed/tree/main/crates/g
 
 - **Tabs**, each with its own edits, undo history and scroll position.
 - **Folder sidebar** for nested Markdown files, with new file and new folder.
+- **Git changes** for a folder in a Git repository: see what changed since the last commit, word by word, then stage, commit and push from the sidebar.
 - **Picks up where you left off:** Neon reopens the last folder and file at launch.
 - **Export** to HTML, PDF or Word in the preview's font, with local images embedded.
 
@@ -84,7 +85,8 @@ gh attestation verify Neon-<version>-macos.dmg --repo michaelmjhhhh/neon
 | Next / previous tab | <kbd>⌃</kbd> <kbd>Tab</kbd> / <kbd>⌃</kbd> <kbd>⇧</kbd> <kbd>Tab</kbd> | Bold / Italic | <kbd>⌘</kbd> <kbd>B</kbd> / <kbd>⌘</kbd> <kbd>I</kbd> |
 | Close tab | <kbd>⌘</kbd> <kbd>W</kbd> | Find | <kbd>⌘</kbd> <kbd>F</kbd> |
 | Close window | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>W</kbd> | Find and replace | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>F</kbd> |
-| | | Indent / outdent list item | <kbd>Tab</kbd> / <kbd>⇧</kbd> <kbd>Tab</kbd> |
+| Files / Changes in sidebar | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>E</kbd> / <kbd>⌃</kbd> <kbd>⇧</kbd> <kbd>G</kbd> | Indent / outdent list item | <kbd>Tab</kbd> / <kbd>⇧</kbd> <kbd>Tab</kbd> |
+| Commit, in the message | <kbd>⌘</kbd> <kbd>↩</kbd> | | |
 
 <kbd>⌘</kbd> <kbd>}</kbd> and <kbd>⌘</kbd> <kbd>{</kbd> also switch tabs. In the preview, <kbd>Space</kbd> and <kbd>⇧</kbd> <kbd>Space</kbd> page down and up, and <kbd>⌘</kbd> <kbd>↑</kbd> <kbd>↓</kbd> jump to the top and bottom.
 
