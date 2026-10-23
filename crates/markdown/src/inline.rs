@@ -137,11 +137,23 @@ pub(crate) struct InlineBuilder {
     /// Images seen, with the byte range their alt text occupies.
     images: Vec<(Range<usize>, Arc<str>)>,
     open_images: Vec<(usize, Arc<str>)>,
+    /// Byte ranges written as an escape or entity, such as the `=` of `\=`,
+    /// which stay as typed rather than open or close a highlight.
+    literal: Vec<Range<usize>>,
 }
 
 impl InlineBuilder {
     pub(crate) fn push_text(&mut self, text: &str) {
         self.push_styled(text, self.style);
+    }
+
+    /// Text whose first `literal` bytes were escaped in the source.
+    pub(crate) fn push_source_text(&mut self, text: &str, literal: usize) {
+        let start = self.text.len();
+        if literal > 0 {
+            self.literal.push(start..start + literal);
+        }
+        self.push_text(text);
     }
 
     pub(crate) fn push_code(&mut self, code: &str) {
@@ -212,7 +224,13 @@ impl InlineBuilder {
     }
 
     pub(crate) fn finish(self) -> InlineText {
-        let markers = highlight_markers(&self.text, &self.runs);
+        let markers = highlight_markers(&self.text, |ix| {
+            is_in(&self.literal, ix)
+                || self
+                    .runs
+                    .iter()
+                    .any(|run| run.style.contains(InlineStyle::CODE) && run.range.contains(&ix))
+        });
         if markers.is_empty() {
             return InlineText {
                 text: self.text.into(),
@@ -244,17 +262,47 @@ impl InlineBuilder {
     }
 }
 
+/// How many leading bytes of a text event's `text` stand for something else
+/// in the source: an escaped character, as the `=` of `\=`, or an entity,
+/// as `&#61;`. Such text is literal and is never markup.
+///
+/// The parser drops an escape's backslash, so the text starts just after
+/// it; an odd run of backslashes before the text ends in an escape.
+pub(crate) fn literal_prefix(source: &str, range: Range<usize>, text: &str) -> usize {
+    let written = source.get(range.clone()).unwrap_or_default();
+    if written.starts_with('&') && !text.starts_with('&') {
+        return text.len();
+    }
+    let backslashes = source.as_bytes()[..range.start.min(source.len())]
+        .iter()
+        .rev()
+        .take_while(|&&byte| byte == b'\\')
+        .count();
+    if backslashes % 2 == 1 {
+        text.chars().next().map_or(0, char::len_utf8)
+    } else {
+        0
+    }
+}
+
+/// Whether `ix` falls in one of the sorted, disjoint `ranges`.
+pub(crate) fn is_in(ranges: &[Range<usize>], ix: usize) -> bool {
+    let after = ranges.partition_point(|range| range.end <= ix);
+    ranges.get(after).is_some_and(|range| range.start <= ix)
+}
+
 /// Where `==` opens and closes a highlight, as pairs of marker offsets.
 ///
 /// Like strikethrough, an opening marker is followed by text and a closing
 /// one follows text, so `a == b` stays as written. A highlight ends with its
-/// line, and markers inside code are text.
-fn highlight_markers(text: &str, runs: &[InlineRun]) -> Vec<(usize, usize)> {
-    let in_code = |ix: usize| {
-        runs.iter()
-            .any(|run| run.style.contains(InlineStyle::CODE) && run.range.contains(&ix))
-    };
+/// line. Bytes for which `is_literal` holds, inside code or escaped, are
+/// text: they neither form a marker nor join one into a longer run.
+pub(crate) fn highlight_markers(
+    text: &str,
+    is_literal: impl Fn(usize) -> bool,
+) -> Vec<(usize, usize)> {
     let bytes = text.as_bytes();
+    let is_equals = |ix: usize| bytes.get(ix) == Some(&b'=') && !is_literal(ix);
     let mut pairs = Vec::new();
     let mut open = None;
     let mut ix = 0;
@@ -264,10 +312,10 @@ fn highlight_markers(text: &str, runs: &[InlineRun]) -> Vec<(usize, usize)> {
             ix += 1;
             continue;
         }
-        let is_marker = bytes[ix..].starts_with(b"==")
-            && bytes.get(ix + 2) != Some(&b'=')
-            && (ix == 0 || bytes[ix - 1] != b'=')
-            && !in_code(ix);
+        let is_marker = is_equals(ix)
+            && is_equals(ix + 1)
+            && !is_equals(ix + 2)
+            && (ix == 0 || !is_equals(ix - 1));
         if !is_marker {
             ix += 1;
             continue;

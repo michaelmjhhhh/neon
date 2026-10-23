@@ -7,14 +7,16 @@
 //! can share it without copying.
 
 mod document;
+mod events;
 mod inline;
 mod splice;
 mod word_count;
 
 pub use document::{
-    Block, BlockId, BlockKind, Callout, CodeBlock, ColumnAlignment, DocumentStats, Heading, Image,
-    ListItem, MarkdownDocument, MarkdownList, Property, Table,
+    Block, BlockId, BlockKind, Callout, CalloutTone, CodeBlock, ColumnAlignment, DocumentStats,
+    Heading, Image, ListItem, MarkdownDocument, MarkdownList, Property, Table,
 };
+pub use events::{MarkdownEvent, events};
 pub use inline::{InlineLink, InlineRun, InlineStyle, InlineText};
 pub use splice::BlockSplice;
 pub use word_count::{WordCounter, count_words};
