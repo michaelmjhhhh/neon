@@ -36,6 +36,9 @@ const BODY_LINE_HEIGHT: f32 = 1.7;
 /// How blocks are set: their typeface and scale, and the column they sit in.
 pub(crate) struct BlockLayout {
     pub(crate) font_family: SharedString,
+    /// The monospace family for code inside text; see
+    /// [`inline_code_family`].
+    pub(crate) inline_code_family: SharedString,
     pub(crate) font_scale: f32,
     /// Leading and trailing insets in place of the centered reading column.
     pub(crate) column_insets: Option<(Pixels, Pixels)>,
@@ -52,12 +55,14 @@ pub(crate) fn render_block(
 ) -> AnyElement {
     let BlockLayout {
         font_family,
+        inline_code_family,
         font_scale,
         column_insets,
     } = layout;
     let (font_scale, column_insets) = (*font_scale, *column_insets);
     let mut renderer = BlockRenderer::new(base_dir, image_cache, cx);
     renderer.font_scale = font_scale;
+    renderer.palette.inline_code_font_family = inline_code_family.clone();
     let (content, continues_list) = match (block.kind(), list_items) {
         (BlockKind::List(list), Some(items)) => {
             let continues = items.end < list.items().len();
@@ -135,6 +140,7 @@ struct Palette {
     radius: Pixels,
     radius_lg: Pixels,
     mono_font_family: SharedString,
+    inline_code_font_family: SharedString,
 }
 
 struct BlockRenderer<'a> {
@@ -181,6 +187,7 @@ impl<'a> BlockRenderer<'a> {
                 radius: theme.radius,
                 radius_lg: theme.radius_lg,
                 mono_font_family: theme.mono_font_family.clone(),
+                inline_code_font_family: theme.mono_font_family.clone(),
             },
             next_id: 0,
             font_scale: 1.,
@@ -307,7 +314,7 @@ impl<'a> BlockRenderer<'a> {
             .runs()
             .iter()
             .filter(|run| run.style().contains(InlineStyle::CODE))
-            .map(|run| (run.range(), palette.mono_font_family.clone()));
+            .map(|run| (run.range(), palette.inline_code_font_family.clone()));
         let styled = StyledText::new(SharedString::from(text.text().clone()))
             .with_highlights(highlights)
             .with_font_family_overrides(code_fonts);
@@ -740,6 +747,51 @@ fn capitalized(word: &str) -> String {
         Some(first) => first.to_uppercase().chain(chars).collect(),
         None => String::new(),
     }
+}
+
+/// Monospace families code inside text may use in place of the theme's.
+/// GPUI sets a whole line in one size, so code cannot be set smaller than
+/// the text around it; a family with shorter lowercase letters is the way
+/// to keep it from looking larger. PT Mono comes with macOS.
+const INLINE_CODE_ALTERNATES: [&str; 1] = ["PT Mono"];
+
+/// The monospace family whose lowercase letters stand closest in height to
+/// those of `text_family`, so code sits evenly in a line of text: Menlo's
+/// x-height is an eighth taller than Charter's, PT Mono's about the same.
+/// The theme's `mono_family` wins a tie, and an alternate counts only if it
+/// is installed.
+pub(crate) fn inline_code_family(
+    text_family: &SharedString,
+    mono_family: &SharedString,
+    cx: &App,
+) -> SharedString {
+    let text_system = cx.text_system();
+    let size = px(100.);
+    let x_height = |family: &SharedString, installed: bool| {
+        let font_id = text_system.resolve_font(&gpui_kit::font(family.clone()));
+        // An unknown family resolves to a fallback rather than failing.
+        if installed && text_system.get_font_for_id(font_id)?.family != *family {
+            return None;
+        }
+        Some(text_system.x_height(font_id, size) / size)
+    };
+    let Some(text) = x_height(text_family, false).filter(|height| *height > 0.) else {
+        return mono_family.clone();
+    };
+    let distance = |height: f32| (height / text).ln().abs();
+    let mut best = (
+        mono_family.clone(),
+        x_height(mono_family, false).map_or(f32::MAX, distance),
+    );
+    for family in INLINE_CODE_ALTERNATES {
+        let family = SharedString::from(family);
+        if let Some(height) = x_height(&family, true)
+            && distance(height) < best.1
+        {
+            best = (family, distance(height));
+        }
+    }
+    best.0
 }
 
 /// The ranges of `text` that sit on a tinted background, and their tints:

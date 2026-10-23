@@ -21,7 +21,7 @@ use gpui_kit::{
 use markdown::MarkdownDocument;
 
 use crate::KEY_CONTEXT;
-use crate::blocks::{BlockLayout, render_block};
+use crate::blocks::{BlockLayout, inline_code_family, render_block};
 use crate::image_cache::PreviewImageCache;
 use crate::rows::PreviewRows;
 
@@ -85,6 +85,13 @@ pub struct MarkdownPreview {
     suspended_scroll: Option<(usize, Pixels)>,
     pending_reveal_offset: Option<usize>,
     font_family: Option<gpui_kit::SharedString>,
+    /// The family code inside text is set in, for the text and monospace
+    /// families it was chosen for.
+    inline_code_family: Option<(
+        gpui_kit::SharedString,
+        gpui_kit::SharedString,
+        gpui_kit::SharedString,
+    )>,
     font_scale: f32,
     /// Leading and trailing insets that replace the centered reading column.
     column_insets: Option<(Pixels, Pixels)>,
@@ -129,6 +136,7 @@ impl MarkdownPreview {
             suspended_scroll: None,
             pending_reveal_offset: None,
             font_family: None,
+            inline_code_family: None,
             font_scale: 1.,
             column_insets: None,
             list_state,
@@ -552,11 +560,24 @@ impl Render for MarkdownPreview {
 
         let document = self.document.clone();
         let rows = self.rows.clone();
+        let font_family = self
+            .font_family
+            .clone()
+            .unwrap_or_else(|| cx.theme().font_family.clone());
+        let mono_family = cx.theme().mono_font_family.clone();
+        let inline_code_family = match &self.inline_code_family {
+            Some((text, mono, chosen)) if *text == font_family && *mono == mono_family => {
+                chosen.clone()
+            }
+            _ => {
+                let chosen = inline_code_family(&font_family, &mono_family, cx);
+                self.inline_code_family = Some((font_family.clone(), mono_family, chosen.clone()));
+                chosen
+            }
+        };
         let layout = BlockLayout {
-            font_family: self
-                .font_family
-                .clone()
-                .unwrap_or_else(|| cx.theme().font_family.clone()),
+            font_family,
+            inline_code_family,
             font_scale: self.font_scale,
             column_insets: self.column_insets,
         };
