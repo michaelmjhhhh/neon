@@ -54,6 +54,7 @@ Groups, in this order:
 
 - Links and images with escaped characters, such as `My%20Note.md`, open the file they name.
 - The editor stays on the line you were reading when the text size or font changes, instead of jumping hundreds of lines in a long document.
+- Code and highlight chips in centered and right-aligned table cells sit behind their text instead of at the cell's left, and end before the space a line wraps at.
 
 ## [0.9.1] - 2026-10-22
 

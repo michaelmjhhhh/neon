@@ -12,10 +12,11 @@ use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _};
 use gpui_kit::{
     AnyElement, App, Bounds, ElementId, Entity, FontStyle, FontWeight, HighlightStyle, Hsla,
-    InteractiveElement as _, InteractiveText, IntoElement, ObjectFit, ParentElement as _, Pixels,
-    Point, SharedString, StatefulInteractiveElement as _, StrikethroughStyle, Styled as _,
-    StyledImage as _, StyledText, TextLayout, UnderlineStyle, canvas, div, fill, img, point,
-    prelude::FluentBuilder as _, px, relative, rems, size,
+    InteractiveElement as _, InteractiveText, IntoElement, LineLayout, ObjectFit,
+    ParentElement as _, Pixels, SharedString, StatefulInteractiveElement as _, StrikethroughStyle,
+    Styled as _, StyledImage as _, StyledText, TextAlign, TextLayout, UnderlineStyle, WrapBoundary,
+    WrappedLineLayout, canvas, div, fill, img, point, prelude::FluentBuilder as _, px, relative,
+    rems, size,
 };
 use markdown::{
     Block, BlockKind, Callout, CalloutTone, CodeBlock, ColumnAlignment, Heading, Image,
@@ -767,9 +768,11 @@ fn run_backgrounds(text: &InlineText, palette: &Palette) -> Vec<(Range<usize>, H
 /// Paint each background as a rounded chip per visual line it covers, a
 /// little shorter than the line and a little wider than its text.
 ///
-/// Positions come from the text's layout, which scans a line per lookup, so
-/// this asks only for each range's ends and, when it wraps, binary-searches
-/// for where each line breaks.
+/// Positions come from the shaped lines, placed as the text paints them:
+/// each visual line is shifted by the text's alignment, which
+/// `TextLayout::position_for_index` leaves out, so chips in a centered or
+/// right-aligned table cell would sit at the cell's left. Finding the line
+/// a range starts on and the x of an index are binary searches.
 fn paint_run_backgrounds(
     layout: &TextLayout,
     text: &str,
@@ -777,73 +780,122 @@ fn paint_run_backgrounds(
     radius: Pixels,
     window: &mut gpui_kit::Window,
 ) {
+    let bounds = layout.bounds();
     let line_height = layout.line_height();
+    let align = window.text_style().text_align;
     let height = line_height * 0.78;
     let inset = (line_height - height) / 2.;
     let pad = px(3.);
-    let left = layout.bounds().origin.x;
-    let mut chip = |start: Point<Pixels>, end_x: Pixels, color: Hsla| {
-        let bounds = Bounds::new(
-            point(start.x - pad, start.y + inset),
-            size(end_x - start.x + pad * 2., height),
-        );
-        window.paint_quad(fill(bounds, color).corner_radii(radius));
-    };
+
+    // Each hard line, with where it starts in the text and the visual row
+    // it starts on.
+    let lines = layout.line_layouts();
+    let mut starts = Vec::with_capacity(lines.len());
+    let (mut offset, mut row) = (0, 0);
+    for line in &lines {
+        starts.push((offset, row));
+        offset += line.len() + 1;
+        row += line.wrap_boundaries.len() + 1;
+    }
+
     for (range, color) in backgrounds {
-        let Some(slice) = text.get(range.clone()) else {
-            continue;
-        };
-        // Character boundaries of the range, its end included.
-        let boundaries: Vec<usize> = slice
-            .char_indices()
-            .map(|(offset, _)| range.start + offset)
-            .chain([range.end])
-            .collect();
-        let Some(end) = layout.position_for_index(range.end) else {
-            continue;
-        };
-        let mut first = 0;
-        while let Some(start) = line_start(layout, &boundaries, first, left) {
-            if end.y <= start.y {
-                chip(start, end.x, *color);
+        let first = starts
+            .partition_point(|&(start, _)| start <= range.start)
+            .saturating_sub(1);
+        for (line, &(start, first_row)) in lines.iter().zip(&starts).skip(first) {
+            if start >= range.end {
                 break;
             }
-            // The last boundary on this line is where it wraps; it reads as
-            // the line's end.
-            let on_line = boundaries[first + 1..].partition_point(|&ix| {
-                layout
-                    .position_for_index(ix)
-                    .is_some_and(|position| position.y <= start.y)
-            });
-            if on_line == 0 {
-                break;
-            }
-            first += on_line;
-            let Some(wrap) = layout.position_for_index(boundaries[first]) else {
+            let local = range.start.saturating_sub(start)..(range.end - start).min(line.len());
+            let Some(line_text) = text.get(start..start + line.len()) else {
                 break;
             };
-            chip(start, wrap.x, *color);
+            let mut chip = |row: usize, x_range: Range<Pixels>| {
+                let y = bounds.top() + line_height * (first_row + row) as f32 + inset;
+                let quad = Bounds::new(
+                    point(bounds.left() + x_range.start - pad, y),
+                    size(x_range.end - x_range.start + pad * 2., height),
+                );
+                window.paint_quad(fill(quad, *color).corner_radii(radius));
+            };
+            line_spans(line, line_text, local, bounds.size.width, align, &mut chip);
         }
     }
 }
 
-/// Where the text from `boundaries[ix]` starts. The index where a line
-/// wraps reads as the end of the line above, so when the next character is
-/// a line lower, the text starts at that line's leading edge.
-fn line_start(
-    layout: &TextLayout,
-    boundaries: &[usize],
-    ix: usize,
-    left: Pixels,
-) -> Option<Point<Pixels>> {
-    let here = layout.position_for_index(*boundaries.get(ix)?)?;
-    match boundaries
-        .get(ix + 1)
-        .and_then(|&next| layout.position_for_index(next))
-    {
-        Some(next) if next.y > here.y => Some(point(left, next.y)),
-        _ => Some(here),
+/// Call `span` with the part of each visual row of `line`, whose text is
+/// `text`, that `range` covers: the row's index within the line, and the
+/// covered span's left and right edges from the text's left edge, with the
+/// row aligned within `width` as gpui aligns it when painting.
+fn line_spans(
+    line: &WrappedLineLayout,
+    text: &str,
+    range: Range<usize>,
+    width: Pixels,
+    align: TextAlign,
+    span: &mut impl FnMut(usize, Range<Pixels>),
+) {
+    let shaped = &line.unwrapped_layout;
+    // A row after the first starts at the glyph its wrap boundary names.
+    let glyph = |boundary: &WrapBoundary| &shaped.runs[boundary.run_ix].glyphs[boundary.glyph_ix];
+    let boundary = |ix: usize| glyph(&line.wrap_boundaries[ix]);
+    let rows = line.wrap_boundaries.len() + 1;
+    let row_start = |row: usize| match row {
+        0 => (0, Pixels::ZERO),
+        row => (boundary(row - 1).index, boundary(row - 1).position.x),
+    };
+    let row_end = |row: usize| {
+        if row + 1 < rows {
+            (boundary(row).index, boundary(row).position.x)
+        } else {
+            (shaped.len, shaped.width)
+        }
+    };
+
+    let mut row = line
+        .wrap_boundaries
+        .partition_point(|boundary| glyph(boundary).index <= range.start);
+    while row < rows {
+        let (start_ix, start_x) = row_start(row);
+        let (end_ix, end_x) = row_end(row);
+        if start_ix >= range.end {
+            break;
+        }
+        let from = range.start.max(start_ix);
+        let mut to = range.end.min(end_ix);
+        // The space a row wraps at stays on the row but is not seen.
+        if row + 1 < rows && to == end_ix && from < to {
+            to = from + text[from..to].trim_end().len();
+        }
+        if from < to {
+            let left = match align {
+                TextAlign::Left => Pixels::ZERO,
+                TextAlign::Center => (width - (end_x - start_x)) / 2.,
+                TextAlign::Right => width - (end_x - start_x),
+            };
+            span(
+                row,
+                left + x_for_index(shaped, from) - start_x
+                    ..left + x_for_index(shaped, to) - start_x,
+            );
+        }
+        row += 1;
     }
+}
+
+/// The x of the glyph at or after `index` in a shaped line, or its width
+/// past the last glyph, found by binary search. Glyphs run in text order.
+fn x_for_index(line: &LineLayout, index: usize) -> Pixels {
+    let run = line
+        .runs
+        .partition_point(|run| run.glyphs.last().is_none_or(|glyph| glyph.index < index));
+    line.runs
+        .get(run)
+        .and_then(|run| {
+            let glyph = run.glyphs.partition_point(|glyph| glyph.index < index);
+            run.glyphs.get(glyph)
+        })
+        .map_or(line.width, |glyph| glyph.position.x)
 }
 
 /// Whether `url` names a scheme, as `https:` does. A URL has no spaces, so
