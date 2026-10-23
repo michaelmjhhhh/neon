@@ -157,16 +157,39 @@ pub fn temp_path_beside(path: &Path) -> Result<PathBuf> {
     )
 }
 
-/// The Markdown dialect the preview parses, so an export shows the same
-/// document.
-pub(crate) fn parser_options() -> pulldown_cmark::Options {
-    use pulldown_cmark::Options;
-    Options::ENABLE_TABLES
-        | Options::ENABLE_FOOTNOTES
-        | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TASKLISTS
-        | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
-        | Options::ENABLE_GFM
+/// The accent of the preview's light theme, which highlights are washed in.
+pub(crate) const ACCENT: u32 = 0xEB4B10;
+/// How strong the preview's washes are: behind a highlight, behind a
+/// callout, and behind a highlight inside a callout.
+pub(crate) const HIGHLIGHT_OPACITY: f32 = 0.18;
+pub(crate) const CALLOUT_OPACITY: f32 = 0.1;
+pub(crate) const CALLOUT_HIGHLIGHT_OPACITY: f32 = 0.28;
+
+/// A callout tone's color in the preview's light theme.
+pub(crate) fn tone_color(tone: markdown::CalloutTone) -> u32 {
+    use markdown::CalloutTone;
+    match tone {
+        CalloutTone::Note => 0x1F6FD1,
+        CalloutTone::Tip | CalloutTone::Success => 0x1F8A5B,
+        CalloutTone::Question | CalloutTone::Warning => 0xB7791F,
+        CalloutTone::Danger => 0xD93036,
+        CalloutTone::Quote => 0x5C5F68,
+    }
+}
+
+/// `color` laid over white at `opacity`: the color a translucent wash shows
+/// on the page, for formats without transparency.
+pub(crate) fn tint(color: u32, opacity: f32) -> u32 {
+    let channel = |shift: u32| {
+        let value = ((color >> shift) & 0xFF) as f32;
+        (255. - (255. - value) * opacity).round() as u32
+    };
+    channel(16) << 16 | channel(8) << 8 | channel(0)
+}
+
+/// Six uppercase hex digits, as Word writes colors.
+pub(crate) fn hex(color: u32) -> String {
+    format!("{color:06X}")
 }
 
 /// Characters XML 1.0 can't contain. Word refuses to open a document with
@@ -199,6 +222,13 @@ mod tests {
         let path = dir.path().join("missing").join("out.html");
         assert!(write_atomically(&path, b"x").is_err());
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn tints_colors_as_washes_on_white() {
+        assert_eq!(hex(tint(0x000000, 0.5)), "808080");
+        assert_eq!(hex(tint(ACCENT, 1.)), "EB4B10");
+        assert_eq!(hex(tint(ACCENT, 0.)), "FFFFFF");
     }
 
     #[test]

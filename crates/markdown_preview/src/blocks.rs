@@ -18,8 +18,8 @@ use gpui_kit::{
     prelude::FluentBuilder as _, px, relative, rems, size,
 };
 use markdown::{
-    Block, BlockKind, Callout, CodeBlock, ColumnAlignment, Heading, Image, InlineStyle, InlineText,
-    MarkdownList, Property, Table,
+    Block, BlockKind, Callout, CalloutTone, CodeBlock, ColumnAlignment, Heading, Image,
+    InlineStyle, InlineText, MarkdownList, Property, Table,
 };
 
 use crate::image_cache::PreviewImageCache;
@@ -447,7 +447,7 @@ impl<'a> BlockRenderer<'a> {
     /// A callout: a tinted panel with its kind's icon and title, in the
     /// color of what it means.
     fn render_callout(&mut self, callout: &Callout) -> AnyElement {
-        let (color, icon) = callout_look(callout.kind(), &self.palette);
+        let (color, icon) = callout_look(callout.tone(), &self.palette);
         // The accent wash would muddy against the panel's tint; a deeper
         // shade of the panel's color marks highlights instead.
         let highlight = std::mem::replace(
@@ -720,21 +720,16 @@ fn highlight_style(style: InlineStyle, palette: &Palette) -> HighlightStyle {
     highlight
 }
 
-/// The color and icon for a callout kind, following Obsidian's groups. A kind
-/// it does not know looks like a note.
-fn callout_look(kind: &str, palette: &Palette) -> (Hsla, Icon) {
-    match kind {
-        "tip" | "hint" | "important" => (palette.success, Icon::new(AssetIcon::Lightbulb)),
-        "success" | "check" | "done" => (palette.success, Icon::new(IconName::CircleCheck)),
-        "question" | "help" | "faq" => (palette.warning, Icon::new(AssetIcon::CircleQuestionMark)),
-        "warning" | "caution" | "attention" => {
-            (palette.warning, Icon::new(IconName::TriangleAlert))
-        }
-        "failure" | "fail" | "missing" | "danger" | "error" | "bug" => {
-            (palette.danger, Icon::new(IconName::CircleX))
-        }
-        "quote" | "cite" => (palette.muted_foreground, Icon::new(AssetIcon::Quote)),
-        _ => (palette.info, Icon::new(IconName::Info)),
+/// The color and icon for a callout's tone.
+fn callout_look(tone: CalloutTone, palette: &Palette) -> (Hsla, Icon) {
+    match tone {
+        CalloutTone::Tip => (palette.success, Icon::new(AssetIcon::Lightbulb)),
+        CalloutTone::Success => (palette.success, Icon::new(IconName::CircleCheck)),
+        CalloutTone::Question => (palette.warning, Icon::new(AssetIcon::CircleQuestionMark)),
+        CalloutTone::Warning => (palette.warning, Icon::new(IconName::TriangleAlert)),
+        CalloutTone::Danger => (palette.danger, Icon::new(IconName::CircleX)),
+        CalloutTone::Quote => (palette.muted_foreground, Icon::new(AssetIcon::Quote)),
+        CalloutTone::Note => (palette.info, Icon::new(IconName::Info)),
     }
 }
 

@@ -11,6 +11,18 @@ use pulldown_cmark::{
 
 use crate::inline::{InlineBuilder, InlineStyle, InlineText, literal_prefix};
 
+/// The dialect Neon reads: CommonMark with the extensions people expect from
+/// a Markdown editor: tables, task lists, strikethrough, footnotes, YAML
+/// front matter, and Obsidian's wikilinks. Callouts and highlights are read
+/// on top of what the parser reports.
+pub(crate) const PARSER_OPTIONS: Options = Options::ENABLE_TABLES
+    .union(Options::ENABLE_FOOTNOTES)
+    .union(Options::ENABLE_STRIKETHROUGH)
+    .union(Options::ENABLE_TASKLISTS)
+    .union(Options::ENABLE_YAML_STYLE_METADATA_BLOCKS)
+    .union(Options::ENABLE_GFM)
+    .union(Options::ENABLE_WIKILINKS);
+
 /// A parsed Markdown document.
 #[derive(Clone, Debug, Default)]
 pub struct MarkdownDocument {
@@ -33,16 +45,9 @@ impl MarkdownDocument {
         if cancelled() {
             return None;
         }
-        let options = Options::ENABLE_TABLES
-            | Options::ENABLE_FOOTNOTES
-            | Options::ENABLE_STRIKETHROUGH
-            | Options::ENABLE_TASKLISTS
-            | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
-            | Options::ENABLE_GFM
-            | Options::ENABLE_WIKILINKS;
         let mut parser = BlockParser {
             source,
-            events: Parser::new_ext(source, options)
+            events: Parser::new_ext(source, PARSER_OPTIONS)
                 .into_offset_iter()
                 .peekable(),
             pending_task: None,
@@ -206,6 +211,51 @@ impl Callout {
 
     pub fn children(&self) -> &[BlockKind] {
         &self.children
+    }
+
+    pub fn tone(&self) -> CalloutTone {
+        CalloutTone::of(&self.kind)
+    }
+}
+
+/// The look a callout kind shares with the kinds that mean the same, after
+/// Obsidian's groups: `hint` looks like `tip`, `error` like `danger`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CalloutTone {
+    /// Notes, and any kind not listed under another tone.
+    Note,
+    Tip,
+    Success,
+    Question,
+    Warning,
+    Danger,
+    Quote,
+}
+
+impl CalloutTone {
+    pub fn of(kind: &str) -> Self {
+        match kind {
+            "tip" | "hint" | "important" => Self::Tip,
+            "success" | "check" | "done" => Self::Success,
+            "question" | "help" | "faq" => Self::Question,
+            "warning" | "caution" | "attention" => Self::Warning,
+            "failure" | "fail" | "missing" | "danger" | "error" | "bug" => Self::Danger,
+            "quote" | "cite" => Self::Quote,
+            _ => Self::Note,
+        }
+    }
+
+    /// A lowercase name, such as `tip`, for use as a class name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Note => "note",
+            Self::Tip => "tip",
+            Self::Success => "success",
+            Self::Question => "question",
+            Self::Warning => "warning",
+            Self::Danger => "danger",
+            Self::Quote => "quote",
+        }
     }
 }
 
@@ -662,27 +712,9 @@ fn callout_or_quote(mut children: Vec<BlockKind>) -> BlockKind {
     };
     let text = first.text();
     let line_end = text.find('\n').unwrap_or(text.len());
-    let Some(kind_end) = text[..line_end]
-        .strip_prefix("[!")
-        .and_then(|rest| rest.find(']'))
-        .map(|ix| ix + 2)
-    else {
+    let Some((kind, title_start)) = callout_header(&text[..line_end]) else {
         return BlockKind::Quote(children);
     };
-    let kind = &text[2..kind_end];
-    if kind.is_empty()
-        || !kind
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-    {
-        return BlockKind::Quote(children);
-    }
-    let kind: Arc<str> = kind.to_lowercase().into();
-    // `+` and `-` fold the callout in Obsidian; the preview shows it open.
-    let mut title_start = kind_end + 1;
-    if text[title_start..line_end].starts_with(['+', '-']) {
-        title_start += 1;
-    }
     let title_range = trim_range(text, title_start..line_end);
     let title = (!title_range.is_empty()).then(|| first.slice(title_range));
     let body = (line_end < text.len()).then(|| first.slice(line_end + 1..text.len()));
@@ -699,6 +731,26 @@ fn callout_or_quote(mut children: Vec<BlockKind>) -> BlockKind {
     })
 }
 
+/// The kind of a callout whose first line is `line`, lowercased, and where
+/// its title starts: `[!Tip]- Title` is a `tip` titled from offset 8.
+pub(crate) fn callout_header(line: &str) -> Option<(Arc<str>, usize)> {
+    let kind_end = line.strip_prefix("[!")?.find(']')? + 2;
+    let kind = &line[2..kind_end];
+    if kind.is_empty()
+        || !kind
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+    // `+` and `-` fold the callout in Obsidian; the preview shows it open.
+    let mut title_start = kind_end + 1;
+    if line[title_start..].starts_with(['+', '-']) {
+        title_start += 1;
+    }
+    Some((kind.to_lowercase().into(), title_start))
+}
+
 /// `range` of `text` without whitespace at either end.
 fn trim_range(text: &str, range: std::ops::Range<usize>) -> std::ops::Range<usize> {
     let slice = &text[range.clone()];
@@ -707,7 +759,7 @@ fn trim_range(text: &str, range: std::ops::Range<usize>) -> std::ops::Range<usiz
     start..end.max(start)
 }
 
-fn quote_kind_name(kind: BlockQuoteKind) -> &'static str {
+pub(crate) fn quote_kind_name(kind: BlockQuoteKind) -> &'static str {
     match kind {
         BlockQuoteKind::Note => "note",
         BlockQuoteKind::Tip => "tip",
@@ -719,7 +771,7 @@ fn quote_kind_name(kind: BlockQuoteKind) -> &'static str {
 
 /// The file a `[[wikilink]]` names: `Note` or `Note#Heading` is a Markdown
 /// file beside the document unless it has an extension of its own.
-fn wiki_target(target: &str) -> String {
+pub(crate) fn wiki_target(target: &str) -> String {
     let (page, anchor) = match target.split_once('#') {
         Some((page, anchor)) => (page, Some(anchor)),
         None => (target, None),
@@ -739,7 +791,7 @@ fn wiki_target(target: &str) -> String {
 /// flat shape notes use, not all of YAML: an indented `- item` list joins
 /// into one value, a `|` or `>` block keeps or folds its lines, and other
 /// indented lines are kept as written.
-fn parse_properties(yaml: &str) -> Vec<Property> {
+pub(crate) fn parse_properties(yaml: &str) -> Vec<Property> {
     struct Entry {
         key: String,
         value: String,
@@ -813,7 +865,7 @@ fn unquote(value: &str) -> &str {
     value
 }
 
-fn is_inline_tag(tag: &Tag) -> bool {
+pub(crate) fn is_inline_tag(tag: &Tag) -> bool {
     matches!(
         tag,
         Tag::Emphasis
@@ -826,7 +878,7 @@ fn is_inline_tag(tag: &Tag) -> bool {
     )
 }
 
-fn is_inline_tag_end(tag_end: &TagEnd) -> bool {
+pub(crate) fn is_inline_tag_end(tag_end: &TagEnd) -> bool {
     matches!(
         tag_end,
         TagEnd::Emphasis
@@ -1056,36 +1108,6 @@ mod tests {
     }
 
     #[test]
-    fn highlights_keep_links_in_place() {
-        let kinds = kinds("==hi== [link](https://x.dev)");
-        let text = paragraph(&kinds[0]);
-        assert_eq!(&text.text()[text.links()[0].range()], "link");
-    }
-
-    #[test]
-    fn identical_blocks_get_distinct_ids() {
-        let document = MarkdownDocument::parse("same\n\nsame\n");
-        let [first, second] = document.blocks() else {
-            panic!("expected two blocks");
-        };
-        assert_eq!(first.fingerprint(), second.fingerprint());
-        assert_ne!(first.id(), second.id());
-    }
-
-    #[test]
-    fn maps_source_offsets_to_blocks() {
-        let source = "# A\n\npara\n\n- item\n";
-        let document = MarkdownDocument::parse(source);
-        assert_eq!(document.block_ix_for_offset(0), Some(0));
-        assert_eq!(
-            document.block_ix_for_offset(source.find("para").unwrap() + 2),
-            Some(1)
-        );
-        assert_eq!(document.block_ix_for_offset(source.len()), Some(2));
-        assert_eq!(MarkdownDocument::parse("").block_ix_for_offset(0), None);
-    }
-
-    #[test]
     fn escaped_highlight_markers_stay_as_typed() {
         let kinds = kinds(r"\==text== and ==a\==b== and \\==c==");
         let text = paragraph(&kinds[0]);
@@ -1131,6 +1153,36 @@ mod tests {
         let title = callout.title().unwrap();
         assert_eq!(&**title.text(), "==Title==");
         assert!(title.runs().is_empty());
+    }
+
+    #[test]
+    fn highlights_keep_links_in_place() {
+        let kinds = kinds("==hi== [link](https://x.dev)");
+        let text = paragraph(&kinds[0]);
+        assert_eq!(&text.text()[text.links()[0].range()], "link");
+    }
+
+    #[test]
+    fn identical_blocks_get_distinct_ids() {
+        let document = MarkdownDocument::parse("same\n\nsame\n");
+        let [first, second] = document.blocks() else {
+            panic!("expected two blocks");
+        };
+        assert_eq!(first.fingerprint(), second.fingerprint());
+        assert_ne!(first.id(), second.id());
+    }
+
+    #[test]
+    fn maps_source_offsets_to_blocks() {
+        let source = "# A\n\npara\n\n- item\n";
+        let document = MarkdownDocument::parse(source);
+        assert_eq!(document.block_ix_for_offset(0), Some(0));
+        assert_eq!(
+            document.block_ix_for_offset(source.find("para").unwrap() + 2),
+            Some(1)
+        );
+        assert_eq!(document.block_ix_for_offset(source.len()), Some(2));
+        assert_eq!(MarkdownDocument::parse("").block_ix_for_offset(0), None);
     }
 
     #[test]
