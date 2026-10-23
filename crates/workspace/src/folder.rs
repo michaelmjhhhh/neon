@@ -179,6 +179,12 @@ pub(super) fn copy_entry(source: &Path, directory: &Path) -> io::Result<PathBuf>
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "it has no name"))?
         .to_string_lossy()
         .into_owned();
+    if !directory.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "the folder to paste into no longer exists",
+        ));
+    }
     if metadata.is_dir() {
         // Copying `notes` into `notes/daily` would copy its own copy over
         // and over, a level deeper each time.
@@ -224,7 +230,9 @@ fn copy_file(source: &Path, directory: &Path, name: &str) -> io::Result<PathBuf>
 /// leaves nothing behind.
 fn copy_folder(source: &Path, directory: &Path, name: &str) -> io::Result<PathBuf> {
     let staging = (1..)
-        .map(|n| directory.join(format!(".{name}.neon-copy-{n}")))
+        // Not named after the source: a name near the length limit would
+        // leave no room for a suffix.
+        .map(|n| directory.join(format!(".neon-copy-{n}")))
         .find_map(|path| match fs::create_dir(&path) {
             Ok(()) => Some(Ok(path)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => None,
@@ -463,11 +471,47 @@ mod tests {
     }
 
     #[test]
-    fn reports_a_source_that_is_gone() {
+    fn pastes_into_a_folder_that_only_shares_a_name_prefix() {
         let root = tempfile::tempdir().unwrap();
-        let error = copy_entry(&root.path().join("gone.md"), root.path()).unwrap_err();
+        let root = root.path();
+        fs::create_dir_all(root.join("notes")).unwrap();
+        fs::create_dir_all(root.join("notes-archive")).unwrap();
+
+        let copy = copy_entry(&root.join("notes"), &root.join("notes-archive")).unwrap();
+
+        assert_eq!(copy, root.join("notes-archive/notes"));
+    }
+
+    #[test]
+    fn reports_a_source_or_destination_that_is_gone() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let error = copy_entry(&root.join("gone.md"), root).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
         assert_eq!(error.to_string(), "it no longer exists");
+
+        fs::write(root.join("plan.md"), b"").unwrap();
+        let error = copy_entry(&root.join("plan.md"), &root.join("gone")).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(
+            error.to_string(),
+            "the folder to paste into no longer exists"
+        );
+    }
+
+    #[test]
+    fn copies_folders_with_names_near_the_length_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let name = "n".repeat(250);
+        fs::create_dir(root.join(&name)).unwrap();
+        fs::write(root.join(&name).join("a.md"), b"").unwrap();
+
+        // `name copy` is 255 bytes, at the limit; a staging name built from
+        // `name` would be past it.
+        let copy = copy_entry(&root.join(&name), root).unwrap();
+        assert_eq!(copy, root.join(format!("{name} copy")));
+        assert!(copy.join("a.md").is_file());
     }
 
     #[test]

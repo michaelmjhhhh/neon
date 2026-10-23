@@ -178,6 +178,9 @@ pub struct Workspace {
     folder: Option<PathBuf>,
     tree: Entity<TreeState>,
     folder_task: Option<Task<()>>,
+    /// What the running scan selects once done. A scan that replaces it
+    /// takes it over, so a new item is still shown.
+    folder_select: Option<SharedString>,
     folder_empty: bool,
     expanded_folders: HashSet<SharedString>,
     /// The file or folder the sidebar last copied, pasted by path when
@@ -311,6 +314,7 @@ impl Workspace {
             folder: None,
             tree,
             folder_task: None,
+            folder_select: None,
             folder_empty: true,
             expanded_folders: HashSet::new(),
             copied_entry: None,
@@ -1027,6 +1031,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let select = select.or_else(|| self.folder_select.take());
+        self.folder_select = select.clone();
         let scan = cx.background_spawn({
             let path = path.clone();
             async move {
@@ -1045,6 +1051,7 @@ impl Workspace {
             let result = scan.await;
             this.update_in(cx, |this, window, cx| {
                 this.folder_task = None;
+                this.folder_select = None;
                 match result {
                     Ok((path, entries, counts)) => {
                         this.folder_empty = entries.is_empty();
@@ -1343,7 +1350,7 @@ impl Workspace {
     }
 
     /// Remember `path` to paste. Only the path is kept, as in Finder.
-    fn copy_entry(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+    fn set_copied_entry(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.copied_entry = Some(path);
         cx.notify();
     }
@@ -1401,7 +1408,7 @@ impl Workspace {
 
     fn copy_selected_entry(&mut self, _: &CopyEntry, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(path) = self.selected_entry_path(cx) {
-            self.copy_entry(path, cx);
+            self.set_copied_entry(path, cx);
         }
     }
 
@@ -1932,7 +1939,7 @@ impl Workspace {
                         let directory = entry_directory(entry);
                         menu.item(entry_menu_item("Copy", CopyEntry, &workspace, {
                             let path = path.clone();
-                            move |this, _, cx| this.copy_entry(path.clone(), cx)
+                            move |this, _, cx| this.set_copied_entry(path.clone(), cx)
                         }))
                         .item(
                             entry_menu_item(
