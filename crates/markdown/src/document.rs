@@ -9,7 +9,7 @@ use pulldown_cmark::{
     Parser, Tag, TagEnd,
 };
 
-use crate::inline::{InlineBuilder, InlineStyle, InlineText};
+use crate::inline::{InlineBuilder, InlineStyle, InlineText, literal_prefix};
 
 /// A parsed Markdown document.
 #[derive(Clone, Debug, Default)]
@@ -41,6 +41,7 @@ impl MarkdownDocument {
             | Options::ENABLE_GFM
             | Options::ENABLE_WIKILINKS;
         let mut parser = BlockParser {
+            source,
             events: Parser::new_ext(source, options)
                 .into_offset_iter()
                 .peekable(),
@@ -368,6 +369,7 @@ fn fingerprint_of(value: &impl Hash) -> u64 {
 
 /// Recursive descent over pulldown-cmark's event stream.
 struct BlockParser<'a> {
+    source: &'a str,
     events: Peekable<OffsetIter<'a>>,
     /// A task marker seen inside the list item being parsed.
     pending_task: Option<bool>,
@@ -538,11 +540,11 @@ impl<'a> BlockParser<'a> {
 
     fn collect_inline_until(&mut self, end: TagEnd) -> InlineBuilder {
         let mut inline = InlineBuilder::default();
-        while let Some((event, _)) = self.events.next() {
+        while let Some((event, range)) = self.events.next() {
             if matches!(&event, Event::End(tag_end) if *tag_end == end) {
                 break;
             }
-            self.push_inline(&mut inline, event);
+            self.push_inline(&mut inline, event, range);
         }
         inline
     }
@@ -551,10 +553,10 @@ impl<'a> BlockParser<'a> {
     fn collect_loose_inline(&mut self) -> InlineBuilder {
         let mut inline = InlineBuilder::default();
         while self.next_is_inline() {
-            let Some((event, _)) = self.events.next() else {
+            let Some((event, range)) = self.events.next() else {
                 break;
             };
-            self.push_inline(&mut inline, event);
+            self.push_inline(&mut inline, event, range);
         }
         inline
     }
@@ -578,9 +580,11 @@ impl<'a> BlockParser<'a> {
         }
     }
 
-    fn push_inline(&mut self, inline: &mut InlineBuilder, event: Event<'a>) {
+    fn push_inline(&mut self, inline: &mut InlineBuilder, event: Event<'a>, range: Range<usize>) {
         match event {
-            Event::Text(text) => inline.push_text(&text),
+            Event::Text(text) => {
+                inline.push_source_text(&text, literal_prefix(self.source, range, &text));
+            }
             Event::Code(code) | Event::InlineMath(code) => inline.push_code(&code),
             Event::InlineHtml(html) => inline.push_code(&html),
             Event::FootnoteReference(label) => {
@@ -1079,6 +1083,54 @@ mod tests {
         );
         assert_eq!(document.block_ix_for_offset(source.len()), Some(2));
         assert_eq!(MarkdownDocument::parse("").block_ix_for_offset(0), None);
+    }
+
+    #[test]
+    fn escaped_highlight_markers_stay_as_typed() {
+        let kinds = kinds(r"\==text== and ==a\==b== and \\==c==");
+        let text = paragraph(&kinds[0]);
+        assert_eq!(&**text.text(), r"==text== and a==b and \c");
+        let highlighted: Vec<_> = text
+            .runs()
+            .iter()
+            .filter(|run| run.style() == InlineStyle::HIGHLIGHT)
+            .map(|run| &text.text()[run.range()])
+            .collect();
+        // An escaped `=` neither opens, closes, nor joins a marker; an
+        // escaped backslash leaves the marker after it alone.
+        assert_eq!(highlighted, ["a==b", "c"]);
+    }
+
+    #[test]
+    fn entity_markers_stay_as_typed() {
+        let kinds = kinds("&#61;&#61;text&#61;&#61; ==x&#61;==");
+        let text = paragraph(&kinds[0]);
+        assert_eq!(&**text.text(), "==text== x=");
+        assert_eq!(&text.text()[text.runs()[0].range()], "x=");
+    }
+
+    #[test]
+    fn only_a_whole_entity_is_literal() {
+        let source = "&#61;&#61;a&#61;&#61; and &amp;==b==";
+        let kinds = kinds(source);
+        let text = paragraph(&kinds[0]);
+        assert_eq!(&**text.text(), "==a== and &b");
+        assert_eq!(&text.text()[text.runs()[0].range()], "b");
+        // Text that merely follows an ampersand is not an entity.
+        assert_eq!(literal_prefix("&x==", 0..4, "&x=="), 0);
+        assert_eq!(literal_prefix("&#61;==", 0..7, "==="), 0);
+        assert_eq!(literal_prefix("&#61;", 0..5, "="), 1);
+    }
+
+    #[test]
+    fn escaped_markers_in_callout_titles_stay_as_typed() {
+        let kinds = kinds("> [!note] \\==Title==\n> Body\n");
+        let BlockKind::Callout(callout) = &kinds[0] else {
+            panic!("expected a callout, got {:?}", kinds[0]);
+        };
+        let title = callout.title().unwrap();
+        assert_eq!(&**title.text(), "==Title==");
+        assert!(title.runs().is_empty());
     }
 
     #[test]
