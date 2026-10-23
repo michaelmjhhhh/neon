@@ -4,10 +4,14 @@
 
 use anyhow::{Context as _, Result};
 use docx_rs as w;
-use pulldown_cmark::{Alignment, Event, Parser, Tag, TagEnd, TextMergeStream};
+use markdown::{CalloutTone, MarkdownEvent, Property};
+use pulldown_cmark::{Alignment, Event, Tag, TagEnd};
 
 use crate::html::collect_alt;
-use crate::{ExportSource, ExportStyle, MARGIN_PT, images, is_xml_char, parser_options};
+use crate::{
+    ACCENT, CALLOUT_HIGHLIGHT_OPACITY, CALLOUT_OPACITY, ExportSource, ExportStyle,
+    HIGHLIGHT_OPACITY, MARGIN_PT, hex, images, is_xml_char, tint, tone_color,
+};
 
 /// Word's stand-ins for the system fonts, which documents can't name.
 const SYSTEM_TEXT_FONT: &str = "Helvetica Neue";
@@ -35,24 +39,47 @@ const TABLE_HEADER: &str = "TableHeader";
 const FOOTNOTE: &str = "FootnoteText";
 const RULE: &str = "HorizontalRule";
 const LIST: &str = "ListParagraph";
+const PROPERTIES: &str = "Properties";
 
 /// Heading sizes relative to the text, as in the preview.
 const HEADING_SCALES: [f32; 6] = [2., 1.5, 1.25, 1.0625, 1., 0.875];
 const BULLETS: [&str; 3] = ["\u{2022}", "\u{25E6}", "\u{25AA}"];
 /// List indent per level, in twentieths of a point.
 const LIST_INDENT: i32 = 360;
+/// The space between a callout's text and the sides of its panel, in
+/// points.
+const CALLOUT_PAD_PT: usize = 8;
+/// The width of the front matter's key column, in units of the text size,
+/// as in the preview.
+const PROPERTY_KEY_EMS: f32 = 7.;
 
 /// Render the document as a Word (.docx) file.
 pub fn render_docx(source: &ExportSource, style: &ExportStyle) -> Result<Vec<u8>> {
     let mut writer = Writer::new(source, style);
-    let mut events = TextMergeStream::new(Parser::new_ext(source.markdown, parser_options()));
+    let mut events = markdown::events(source.markdown).into_iter();
     while let Some(event) = events.next() {
         match event {
-            Event::Start(Tag::Image { dest_url, .. }) => {
+            MarkdownEvent::Event(Event::Start(Tag::Image { dest_url, .. })) => {
                 let alt = collect_alt(&mut events);
                 writer.image(&dest_url, &alt);
             }
-            event => writer.event(event),
+            MarkdownEvent::Event(event) => writer.event(event),
+            MarkdownEvent::StartHighlight => writer.highlight += 1,
+            MarkdownEvent::EndHighlight => writer.highlight = writer.highlight.saturating_sub(1),
+            MarkdownEvent::StartCallout(kind) => {
+                writer.finish_paragraph();
+                writer.callouts.push(CalloutTone::of(&kind));
+                writer.callout_title = true;
+            }
+            MarkdownEvent::EndCalloutTitle => {
+                writer.finish_paragraph();
+                writer.callout_title = false;
+            }
+            MarkdownEvent::EndCallout => {
+                writer.finish_paragraph();
+                writer.callouts.pop();
+            }
+            MarkdownEvent::FrontMatter(properties) => writer.properties(&properties),
         }
     }
     writer.finish()
@@ -67,8 +94,14 @@ struct Writer<'a> {
     bold: usize,
     italic: usize,
     strike: usize,
+    /// Inside `==highlighted==` text.
+    highlight: usize,
+    /// The tone of each callout open, outermost first.
+    callouts: Vec<CalloutTone>,
+    /// Inline content is the innermost callout's title.
+    callout_title: bool,
     heading: Option<usize>,
-    /// The text of the code, front matter or HTML block being read.
+    /// The text of the code or HTML block being read.
     verbatim: Option<(&'static str, String)>,
     quote_depth: usize,
     /// The numbering id of each open list, outermost first.
@@ -127,6 +160,9 @@ impl<'a> Writer<'a> {
             bold: 0,
             italic: 0,
             strike: 0,
+            highlight: 0,
+            callouts: Vec::new(),
+            callout_title: false,
             heading: None,
             verbatim: None,
             quote_depth: 0,
@@ -150,11 +186,11 @@ impl<'a> Writer<'a> {
                 None => self.push_run(self.run(&text)),
             },
             Event::Code(code) | Event::InlineHtml(code) => {
-                let run = self.run(&code).style(INLINE_CODE).shading(
-                    w::Shading::new()
-                        .shd_type(w::ShdType::Clear)
-                        .fill(INLINE_CODE_FILL),
-                );
+                let mut run = self.run(&code).style(INLINE_CODE);
+                // Highlighted code keeps the highlight, as in the preview.
+                if self.highlight == 0 {
+                    run = run.shading(fill(INLINE_CODE_FILL));
+                }
                 self.push_run(run);
             }
             Event::Html(html) => {
@@ -197,7 +233,7 @@ impl<'a> Writer<'a> {
                 self.finish_paragraph();
                 self.quote_depth += 1;
             }
-            Tag::CodeBlock(_) | Tag::MetadataBlock(_) => {
+            Tag::CodeBlock(_) => {
                 self.finish_paragraph();
                 self.verbatim = Some((CODE_BLOCK, String::new()));
             }
@@ -271,7 +307,7 @@ impl<'a> Writer<'a> {
                 self.finish_paragraph();
                 self.quote_depth = self.quote_depth.saturating_sub(1);
             }
-            TagEnd::CodeBlock | TagEnd::MetadataBlock(_) | TagEnd::HtmlBlock => {
+            TagEnd::CodeBlock | TagEnd::HtmlBlock => {
                 if let Some((style, text)) = self.verbatim.take() {
                     self.verbatim_paragraph(style, &text);
                 }
@@ -393,6 +429,20 @@ impl<'a> Writer<'a> {
         if self.items.last() == Some(&true) {
             run = run.color(MUTED_COLOR);
         }
+        // A wash behind the text like the preview's: Word's own highlight
+        // colors are all saturated, with nothing this soft.
+        if self.highlight > 0 {
+            let wash = match self.callouts.last() {
+                Some(&tone) => tint(tone_color(tone), CALLOUT_HIGHLIGHT_OPACITY),
+                None => tint(ACCENT, HIGHLIGHT_OPACITY),
+            };
+            run = run.shading(fill(&hex(wash)));
+        }
+        if self.callout_title
+            && let Some(&tone) = self.callouts.last()
+        {
+            run = run.bold().color(hex(tone_color(tone)));
+        }
         run
     }
 
@@ -465,9 +515,25 @@ impl<'a> Writer<'a> {
         if let Some(label) = self.footnote_label.take() {
             paragraph = paragraph.add_run(self.run(&label).color(LINK_COLOR));
         }
+        // Word keeps one set of spacing per paragraph; build it whole so a
+        // callout title after a list keeps its distance from the list.
+        let mut spacing = None;
         if std::mem::take(&mut self.after_list) {
             let gap = twips(self.style.text_size_pt() * 0.75) as u32;
-            paragraph = paragraph.line_spacing(w::LineSpacing::new().before(gap));
+            spacing = Some(w::LineSpacing::new().before(gap));
+        }
+        if let Some(&tone) = self.callouts.last() {
+            // List and quote paragraphs keep their own indents.
+            let pad = self.lists.is_empty() && self.quote_depth == 0;
+            paragraph = in_callout(paragraph, tone, pad);
+            if self.callout_title {
+                let gap = twips(self.style.text_size_pt() * 0.35) as u32;
+                spacing = Some(spacing.unwrap_or_default().after(gap));
+                paragraph = paragraph.keep_next(true);
+            }
+        }
+        if let Some(spacing) = spacing {
+            paragraph = paragraph.line_spacing(spacing);
         }
         paragraph
     }
@@ -495,23 +561,48 @@ impl<'a> Writer<'a> {
     /// Code keeps its line breaks and spaces in one shaded paragraph.
     fn verbatim_paragraph(&mut self, style: &'static str, text: &str) {
         let text = text.strip_suffix('\n').unwrap_or(text);
-        let mut run = w::Run::new();
-        for (ix, line) in text.split('\n').enumerate() {
-            if ix > 0 {
-                run = run.add_break(w::BreakType::TextWrapping);
-            }
-            let line: String = line
-                .trim_end_matches('\r')
-                .replace('\t', "    ")
-                .chars()
-                .filter(|c| is_xml_char(*c))
-                .collect();
-            if !line.is_empty() {
-                run = run.add_text(line);
-            }
-        }
-        let paragraph = self.new_paragraph().style(style).add_run(run);
+        let paragraph = self.new_paragraph().style(style).add_run(lines_run(text));
         self.push_paragraph(paragraph);
+    }
+
+    /// Front matter as the preview shows it: a quiet table of properties
+    /// above the text, keys in a muted column, and a rule below.
+    fn properties(&mut self, properties: &[Property]) {
+        self.finish_paragraph();
+        let width = twips(self.style.content_width_pt()) as usize;
+        let key_width =
+            (twips(self.style.text_size_pt() * PROPERTY_KEY_EMS) as usize).min(width / 2);
+        let rows = properties
+            .iter()
+            .map(|property| {
+                let key = w::Paragraph::new()
+                    .style(PROPERTIES)
+                    .add_run(lines_run(property.key()).color(SECONDARY_COLOR));
+                let value = w::Paragraph::new()
+                    .style(PROPERTIES)
+                    .add_run(lines_run(property.value()));
+                w::TableRow::new(vec![
+                    w::TableCell::new()
+                        .width(key_width, w::WidthType::Dxa)
+                        .add_paragraph(key),
+                    w::TableCell::new()
+                        .width(width - key_width, w::WidthType::Dxa)
+                        .add_paragraph(value),
+                ])
+            })
+            .collect();
+        let table = w::Table::without_borders(rows)
+            .set_grid(vec![key_width, width - key_width])
+            .width(width, w::WidthType::Dxa)
+            .margins(w::TableCellMargins::new().margin(0, twips(12.) as usize, 0, 0))
+            .set_border(
+                w::TableBorder::new(w::TableBorderPosition::Bottom)
+                    .border_type(w::BorderType::Single)
+                    .size(4)
+                    .color(BORDER_COLOR),
+            );
+        self.docx = std::mem::take(&mut self.docx).add_table(table);
+        self.after_list = true;
     }
 
     fn push_table(&mut self, table: TableState) {
@@ -658,6 +749,11 @@ fn styles(style: &ExportStyle) -> Vec<w::Style> {
                 )
             },
         ),
+        w::Style::new(PROPERTIES, w::StyleType::Paragraph)
+            .name("Properties")
+            .based_on(NORMAL)
+            .size(half_points(size * 0.8125))
+            .line_spacing(lines(1.5).after(em(0.25))),
         w::Style::new(TABLE_TEXT, w::StyleType::Paragraph)
             .name("Table Text")
             .based_on(NORMAL)
@@ -714,6 +810,62 @@ fn styles(style: &ExportStyle) -> Vec<w::Style> {
         ));
     }
     styles
+}
+
+/// A run of `text` that keeps its line breaks and spaces.
+fn lines_run(text: &str) -> w::Run {
+    let mut run = w::Run::new();
+    for (ix, line) in text.split('\n').enumerate() {
+        if ix > 0 {
+            run = run.add_break(w::BreakType::TextWrapping);
+        }
+        let line: String = line
+            .trim_end_matches('\r')
+            .replace('\t', "    ")
+            .chars()
+            .filter(|c| is_xml_char(*c))
+            .collect();
+        if !line.is_empty() {
+            run = run.add_text(line);
+        }
+    }
+    run
+}
+
+fn fill(color: &str) -> w::Shading {
+    w::Shading::new().shd_type(w::ShdType::Clear).fill(color)
+}
+
+/// A paragraph of a callout, on the callout's tinted panel. Word draws
+/// neighboring paragraphs with the same borders as one box, so a callout's
+/// paragraphs read as one panel; borders in the panel's own color pad it.
+/// `pad` indents the text so the panel stays between the margins.
+fn in_callout(mut paragraph: w::Paragraph, tone: CalloutTone, pad: bool) -> w::Paragraph {
+    let panel = hex(tint(tone_color(tone), CALLOUT_OPACITY));
+    let mut borders = w::ParagraphBorders::with_empty();
+    for (position, space) in [
+        (w::ParagraphBorderPosition::Top, CALLOUT_PAD_PT / 2),
+        (w::ParagraphBorderPosition::Bottom, CALLOUT_PAD_PT / 2),
+        (w::ParagraphBorderPosition::Left, CALLOUT_PAD_PT),
+        (w::ParagraphBorderPosition::Right, CALLOUT_PAD_PT),
+    ] {
+        borders = borders.set(
+            w::ParagraphBorder::new(position)
+                .val(w::BorderType::Single)
+                .size(4)
+                .space(space)
+                .color(&panel),
+        );
+    }
+    paragraph.property = paragraph
+        .property
+        .shading(fill(&panel))
+        .set_borders(borders);
+    if pad {
+        let inset = twips(CALLOUT_PAD_PT as f32 + 1.);
+        paragraph = paragraph.indent(Some(inset), None, Some(inset), None);
+    }
+    paragraph
 }
 
 fn with_paragraph(
@@ -981,6 +1133,73 @@ mod tests {
             .find(|paragraph| paragraph.contains("The note."))
             .unwrap();
         assert!(definition.contains("[a] "));
+    }
+
+    #[test]
+    fn shows_obsidian_syntax_like_the_preview() {
+        let docx = export(
+            "---\ntitle: Notes\ntags: [a, b]\n---\n\n> [!tip] Read ==this==\n> Body text.\n\nSee [[Weekly Review]], ==marked `code`== and \\==not==.\n",
+            &ExportStyle::default(),
+        );
+        let document = part(&docx, "word/document.xml");
+        // Front matter is a table of properties, not YAML.
+        assert!(!document.contains("title: Notes"));
+        let properties = document.split("<w:tbl>").nth(1).unwrap();
+        assert!(properties.contains(">title</w:t>"));
+        assert!(properties.contains(">a, b</w:t>"));
+        // The callout's title and body share its tinted panel.
+        let panel = hex(tint(tone_color(CalloutTone::Tip), CALLOUT_OPACITY));
+        let paragraphs: Vec<&str> = document.split("<w:p ").collect();
+        let title = paragraphs
+            .iter()
+            .find(|p| p.contains(">Read </w:t>"))
+            .unwrap();
+        let body = paragraphs
+            .iter()
+            .find(|p| p.contains(">Body text.</w:t>"))
+            .unwrap();
+        for paragraph in [title, body] {
+            assert!(paragraph.contains(&format!("w:fill=\"{panel}\"")));
+        }
+        assert!(title.contains("<w:b />"));
+        assert!(title.contains(&format!(
+            "<w:color w:val=\"{}\" />",
+            hex(tone_color(CalloutTone::Tip))
+        )));
+        // Highlights are washed, in the callout's color inside it.
+        let wash = hex(tint(ACCENT, HIGHLIGHT_OPACITY));
+        let marked = paragraphs
+            .iter()
+            .find(|p| p.contains(">marked </w:t>"))
+            .unwrap();
+        assert_eq!(marked.matches(&format!("w:fill=\"{wash}\"")).count(), 2);
+        assert!(!marked.contains(INLINE_CODE_FILL));
+        assert!(marked.contains("==not==."));
+        let callout_wash = hex(tint(
+            tone_color(CalloutTone::Tip),
+            CALLOUT_HIGHLIGHT_OPACITY,
+        ));
+        assert!(title.contains(&format!("w:fill=\"{callout_wash}\"")));
+        // A wikilink points at the note's file.
+        let rels = part(&docx, "word/_rels/document.xml.rels");
+        assert!(rels.contains("Target=\"Weekly%20Review.md\""));
+    }
+
+    #[test]
+    fn a_callout_after_a_list_keeps_its_distance() {
+        let document = part(
+            &export(
+                "- item\n\n> [!note] Title\n> Body\n",
+                &ExportStyle::default(),
+            ),
+            "word/document.xml",
+        );
+        let title = document
+            .split("<w:p ")
+            .find(|paragraph| paragraph.contains(">Title</w:t>"))
+            .unwrap();
+        assert!(title.contains("w:before=\"180\""), "{title}");
+        assert!(title.contains("w:after=\"84\""), "{title}");
     }
 
     #[test]

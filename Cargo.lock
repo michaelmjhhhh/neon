@@ -1623,6 +1623,7 @@ dependencies = [
  "base64 0.22.1",
  "docx-rs",
  "image",
+ "markdown 0.9.1",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
@@ -4252,6 +4253,7 @@ version = "0.9.1"
 dependencies = [
  "anyhow",
  "export",
+ "flate2",
  "futures",
  "gpui-kit",
  "tempfile",

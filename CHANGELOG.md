@@ -48,6 +48,7 @@ Groups, in this order:
 - A nested list sits as close to its parent item as the items sit to each other.
 - An image that cannot load shows which path it looked for.
 - Nested list items in the editor hang from one continuous line under their parent's marker, running past wrapped lines, instead of short ticks beside each line; the line around the item you are editing is a little darker.
+- HTML, PDF and Word exports show callouts as tinted panels with their title, highlights on the same wash, `[[wikilinks]]` as links to the note and front matter as a table of properties, as the preview does, instead of plain text and a YAML block.
 
 ### Fixed
 

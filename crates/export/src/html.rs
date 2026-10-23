@@ -1,10 +1,16 @@
 //! A standalone HTML page: the document's markup, the preview's typography
 //! as CSS, and local images embedded so the file can be moved or shared.
 
-use base64::Engine as _;
-use pulldown_cmark::{CodeBlockKind, CowStr, Event, Parser, Tag, TagEnd, TextMergeStream};
+use std::fmt::Write as _;
 
-use crate::{ExportSource, ExportStyle, images, parser_options};
+use base64::Engine as _;
+use markdown::{CalloutTone, MarkdownEvent, Property};
+use pulldown_cmark::{CowStr, Event, Tag, TagEnd};
+
+use crate::{
+    ACCENT, CALLOUT_HIGHLIGHT_OPACITY, CALLOUT_OPACITY, ExportSource, ExportStyle,
+    HIGHLIGHT_OPACITY, images, tint, tone_color,
+};
 
 const TEXT_FALLBACKS: &str = "-apple-system, BlinkMacSystemFont, \"Helvetica Neue\", sans-serif";
 const CODE_FALLBACKS: &str = "ui-monospace, Menlo, monospace";
@@ -16,7 +22,7 @@ const CODE_FALLBACKS: &str = "ui-monospace, Menlo, monospace";
 pub fn render_html(source: &ExportSource, style: &ExportStyle) -> String {
     let mut body = String::with_capacity(source.markdown.len() * 3 / 2);
     let events = Events {
-        inner: TextMergeStream::new(Parser::new_ext(source.markdown, parser_options())),
+        inner: markdown::events(source.markdown).into_iter(),
         source,
     };
     pulldown_cmark::html::push_html(&mut body, events);
@@ -34,9 +40,9 @@ pub fn render_html(source: &ExportSource, style: &ExportStyle) -> String {
     page
 }
 
-/// The parser's events, adjusted to read like the preview.
+/// The document's events, adjusted to read like the preview.
 struct Events<'a, 'b> {
-    inner: TextMergeStream<'a, Parser<'a>>,
+    inner: std::vec::IntoIter<MarkdownEvent<'a>>,
     source: &'b ExportSource<'b>,
 }
 
@@ -44,12 +50,27 @@ impl<'a> Iterator for Events<'a, '_> {
     type Item = Event<'a>;
 
     fn next(&mut self) -> Option<Event<'a>> {
-        Some(match self.inner.next()? {
-            // The preview shows front matter as a YAML code block.
-            Event::Start(Tag::MetadataBlock(_)) => {
-                Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced("yaml".into())))
+        let event = match self.inner.next()? {
+            MarkdownEvent::Event(event) => event,
+            MarkdownEvent::StartHighlight => return Some(Event::InlineHtml("<mark>".into())),
+            MarkdownEvent::EndHighlight => return Some(Event::InlineHtml("</mark>".into())),
+            MarkdownEvent::StartCallout(kind) => {
+                return Some(Event::Html(
+                    format!(
+                        "<div class=\"callout {}\" data-callout=\"{}\">\n<p class=\"callout-title\">",
+                        CalloutTone::of(&kind).name(),
+                        escape_html(&kind)
+                    )
+                    .into(),
+                ));
             }
-            Event::End(TagEnd::MetadataBlock(_)) => Event::End(TagEnd::CodeBlock),
+            MarkdownEvent::EndCalloutTitle => return Some(Event::Html("</p>\n".into())),
+            MarkdownEvent::EndCallout => return Some(Event::Html("</div>\n".into())),
+            MarkdownEvent::FrontMatter(properties) => {
+                return Some(Event::Html(properties_table(&properties).into()));
+            }
+        };
+        Some(match event {
             // The preview shows HTML as its source rather than rendering it.
             Event::Start(Tag::HtmlBlock) => Event::Html("<pre class=\"html-source\">".into()),
             Event::End(TagEnd::HtmlBlock) => Event::Html("</pre>\n".into()),
@@ -73,6 +94,22 @@ impl<'a> Iterator for Events<'a, '_> {
             event => event,
         })
     }
+}
+
+/// Front matter as the preview shows it: quiet properties above the text,
+/// each key in a muted column beside its value.
+fn properties_table(properties: &[Property]) -> String {
+    let mut table = String::from("<table class=\"properties\">\n<tbody>\n");
+    for property in properties {
+        let value = escape_html(property.value()).replace('\n', "<br>");
+        let _ = writeln!(
+            table,
+            "<tr><th scope=\"row\">{}</th><td>{value}</td></tr>",
+            escape_html(property.key())
+        );
+    }
+    table.push_str("</tbody>\n</table>\n");
+    table
 }
 
 impl Events<'_, '_> {
@@ -106,10 +143,13 @@ impl Events<'_, '_> {
 
 /// The plain text of an image's description, consuming events through the
 /// image's end.
-pub(crate) fn collect_alt<'a>(events: &mut impl Iterator<Item = Event<'a>>) -> String {
+pub(crate) fn collect_alt<'a>(events: &mut impl Iterator<Item = MarkdownEvent<'a>>) -> String {
     let mut alt = String::new();
     let mut depth = 1usize;
     for event in events {
+        let MarkdownEvent::Event(event) = event else {
+            continue;
+        };
         match event {
             Event::Start(_) => depth += 1,
             Event::End(_) => {
@@ -130,7 +170,8 @@ fn stylesheet(style: &ExportStyle) -> String {
     let text_font = font_stack(style.text_font.as_deref(), TEXT_FALLBACKS);
     let code_font = font_stack(style.code_font.as_deref(), CODE_FALLBACKS);
     let size = style.text_size_pt();
-    format!(
+    let highlight = tint(ACCENT, HIGHLIGHT_OPACITY);
+    let mut sheet = format!(
         r#":root {{ color-scheme: light; }}
 html {{ -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }}
 body {{ margin: 0; background: #ffffff; color: #1f2023; font-family: {text_font}; font-size: {size}pt; line-height: 1.6; overflow-wrap: break-word; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
@@ -164,13 +205,42 @@ hr {{ margin: 2em 0; border: 0; border-top: 1px solid #e3e3e8; }}
 pre.html-source {{ padding: 0; border: 0; background: none; color: #8a8d97; }}
 .footnote-definition {{ font-size: 0.875em; color: #5c5f68; }}
 .footnote-definition p {{ display: inline; }}
+mark {{ padding: 0.05em 0.15em; border-radius: 3px; background: #{highlight:06x}; color: inherit; }}
+.callout {{ margin: 0 0 1em; padding: 0.75em 1em; border-radius: 8px; }}
+.callout-title {{ margin: 0 0 0.35em; font-weight: 600; }}
+.callout > :last-child {{ margin-bottom: 0; }}
+table.properties {{ width: 100%; margin: 0 0 1.5em; border-bottom: 1px solid #e3e3e8; font-size: 0.8125em; line-height: 1.5; }}
+table.properties th, table.properties td {{ padding: 0 0 0.25em; border: 0; background: none; text-align: left; vertical-align: top; }}
+table.properties th {{ width: 7rem; padding-right: 1rem; font-weight: 400; color: #5c5f68; overflow-wrap: anywhere; }}
+table.properties tr:last-child > * {{ padding-bottom: 1em; }}
 @media print {{
   main {{ max-width: none; padding: 0; }}
-  pre, blockquote, tr, img {{ break-inside: avoid; }}
+  pre, blockquote, tr, img, .callout {{ break-inside: avoid; }}
   h1, h2, h3, h4, h5, h6 {{ break-after: avoid; break-inside: avoid; }}
 }}
 "#
-    )
+    );
+    // Each tone tints its panel, and the highlights inside it, in its own
+    // color, as the preview does.
+    for tone in [
+        CalloutTone::Note,
+        CalloutTone::Tip,
+        CalloutTone::Success,
+        CalloutTone::Question,
+        CalloutTone::Warning,
+        CalloutTone::Danger,
+        CalloutTone::Quote,
+    ] {
+        let color = tone_color(tone);
+        let _ = writeln!(
+            sheet,
+            ".callout.{name} {{ background: #{panel:06x}; }}\n.callout.{name} > .callout-title {{ color: #{color:06x}; }}\n.callout.{name} mark {{ background: #{mark:06x}; }}",
+            name = tone.name(),
+            panel = tint(color, CALLOUT_OPACITY),
+            mark = tint(color, CALLOUT_HIGHLIGHT_OPACITY),
+        );
+    }
+    sheet
 }
 
 /// A CSS `font-family` list: the chosen family, quoted, then the fallbacks.
@@ -265,13 +335,32 @@ mod tests {
     fn renders_the_markdown_the_preview_supports() {
         let markdown = "---\ntitle: x\n---\n\n# Title\n\n- [x] done\n- [ ] todo\n\n| a | b |\n|---|--:|\n| 1 | 2 |\n\n~~gone~~ and a note[^1].\n\n[^1]: The note.\n";
         let html = export(markdown, &ExportStyle::default());
-        assert!(html.contains("<pre><code class=\"language-yaml\">title: x"));
+        assert!(html.contains("<table class=\"properties\">"));
+        assert!(html.contains("<tr><th scope=\"row\">title</th><td>x</td></tr>"));
         assert!(html.contains("<h1>Title</h1>"));
         assert!(html.contains("<span class=\"task done\">\u{2611}</span> done"));
         assert!(html.contains("<span class=\"task\">\u{2610}</span> todo"));
         assert!(html.contains("<td style=\"text-align: right\">2</td>"));
         assert!(html.contains("<del>gone</del>"));
         assert!(html.contains("class=\"footnote-definition\""));
+    }
+
+    #[test]
+    fn renders_obsidian_syntax_like_the_preview() {
+        let markdown = "---\ntitle: \"A <b>\"\npoem: |\n  one\n  two\n---\n\n> [!tip]- Read ==this==\n> Body with [[Weekly Review]].\n\n> [!WARNING]\n> Careful.\n\n==marked **bold**== and \\==not== and `==code==`\n";
+        let html = export(markdown, &ExportStyle::default());
+        assert!(html.contains("<tr><th scope=\"row\">title</th><td>A &lt;b&gt;</td></tr>"));
+        assert!(html.contains("<td>one<br>two</td>"));
+        assert!(html.contains(
+            "<div class=\"callout tip\" data-callout=\"tip\">\n<p class=\"callout-title\">Read <mark>this</mark></p>\n<p>Body with <a href=\"Weekly%20Review.md\">Weekly Review</a>.</p>\n</div>"
+        ));
+        assert!(html.contains("<p class=\"callout-title\">Warning</p>\n<p>Careful.</p>"));
+        assert!(html.contains(
+            "<mark>marked </mark><strong><mark>bold</mark></strong> and ==not== and <code>==code==</code>"
+        ));
+        assert!(html.contains(".callout.tip {"));
+        assert!(!html.contains("<blockquote>"));
+        assert!(!html.contains("language-yaml"));
     }
 
     #[test]
