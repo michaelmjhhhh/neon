@@ -41,7 +41,7 @@ Groups, in this order:
 ### Changed
 
 - The preview reads in Charter at size 17 with more open leading and lighter, semibold headings; choose System default in Settings for SF Pro.
-- The Editor layout centers the text in a column about 80 characters wide, and the margins beside it scroll the text.
+- The Editor layout centers the text in a column about 80 characters wide, and the margins beside it scroll the text; the column widens for line numbers, so the text keeps its width with them on.
 - Markdown symbols in the editor (`#`, `>`, `1.`, `---`) are a quiet gray instead of the accent color, so the words lead.
 - Line numbers are off by default for new settings; Cmd+Shift+L or Settings turns them on.
 - Inline code in the preview is set in PT Mono when its letters stand closer to the height of the text's than the theme's monospace font, so code no longer looks larger than the Charter around it.

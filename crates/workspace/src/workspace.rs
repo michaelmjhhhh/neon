@@ -18,7 +18,7 @@ use gpui_kit::component::empty::{
 };
 use gpui_kit::component::input::{
     EditorState, Enter, Escape, Indent, IndentInline, Input, InputEvent, InputState, Outdent,
-    OutdentInline,
+    OutdentInline, RopeExt as _,
 };
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::DropdownMenu as _;
@@ -186,6 +186,9 @@ pub struct Workspace {
     /// Starts from the saved setting; the shortcut changes it for this
     /// window only.
     line_numbers: bool,
+    /// The digits the line-number gutter had room for when the editor's
+    /// column was last measured.
+    gutter_digits: Cell<usize>,
     /// Settings cover the window's content while open.
     settings_open: bool,
     settings: Entity<SettingsView>,
@@ -208,6 +211,12 @@ pub struct Workspace {
     /// When a frame was last presented ahead of the display refresh.
     last_eager_present: Option<Instant>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// How many digits the editor's line-number gutter holds for a document of
+/// `lines` lines: at least three, at most seven, as gpui-base lays it out.
+fn gutter_digits(lines: usize) -> usize {
+    (lines.max(1).ilog10() as usize + 1).clamp(3, 7)
 }
 
 impl Workspace {
@@ -301,6 +310,7 @@ impl Workspace {
             panes: cx.new(|_| ResizableState::default()),
             split: cx.new(|_| ResizableState::default()),
             line_numbers,
+            gutter_digits: Cell::new(0),
             settings_open: false,
             settings,
             sidebar,
@@ -514,6 +524,17 @@ impl Workspace {
                 editor.update(cx, |editor, cx| editor.show_completions(window, cx));
             }
             None => {}
+        }
+        // The Editor layout's column widens with the gutter when the line
+        // count gains a digit, as at line 1000. Other layouts do not
+        // measure the column, so typing there never redraws this view.
+        let digits = gutter_digits(source.lines_len());
+        if self.line_numbers
+            && self.zen.is_none()
+            && self.layout == LayoutMode::Editor
+            && self.gutter_digits.replace(digits) != digits
+        {
+            cx.notify();
         }
         self.word_count
             .update(cx, |count, cx| count.set_source(source, cx));
@@ -1372,6 +1393,8 @@ impl Workspace {
             tab.editor
                 .update(cx, |editor, cx| editor.set_line_number(shown, window, cx));
         }
+        // The Editor layout's column makes room for the gutter.
+        cx.notify();
     }
 
     fn zoom_in(&mut self, _: &ZoomIn, window: &mut Window, cx: &mut Context<Self>) {
@@ -2165,16 +2188,29 @@ impl Workspace {
     }
 
     /// The width of `chars` characters of the editor's font, plus the
-    /// editor's insets beside the text.
+    /// editor's insets beside the text and, when line numbers show, their
+    /// gutter, so the text keeps its measure with or without them. Zen
+    /// hides line numbers, so its column never counts them.
     pub(super) fn editor_measure(&self, chars: f32, window: &Window, cx: &gpui_kit::App) -> Pixels {
         let typography = self.typography.read(cx);
         let font = gpui_kit::font(typography.editor_font(cx));
         let size = window.rem_size() * (typography.editor_size(cx) / 16.);
         let text_system = window.text_system();
-        let ch = text_system
-            .ch_width(text_system.resolve_font(&font), size)
-            .unwrap_or(size * 0.6);
-        ch * chars + crate::zen::TEXT_LEADING + crate::zen::TEXT_TRAILING
+        let font_id = text_system.resolve_font(&font);
+        let ch = text_system.ch_width(font_id, size).unwrap_or(size * 0.6);
+        let mut measure = ch * chars + crate::zen::TEXT_LEADING + crate::zen::TEXT_TRAILING;
+        if self.line_numbers && self.zen.is_none() {
+            // gpui-base sizes the gutter to a run of `+` signs, one per
+            // digit, before the margin and fold lane that TEXT_LEADING
+            // already counts.
+            let digits = gutter_digits(self.tab().editor.read(cx).text().lines_len());
+            self.gutter_digits.set(digits);
+            let digit = text_system
+                .advance(font_id, size, '+')
+                .map_or(ch, |advance| advance.width);
+            measure += digit * digits as f32;
+        }
+        measure
     }
 
     fn scroll_editor_from_margin(
