@@ -33,7 +33,7 @@ Groups, in this order:
 
 - Zoom In (⌘=), Zoom Out (⌘-) and Actual Size (⌘0) in the View menu make the editor and preview text bigger or smaller together, saved like the size chosen in Settings.
 - The preview shows Obsidian and GitHub callouts (`> [!tip] Title`) as tinted panels with an icon, in the color of their kind.
-- `==Highlighted==` text shows with a soft accent wash in the preview.
+- `==Highlighted==` text shows with a soft accent wash in the preview; an escaped `\==` stays as typed, as in Obsidian.
 - Inline `code` and highlights in the preview sit on rounded chips a little shorter than the line, instead of square blocks the full line height.
 - `[[Wikilinks]]` and links to other Markdown files open the note in Neon: a note already open comes forward, and a tab with unsaved edits is kept by opening the note in a new tab. A note that is not beside the document is found by name anywhere in the open folder, as in Obsidian.
 - Front matter shows as quiet properties above the document, keys beside values, instead of a YAML code block; lists join with commas and `|` and `>` blocks keep or fold their lines.
@@ -41,9 +41,11 @@ Groups, in this order:
 ### Changed
 
 - The preview reads in Charter at size 17 with more open leading and lighter, semibold headings; choose System default in Settings for SF Pro.
-- The Editor layout centers the text in a column about 80 characters wide, and the margins beside it scroll the text.
+- The Editor layout centers the text in a column about 80 characters wide, and the margins beside it scroll the text; the column widens for line numbers, so the text keeps its width with them on.
 - Markdown symbols in the editor (`#`, `>`, `1.`, `---`) are a quiet gray instead of the accent color, so the words lead.
 - Line numbers are off by default for new settings; Cmd+Shift+L or Settings turns them on.
+- HTML, PDF and Word exports show callouts as tinted panels with their title, highlights on the same wash, `[[wikilinks]]` as links to the note and front matter as a table of properties, as the preview does, instead of plain text and a YAML block.
+- Inline code in the preview is set in PT Mono when its letters stand closer to the height of the text's than the theme's monospace font, so code no longer looks larger than the Charter around it.
 - The sidebar lists notes by name alone, without file icons or the `.md` extension, and the selected row is a neutral gray instead of an orange tint.
 - A nested list sits as close to its parent item as the items sit to each other.
 - An image that cannot load shows which path it looked for.
