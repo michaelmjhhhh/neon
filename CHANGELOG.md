@@ -44,6 +44,7 @@ Groups, in this order:
 - The Editor layout centers the text in a column about 80 characters wide, and the margins beside it scroll the text.
 - Markdown symbols in the editor (`#`, `>`, `1.`, `---`) are a quiet gray instead of the accent color, so the words lead.
 - Line numbers are off by default for new settings; Cmd+Shift+L or Settings turns them on.
+- Inline code in the preview is set in PT Mono when its letters stand closer to the height of the text's than the theme's monospace font, so code no longer looks larger than the Charter around it.
 - The sidebar lists notes by name alone, without file icons or the `.md` extension, and the selected row is a neutral gray instead of an orange tint.
 - A nested list sits as close to its parent item as the items sit to each other.
 - An image that cannot load shows which path it looked for.
