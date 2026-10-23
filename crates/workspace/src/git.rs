@@ -128,6 +128,12 @@ pub(crate) struct Status {
 }
 
 impl Status {
+    /// Parse `git status --porcelain=v2 -z` output, for other modules' tests.
+    #[cfg(test)]
+    pub(crate) fn parse_for_tests(output: &str) -> Self {
+        parse_status(output)
+    }
+
     pub(crate) fn branch(&self) -> Option<&str> {
         self.branch.as_deref()
     }
@@ -171,6 +177,67 @@ impl Status {
                 Some(_) => self.ahead > 0,
                 None => self.has_remote,
             }
+    }
+}
+
+/// A name pointing at a commit, as the history shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RefLabel {
+    /// A local branch; `current` when HEAD is on it.
+    Branch {
+        name: String,
+        current: bool,
+    },
+    /// A remote-tracking branch, such as `origin/main`.
+    Remote(String),
+    Tag(String),
+}
+
+/// One commit of the history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CommitInfo {
+    id: String,
+    parents: Vec<String>,
+    author: String,
+    /// Seconds since the Unix epoch.
+    time: i64,
+    subject: String,
+    refs: Vec<RefLabel>,
+    /// Whether HEAD points here.
+    is_head: bool,
+}
+
+impl CommitInfo {
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub(crate) fn short_id(&self) -> &str {
+        &self.id[..self.id.len().min(7)]
+    }
+
+    pub(crate) fn parents(&self) -> &[String] {
+        &self.parents
+    }
+
+    pub(crate) fn author(&self) -> &str {
+        &self.author
+    }
+
+    pub(crate) fn time(&self) -> i64 {
+        self.time
+    }
+
+    pub(crate) fn subject(&self) -> &str {
+        &self.subject
+    }
+
+    pub(crate) fn refs(&self) -> &[RefLabel] {
+        &self.refs
+    }
+
+    pub(crate) fn is_head(&self) -> bool {
+        self.is_head
     }
 }
 
@@ -331,6 +398,48 @@ impl Repo {
         };
         if output.stdout.len() > MAX_PATCH_BYTES {
             return Err(GitError::new("This change is too large to show."));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    /// The newest `limit` commits of HEAD and every branch, local and
+    /// remote, children before parents.
+    pub(crate) fn log(&self, limit: usize) -> Result<Vec<CommitInfo>> {
+        let limit = format!("--max-count={limit}");
+        let output = self.run(
+            [
+                "log",
+                "--topo-order",
+                "--decorate=short",
+                // Fields apart by unit separators, commits by record separators.
+                "--format=%H%x1f%P%x1f%an%x1f%at%x1f%s%x1f%D%x1e",
+                limit.as_str(),
+                "HEAD",
+                "--branches",
+                "--remotes",
+            ],
+            None,
+        )?;
+        Ok(parse_log(&String::from_utf8_lossy(&output.stdout)))
+    }
+
+    /// What commit `id` changed, against its first parent for a merge.
+    pub(crate) fn show(&self, id: &str) -> Result<String> {
+        let output = self.run(
+            [
+                "show",
+                "--format=",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--find-renames",
+                "--diff-merges=first-parent",
+                id,
+            ],
+            None,
+        )?;
+        if output.stdout.len() > MAX_PATCH_BYTES {
+            return Err(GitError::new("This commit is too large to show."));
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
@@ -568,6 +677,78 @@ fn tracked_change(xy: &str, path: &str, original: Option<String>) -> Change {
     }
 }
 
+/// Parse the `git log` format of [`Repo::log`].
+fn parse_log(output: &str) -> Vec<CommitInfo> {
+    output
+        .split('\x1e')
+        .map(|record| record.trim_start_matches('\n'))
+        .filter(|record| !record.is_empty())
+        .filter_map(|record| {
+            let mut fields = record.split('\x1f');
+            let id = fields.next()?.to_string();
+            let parents = fields
+                .next()?
+                .split(' ')
+                .filter(|parent| !parent.is_empty())
+                .map(String::from)
+                .collect();
+            let author = fields.next()?.to_string();
+            let time = fields.next()?.parse().unwrap_or(0);
+            let subject = fields.next()?.to_string();
+            let (refs, is_head) = parse_decorations(fields.next().unwrap_or(""));
+            Some(CommitInfo {
+                id,
+                parents,
+                author,
+                time,
+                subject,
+                refs,
+                is_head,
+            })
+        })
+        .collect()
+}
+
+/// `HEAD -> main, origin/main, tag: v1` as labels, and whether HEAD is
+/// among them. Remote `HEAD` aliases repeat a branch, so they are left out.
+fn parse_decorations(decorations: &str) -> (Vec<RefLabel>, bool) {
+    let mut is_head = false;
+    let mut labels = Vec::new();
+    for decoration in decorations.split(", ").filter(|d| !d.is_empty()) {
+        if let Some(branch) = decoration.strip_prefix("HEAD -> ") {
+            is_head = true;
+            labels.push(RefLabel::Branch {
+                name: branch.into(),
+                current: true,
+            });
+        } else if decoration == "HEAD" {
+            is_head = true;
+        } else if let Some(tag) = decoration.strip_prefix("tag: ") {
+            labels.push(RefLabel::Tag(tag.into()));
+        } else if decoration.ends_with("/HEAD") {
+            continue;
+        } else if decoration.contains('/') && !decoration.starts_with("refs/") {
+            // Short names: a slash marks a remote, unless a local branch
+            // is named with one; `--decorate=short` cannot tell them apart,
+            // so the remote reading is the common case.
+            labels.push(RefLabel::Remote(decoration.into()));
+        } else {
+            labels.push(RefLabel::Branch {
+                name: decoration.into(),
+                current: false,
+            });
+        }
+    }
+    // The current branch leads, then other branches, remotes, tags.
+    labels.sort_by_key(|label| match label {
+        RefLabel::Branch { current: true, .. } => 0,
+        RefLabel::Branch { .. } => 1,
+        RefLabel::Remote(_) => 2,
+        RefLabel::Tag(_) => 3,
+    });
+    (labels, is_head)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -621,6 +802,31 @@ mod tests {
         let status = parse_status("# branch.oid 1234\0# branch.head (detached)\0");
         assert_eq!(status.branch(), None);
         assert!(!status.can_push());
+    }
+
+    #[test]
+    fn parses_the_log_with_its_labels() {
+        let output = "aaa\x1fbbb ccc\x1fAda\x1f1700000000\x1fMerge storm\x1f\
+                      HEAD -> main, origin/main, origin/HEAD, tag: v1\x1e\n\
+                      bbb\x1f\x1fAda\x1f1690000000\x1fStart\x1f\x1e\n";
+        let commits = parse_log(output);
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].parents(), ["bbb", "ccc"]);
+        assert!(commits[0].is_head());
+        assert_eq!(
+            commits[0].refs(),
+            [
+                RefLabel::Branch {
+                    name: "main".into(),
+                    current: true
+                },
+                RefLabel::Remote("origin/main".into()),
+                RefLabel::Tag("v1".into()),
+            ]
+        );
+        assert!(commits[1].parents().is_empty());
+        assert_eq!(commits[1].time(), 1690000000);
+        assert!(!commits[1].is_head());
     }
 
     #[test]
@@ -860,5 +1066,41 @@ mod tests {
         );
         let outside = tempfile::tempdir().unwrap();
         assert!(within(outside.path().to_path_buf()).is_none());
+    }
+
+    #[test]
+    fn reads_history_and_shows_a_commit() {
+        let Some(fixture) = Fixture::new() else {
+            return;
+        };
+        let repo = &fixture.repo;
+        fixture.write("a.md", "one\n");
+        repo.stage(fixture.status().changes()).unwrap();
+        repo.commit("First").unwrap();
+        repo.run(["switch", "--quiet", "--create", "side"], None)
+            .unwrap();
+        fixture.write("b.md", "side\n");
+        repo.stage(fixture.status().changes()).unwrap();
+        repo.commit("On the side").unwrap();
+        repo.run(["switch", "--quiet", "main"], None).unwrap();
+        fixture.write("a.md", "two\n");
+        repo.stage(fixture.status().changes()).unwrap();
+        repo.commit("Second").unwrap();
+        repo.run(["merge", "--quiet", "--no-edit", "side"], None)
+            .unwrap();
+
+        let commits = repo.log(100).unwrap();
+        let subjects: Vec<_> = commits.iter().map(CommitInfo::subject).collect();
+        assert_eq!(subjects.len(), 4);
+        assert!(subjects[0].starts_with("Merge branch"));
+        assert_eq!(commits[0].parents().len(), 2);
+        assert!(commits[0].is_head());
+
+        // A merge shows what it brought in from the side.
+        let patch = repo.show(commits[0].id()).unwrap();
+        assert!(patch.contains("+side"));
+        // The first commit shows against nothing.
+        let first = commits.last().unwrap();
+        assert!(repo.show(first.id()).unwrap().contains("+one"));
     }
 }

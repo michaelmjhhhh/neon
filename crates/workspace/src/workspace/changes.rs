@@ -1,10 +1,13 @@
 //! The sidebar's Changes view: what changed in the Git repository the open
-//! folder is in, which of it the next commit takes, the commit message, and
-//! pushing. A change picked in the list shows its diff in the sheet, in
-//! place of the document, until Escape, Edit or another view.
+//! folder is in, grouped by folder, which of it the next commit takes, the
+//! commit message, and pushing. A change picked in the list shows its diff
+//! in the sheet, in place of the document, until Escape, Edit or another
+//! view.
 //!
-//! The view appears only for a folder inside a Git working tree.
+//! The view, and History beside it, appear only for a folder inside a Git
+//! working tree.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -40,11 +43,20 @@ use super::{
     split_extension,
 };
 use crate::KEY_CONTEXT;
+use crate::change_tree::{ChangeRow, change_rows, paths_inside};
 use crate::git::{Change, ChangeKind, GitError, Repo, Staged, Status};
 
 gpui_kit::actions!(
     workspace,
-    [ShowFiles, ShowChanges, StageAll, UnstageAll, Commit, Push]
+    [
+        ShowFiles,
+        ShowChanges,
+        ShowHistory,
+        StageAll,
+        UnstageAll,
+        Commit,
+        Push
+    ]
 );
 
 /// What the sidebar lists.
@@ -53,6 +65,7 @@ pub(super) enum SidebarView {
     #[default]
     Files,
     Changes,
+    History,
 }
 
 /// A commit or push in flight. Staging has no state of its own: a checkbox
@@ -91,6 +104,8 @@ pub(super) struct Changes {
     shown_patch: Option<(String, String)>,
     diff_error: Option<SharedString>,
     diff_task: Option<Task<()>>,
+    /// Folders of the list shown closed, by path.
+    collapsed: HashSet<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -124,8 +139,17 @@ impl Changes {
             shown_patch: None,
             diff_error: None,
             diff_task: None,
+            collapsed: HashSet::new(),
             _subscriptions: subscriptions,
         }
+    }
+
+    pub(super) fn repo(&self) -> Option<&Repo> {
+        self.repo.as_ref()
+    }
+
+    pub(super) fn status(&self) -> Option<&Status> {
+        self.status.as_ref()
     }
 
     fn change(&self, path: &str) -> Option<&Change> {
@@ -148,13 +172,15 @@ impl Workspace {
         self.changes.repo.is_some()
     }
 
-    /// Whether the sheet shows a change's diff in place of the document.
+    /// Whether the sheet shows a change's or a commit's diff in place of
+    /// the document.
     pub(super) fn showing_diff(&self) -> bool {
-        self.sidebar_visible
-            && self.sidebar_view == SidebarView::Changes
-            && self.changes.selected.is_some()
-            && self.zen.is_none()
-            && !self.settings_open
+        let picked = match self.sidebar_view {
+            SidebarView::Files => false,
+            SidebarView::Changes => self.changes.selected.is_some(),
+            SidebarView::History => self.history.selected().is_some(),
+        };
+        picked && self.sidebar_visible && self.zen.is_none() && !self.settings_open
     }
 
     /// Find the repository `folder` is in, then read its status. Runs on
@@ -172,6 +198,8 @@ impl Workspace {
                     this.changes.status_error = None;
                     this.changes.selected = None;
                     this.changes.shown_patch = None;
+                    this.changes.collapsed.clear();
+                    this.reset_history();
                 }
                 this.changes.repo = repo;
                 if this.changes.repo.is_some() {
@@ -219,6 +247,10 @@ impl Workspace {
                         }
                         this.changes.status = Some(status);
                         this.load_diff(cx);
+                        // A commit, push or branch switch changes the history.
+                        if this.history_visible() {
+                            this.load_history(cx);
+                        }
                     }
                     Err(error) => {
                         this.changes.status_error = Some(sentence(&error.to_string()).into());
@@ -426,22 +458,40 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.has_repository() {
-            let message = match &self.folder {
-                Some(folder) => format!(
-                    "“{}” isn’t in a Git repository, so it has no changes to show.",
-                    super::file_name(folder)
-                ),
-                None => "Open a folder in a Git repository to see its changes.".into(),
-            };
-            window.push_notification(Notification::info(message), cx);
-            return;
+        if self.require_repository("changes", window, cx) {
+            self.set_sidebar_view(SidebarView::Changes, window, cx);
         }
-        self.set_sidebar_view(SidebarView::Changes, window, cx);
+    }
+
+    pub(super) fn show_history(
+        &mut self,
+        _: &ShowHistory,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.require_repository("history", window, cx) {
+            self.set_sidebar_view(SidebarView::History, window, cx);
+        }
+    }
+
+    /// Whether the folder is in a repository; says why not if it isn't.
+    fn require_repository(&self, what: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.has_repository() {
+            return true;
+        }
+        let message = match &self.folder {
+            Some(folder) => format!(
+                "“{}” isn’t in a Git repository, so it has no {what} to show.",
+                super::file_name(folder)
+            ),
+            None => format!("Open a folder in a Git repository to see its {what}."),
+        };
+        window.push_notification(Notification::info(message), cx);
+        false
     }
 
     fn set_sidebar_view(&mut self, view: SidebarView, window: &mut Window, cx: &mut Context<Self>) {
-        if view == SidebarView::Changes && !self.has_repository() {
+        if view != SidebarView::Files && !self.has_repository() {
             return;
         }
         let shown = self.sidebar_visible && self.sidebar_view == view;
@@ -467,6 +517,9 @@ impl Workspace {
             self.select_change(selected, window, cx);
             self.refresh_changes(cx);
         }
+        if view == SidebarView::History && !shown {
+            self.load_history(cx);
+        }
         cx.notify();
     }
 
@@ -480,10 +533,20 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Back to the document from a diff.
+    /// Back to the document from a change's or a commit's diff.
     pub(super) fn close_diff(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.select_change(None, window, cx);
+        match self.sidebar_view {
+            SidebarView::History => self.select_commit(None, cx),
+            _ => self.select_change(None, window, cx),
+        }
         self.focus_content(window, cx);
+    }
+
+    fn toggle_folder(&mut self, path: String, cx: &mut Context<Self>) {
+        if !self.changes.collapsed.remove(&path) {
+            self.changes.collapsed.insert(path);
+        }
+        cx.notify();
     }
 
     /// Open the shown change's file in the editor, in place of its diff.
@@ -557,53 +620,169 @@ impl Workspace {
         }));
     }
 
-    /// The Files and Changes switch, at the top of the sidebar, for a folder
-    /// in a repository.
+    /// The Files, Changes and History switch, at the top of the sidebar,
+    /// for a folder in a repository.
     pub(super) fn render_sidebar_switch(&self, cx: &mut Context<Self>) -> Option<TabBar> {
         self.changes.repo.as_ref()?;
-        let selected = match self.sidebar_view {
-            SidebarView::Files => 0,
-            SidebarView::Changes => 1,
+        const VIEWS: [SidebarView; 3] = [
+            SidebarView::Files,
+            SidebarView::Changes,
+            SidebarView::History,
+        ];
+        let selected = VIEWS
+            .iter()
+            .position(|view| *view == self.sidebar_view)
+            .unwrap_or_default();
+        let tab = |icon: gpui_kit::component::Icon,
+                   label: &'static str,
+                   action: &'static dyn gpui_kit::Action| {
+            Tab::new()
+                .icon(icon)
+                .aria_label(label)
+                .tooltip(move |window, cx| {
+                    Tooltip::new(label)
+                        .action(action, Some(KEY_CONTEXT))
+                        .build(window, cx)
+                })
         };
         Some(
             TabBar::new("sidebar-view")
                 .segmented()
                 .small()
-                .child(
-                    Tab::new()
-                        .icon(IconName::Folder)
-                        .aria_label("Files")
-                        .tooltip(|window, cx| {
-                            Tooltip::new("Files")
-                                .action(&ShowFiles, Some(KEY_CONTEXT))
-                                .build(window, cx)
-                        }),
-                )
-                .child(
-                    Tab::new()
-                        .icon(AssetIcon::GitCompare)
-                        .aria_label("Changes")
-                        .tooltip(|window, cx| {
-                            Tooltip::new("Changes")
-                                .action(&ShowChanges, Some(KEY_CONTEXT))
-                                .build(window, cx)
-                        }),
-                )
+                .child(tab(IconName::Folder.into(), "Files", &ShowFiles))
+                .child(tab(AssetIcon::GitCompare.into(), "Changes", &ShowChanges))
+                .child(tab(AssetIcon::GitGraph.into(), "History", &ShowHistory))
                 .selected_index(selected)
                 .on_click(cx.listener(|this, ix: &usize, window, cx| {
-                    let view = if *ix == 0 {
-                        SidebarView::Files
-                    } else {
-                        SidebarView::Changes
-                    };
-                    this.set_sidebar_view(view, window, cx);
+                    if let Some(view) = VIEWS.get(*ix) {
+                        this.set_sidebar_view(*view, window, cx);
+                    }
                 })),
+        )
+    }
+
+    /// The branch, how far it is from its upstream, and pushing, where the
+    /// Files view shows the folder's name. Shared by Changes and History.
+    pub(super) fn render_branch_header(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let status = self.changes.status.as_ref()?;
+        let muted = cx.theme().muted_foreground;
+        let busy = self.changes.operation.is_some();
+        let pushing = self.changes.operation == Some(Operation::Pushing);
+        let staged = self.changes.staged_count();
+        let total = status.changes().len();
+        let distance = [(status.ahead(), "↑"), (status.behind(), "↓")]
+            .into_iter()
+            .filter(|(count, _)| *count > 0)
+            .map(|(count, arrow)| format!("{arrow}{}", format_count(count)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let distance_label = match (status.ahead(), status.behind()) {
+            (0, 0) => None,
+            (ahead, 0) => Some(format!("{} to push", commits(ahead))),
+            (0, behind) => Some(format!("{} to pull", commits(behind))),
+            (ahead, behind) => Some(format!("{} to push, {behind} to pull", commits(ahead))),
+        };
+        let can_stage_all = !busy && staged < total;
+        let can_unstage_all = !busy && staged > 0;
+        // Staging applies to the Changes list only.
+        let staging = self.sidebar_view == SidebarView::Changes;
+        let reading = self.changes.status_task.is_some() || self.history.is_reading();
+        Some(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap_1()
+                .h_8()
+                .mx_2()
+                .pl_1()
+                .child(
+                    div()
+                        .flex()
+                        .flex_1()
+                        .items_center()
+                        .gap_1p5()
+                        .min_w_0()
+                        .text_sm()
+                        .child(Icon::new(AssetIcon::GitBranch).xsmall().text_color(muted))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .when(status.branch().is_none(), |this| this.text_color(muted))
+                                .child(status.branch().unwrap_or("Detached").to_string()),
+                        )
+                        .when_some(distance_label, |this, label| {
+                            this.child(
+                                div()
+                                    .id("branch-distance")
+                                    .flex_none()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .font_features(FontFeatures(Arc::new(vec![("tnum".into(), 1)])))
+                                    .tooltip(move |window, cx| {
+                                        Tooltip::new(label.clone()).build(window, cx)
+                                    })
+                                    .child(distance),
+                            )
+                        }),
+                )
+                .when(reading && !busy, |this| {
+                    this.child(Spinner::new().xsmall().color(muted))
+                })
+                .when(status.can_push() || pushing, |this| {
+                    let target = status.upstream().map_or_else(
+                        || "Push this branch".to_string(),
+                        |upstream| format!("Push to {upstream}"),
+                    );
+                    this.child(
+                        Button::new("push")
+                            .xsmall()
+                            .outline()
+                            .icon(IconName::ArrowUp)
+                            .label("Push")
+                            .tooltip(target)
+                            .loading(pushing)
+                            .disabled(busy)
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.push(&Push, window, cx)),
+                            ),
+                    )
+                })
+                .child(
+                    Button::new("changes-actions")
+                        .small()
+                        .ghost()
+                        .icon(IconName::Ellipsis)
+                        .accessibility_label("Repository actions")
+                        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                            let menu = if staging {
+                                menu.menu_with_disabled(
+                                    "Stage All",
+                                    Box::new(StageAll),
+                                    !can_stage_all,
+                                )
+                                .menu_with_disabled(
+                                    "Unstage All",
+                                    Box::new(UnstageAll),
+                                    !can_unstage_all,
+                                )
+                                .separator()
+                            } else {
+                                menu
+                            };
+                            menu.menu("Refresh", Box::new(RefreshFolder))
+                        }),
+                )
+                .into_any_element(),
         )
     }
 
     /// The Changes view below the window controls: the branch, the changed
     /// files, and the commit message.
     pub(super) fn render_changes(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let header = self.render_branch_header(cx);
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let Some(status) = self.changes.status.as_ref() else {
@@ -636,104 +815,9 @@ impl Workspace {
         };
 
         let busy = self.changes.operation.is_some();
-        let pushing = self.changes.operation == Some(Operation::Pushing);
         let staged = self.changes.staged_count();
         let total = status.changes().len();
         let all_staged = total > 0 && staged == total;
-
-        // The branch, how far it is from its upstream, and pushing. It sits
-        // where the Files view shows the folder's name.
-        let distance = [(status.ahead(), "↑"), (status.behind(), "↓")]
-            .into_iter()
-            .filter(|(count, _)| *count > 0)
-            .map(|(count, arrow)| format!("{arrow}{}", format_count(count)))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let distance_label = match (status.ahead(), status.behind()) {
-            (0, 0) => None,
-            (ahead, 0) => Some(format!("{} to push", commits(ahead))),
-            (0, behind) => Some(format!("{} to pull", commits(behind))),
-            (ahead, behind) => Some(format!("{} to push, {behind} to pull", commits(ahead))),
-        };
-        let can_stage_all = !busy && staged < total;
-        let can_unstage_all = !busy && staged > 0;
-        let header = div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap_1()
-            .h_8()
-            .mx_2()
-            .pl_1()
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .items_center()
-                    .gap_1p5()
-                    .min_w_0()
-                    .text_sm()
-                    .child(Icon::new(AssetIcon::GitBranch).xsmall().text_color(muted))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .when(status.branch().is_none(), |this| this.text_color(muted))
-                            .child(status.branch().unwrap_or("Detached").to_string()),
-                    )
-                    .when_some(distance_label, |this, label| {
-                        this.child(
-                            div()
-                                .id("branch-distance")
-                                .flex_none()
-                                .text_xs()
-                                .text_color(muted)
-                                .font_features(FontFeatures(Arc::new(vec![("tnum".into(), 1)])))
-                                .tooltip(move |window, cx| {
-                                    Tooltip::new(label.clone()).build(window, cx)
-                                })
-                                .child(distance),
-                        )
-                    }),
-            )
-            .when(self.changes.status_task.is_some() && !busy, |this| {
-                this.child(Spinner::new().xsmall().color(muted))
-            })
-            .when(status.can_push() || pushing, |this| {
-                let target = status.upstream().map_or_else(
-                    || "Push this branch".to_string(),
-                    |upstream| format!("Push to {upstream}"),
-                );
-                this.child(
-                    Button::new("push")
-                        .xsmall()
-                        .outline()
-                        .icon(IconName::ArrowUp)
-                        .label("Push")
-                        .tooltip(target)
-                        .loading(pushing)
-                        .disabled(busy)
-                        .on_click(cx.listener(|this, _, window, cx| this.push(&Push, window, cx))),
-                )
-            })
-            .child(
-                Button::new("changes-actions")
-                    .small()
-                    .ghost()
-                    .icon(IconName::Ellipsis)
-                    .accessibility_label("Changes actions")
-                    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
-                        menu.menu_with_disabled("Stage All", Box::new(StageAll), !can_stage_all)
-                            .menu_with_disabled(
-                                "Unstage All",
-                                Box::new(UnstageAll),
-                                !can_unstage_all,
-                            )
-                            .separator()
-                            .menu("Refresh", Box::new(RefreshFolder))
-                    }),
-            );
 
         if total == 0 {
             let description = if status.ahead() > 0 {
@@ -746,7 +830,7 @@ impl Workspace {
                 .flex_col()
                 .flex_1()
                 .min_h_0()
-                .child(header)
+                .children(header)
                 .child(sidebar_empty_state(
                     IconName::Check,
                     "No changes",
@@ -757,35 +841,23 @@ impl Workspace {
 
         let rem = window.rem_size();
         let row_radius = theme.radius;
+        let guide = theme.sidebar_border;
         let selected = self.changes.selected.clone();
-        let rows = status.changes().iter().map(|change| {
-            let path = change.path().to_string();
-            let is_selected = selected.as_deref() == Some(change.path());
-            let (directory, name) = match path.rsplit_once('/') {
-                Some((directory, name)) => (Some(directory.to_string()), name.to_string()),
-                None => (None, path.clone()),
-            };
-            // As in the Files view, Markdown names go without `.md`.
-            let name = if crate::folder::is_markdown(Path::new(&name)) {
-                split_extension(&name).0
-            } else {
-                name
-            };
-            let staged = change.staged();
-            let deleted = change.kind() == ChangeKind::Deleted;
-            let checkbox_label = format!(
-                "{} {}",
-                if staged == Staged::No {
-                    "Stage"
-                } else {
-                    "Unstage"
-                },
-                change.path()
-            );
-            let toggle_path = path.clone();
-            let select_path = path.clone();
-            ListItem::new(SharedString::from(format!("change-{path}")))
-                .selected(is_selected)
+        let changes = status.changes();
+        // One slot per enclosing folder, with a hairline under that folder's
+        // chevron, as in the Files view.
+        let guides = move |depth: usize| {
+            (0..depth).map(move |_| {
+                div()
+                    .flex_none()
+                    .w(rem * 1.25)
+                    .h_7()
+                    .pl(rem * 0.5)
+                    .child(div().w(gpui_kit::px(1.)).h_full().bg(guide))
+            })
+        };
+        let row = |id: String| {
+            ListItem::new(SharedString::from(id))
                 .h_7()
                 .mx_2()
                 .px_0()
@@ -794,47 +866,142 @@ impl Workspace {
                 .pr_2()
                 .rounded(row_radius)
                 .text_sm()
-                .accessibility_label(SharedString::from(path.clone()))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.select_change(Some(select_path.clone()), window, cx);
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .w_full()
-                        .min_w_0()
-                        .child(
-                            Checkbox::new(SharedString::from(format!("stage-{path}")))
-                                .small()
-                                // A partly staged file commits its staged
-                                // version; checking it again takes the rest.
-                                .checked(staged != Staged::No)
-                                .when(staged == Staged::Partly, |this| {
-                                    this.tooltip(
-                                        "Some edits aren’t staged. Check to stage them too.",
-                                    )
-                                })
-                                .accessibility_label(checkbox_label)
-                                .disabled(busy)
-                                .on_click(cx.listener(move |this, checked: &bool, window, cx| {
-                                    cx.stop_propagation();
-                                    let stage = *checked || staged == Staged::Partly;
-                                    this.set_staged(vec![toggle_path.clone()], stage, window, cx);
-                                })),
-                        )
+        };
+        // A fixed lane, so the words and counts line up down the list.
+        let lane = move |text: String| {
+            div()
+                .flex_none()
+                .w(rem * 3.5)
+                .text_right()
+                .text_xs()
+                .text_color(muted)
+                .child(text)
+        };
+        let rows = change_rows(changes, &self.changes.collapsed)
+            .into_iter()
+            .map(|entry| match entry {
+                ChangeRow::Folder {
+                    path,
+                    label,
+                    depth,
+                    count,
+                    staged,
+                    expanded,
+                } => {
+                    let inside = paths_inside(changes, &path);
+                    let toggle_path = path.clone();
+                    row(format!("folder-{path}"))
+                        .accessibility_label(SharedString::from(path.clone()))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.toggle_folder(toggle_path.clone(), cx);
+                        }))
                         .child(
                             div()
                                 .flex()
-                                .flex_1()
-                                .items_baseline()
-                                .gap_1p5()
+                                .items_center()
+                                .gap_1()
+                                .w_full()
                                 .min_w_0()
                                 .child(
+                                    Checkbox::new(SharedString::from(format!("stage-folder-{path}")))
+                                        .small()
+                                        .checked(staged)
+                                        .accessibility_label(format!(
+                                            "{} everything in {path}",
+                                            if staged { "Unstage" } else { "Stage" }
+                                        ))
+                                        .disabled(busy)
+                                        .on_click(cx.listener(
+                                            move |this, checked: &bool, window, cx| {
+                                                cx.stop_propagation();
+                                                this.set_staged(inside.clone(), *checked, window, cx);
+                                            },
+                                        )),
+                                )
+                                .children(guides(depth))
+                                .child(
+                                    super::icon_slot().text_color(muted).child(
+                                        Icon::new(if expanded {
+                                            IconName::ChevronDown
+                                        } else {
+                                            IconName::ChevronRight
+                                        })
+                                        .xsmall(),
+                                    ),
+                                )
+                                .child(div().flex_1().min_w_0().truncate().child(label))
+                                .child(lane(format_count(count))),
+                        )
+                }
+                ChangeRow::File { index, depth } => {
+                    let change = &changes[index];
+                    let path = change.path().to_string();
+                    let is_selected = selected.as_deref() == Some(change.path());
+                    let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+                    // As in the Files view, Markdown names go without `.md`.
+                    let name = if crate::folder::is_markdown(Path::new(&name)) {
+                        split_extension(&name).0
+                    } else {
+                        name
+                    };
+                    let staged = change.staged();
+                    let deleted = change.kind() == ChangeKind::Deleted;
+                    let checkbox_label = format!(
+                        "{} {path}",
+                        if staged == Staged::No {
+                            "Stage"
+                        } else {
+                            "Unstage"
+                        }
+                    );
+                    let toggle_path = path.clone();
+                    let select_path = path.clone();
+                    row(format!("change-{path}"))
+                        .selected(is_selected)
+                        .accessibility_label(SharedString::from(path.clone()))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.select_change(Some(select_path.clone()), window, cx);
+                        }))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .w_full()
+                                .min_w_0()
+                                .child(
+                                    Checkbox::new(SharedString::from(format!("stage-{path}")))
+                                        .small()
+                                        // A partly staged file commits its staged
+                                        // version; checking it again takes the rest.
+                                        .checked(staged != Staged::No)
+                                        .when(staged == Staged::Partly, |this| {
+                                            this.tooltip(
+                                                "Some edits aren’t staged. Check to stage them too.",
+                                            )
+                                        })
+                                        .accessibility_label(checkbox_label)
+                                        .disabled(busy)
+                                        .on_click(cx.listener(
+                                            move |this, checked: &bool, window, cx| {
+                                                cx.stop_propagation();
+                                                let stage = *checked || staged == Staged::Partly;
+                                                this.set_staged(
+                                                    vec![toggle_path.clone()],
+                                                    stage,
+                                                    window,
+                                                    cx,
+                                                );
+                                            },
+                                        )),
+                                )
+                                .children(guides(depth))
+                                // Names line up with folder names beside them.
+                                .child(super::icon_slot())
+                                .child(
                                     div()
-                                        .flex_shrink_0()
-                                        .max_w_full()
+                                        .flex_1()
+                                        .min_w_0()
                                         .truncate()
                                         .when(is_selected, |this| {
                                             this.font_weight(FontWeight::MEDIUM)
@@ -842,27 +1009,10 @@ impl Workspace {
                                         .when(deleted, |this| this.line_through())
                                         .child(name),
                                 )
-                                .children(directory.map(|directory| {
-                                    div()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_xs()
-                                        .text_color(muted)
-                                        .child(directory)
-                                })),
+                                .child(lane(change.kind().label().to_string())),
                         )
-                        // A fixed lane, so the words line up down the list.
-                        .child(
-                            div()
-                                .flex_none()
-                                .w(rem * 3.5)
-                                .text_right()
-                                .text_xs()
-                                .text_color(muted)
-                                .child(change.kind().label()),
-                        ),
-                )
-        });
+                }
+            });
 
         let list = div()
             .id("changes-list")
@@ -950,7 +1100,7 @@ impl Workspace {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .child(header)
+            .children(header)
             .child(list)
             .child(composer)
             .into_any_element()
@@ -959,6 +1109,9 @@ impl Workspace {
     /// The sheet's header while it shows a diff: the file, how it changed,
     /// and the way back to writing.
     pub(super) fn render_diff_header(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        if self.sidebar_view == SidebarView::History {
+            return self.render_commit_header(window, cx);
+        }
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let path = self.changes.selected.clone().unwrap_or_default();
@@ -1083,6 +1236,9 @@ impl Workspace {
 
     /// The diff itself, or why there is none to show.
     pub(super) fn render_diff_body(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.sidebar_view == SidebarView::History {
+            return self.render_commit_body(cx);
+        }
         let path = self.changes.selected.as_deref().unwrap_or_default();
         let shown = self
             .changes
@@ -1149,6 +1305,9 @@ impl Workspace {
 
     /// The sheet's footer while it shows a diff: what it compares with.
     pub(super) fn render_diff_footer(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.sidebar_view == SidebarView::History {
+            return self.render_commit_footer(cx);
+        }
         let theme = cx.theme();
         let unsaved = self
             .changes

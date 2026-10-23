@@ -44,7 +44,7 @@ Neon is built on [GPUI](https://github.com/zed-industries/zed/tree/main/crates/g
 
 - **Tabs**, each with its own edits, undo history and scroll position.
 - **Folder sidebar** for nested Markdown files, with new file and new folder.
-- **Git changes** for a folder in a Git repository: see what changed since the last commit, word by word, then stage, commit and push from the sidebar.
+- **Git** for a folder in a Git repository: see what changed since the last commit, word by word, then stage, commit and push from the sidebar, and browse the history as a branch graph.
 - **Picks up where you left off:** Neon reopens the last folder and file at launch.
 - **Export** to HTML, PDF or Word in the preview's font, with local images embedded.
 

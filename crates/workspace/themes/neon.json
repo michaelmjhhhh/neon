@@ -42,6 +42,12 @@
         "info.background": "#1f6fd1",
         "info.foreground": "#ffffff",
 
+        "chart.1": "#eb4b10",
+        "chart.2": "#3a6fd8",
+        "chart.3": "#178a85",
+        "chart.4": "#8452d1",
+        "chart.5": "#a87717",
+
         "link.foreground": "#c93f0a",
         "link.hover.foreground": "#eb4b10",
         "link.active.foreground": "#a8350a",
@@ -183,6 +189,12 @@
         "success.foreground": "#0f1a14",
         "info.background": "#4fa3f7",
         "info.foreground": "#0e1724",
+
+        "chart.1": "#ff5a1f",
+        "chart.2": "#5b8ff0",
+        "chart.3": "#33b3ad",
+        "chart.4": "#a77cf0",
+        "chart.5": "#e0a93a",
 
         "link.foreground": "#ff8a5c",
         "link.hover.foreground": "#ffa37f",

@@ -1,5 +1,7 @@
 //! The document window: a Markdown editor beside its live preview.
 
+mod change_tree;
+mod commit_graph;
 mod document_file;
 mod editor_pane;
 mod find_bar;
@@ -41,7 +43,7 @@ pub use workspace::{
     ToggleItalic, ToggleLineNumbers, ToggleSidebar, ToggleTheme, ToggleZen, Workspace, ZoomIn,
     ZoomOut,
 };
-pub use workspace::{Push, ShowChanges, ShowFiles, StageAll, UnstageAll};
+pub use workspace::{Push, ShowChanges, ShowFiles, ShowHistory, StageAll, UnstageAll};
 
 const KEY_CONTEXT: &str = "Workspace";
 /// The sidebar's file tree while it has focus. Its Copy and Paste act on
@@ -58,6 +60,7 @@ gpui_kit::assets::icon_assets!(
         Focus,
         GitBranch,
         GitCompare,
+        GitGraph,
         ImageOff,
         Lightbulb,
         PenLine,

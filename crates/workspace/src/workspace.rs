@@ -54,10 +54,12 @@ use crate::word_count::WordCount;
 use crate::zen::{Zen, ZenView};
 
 mod changes;
+mod history;
 mod tabs;
 mod zen_mode;
 use changes::{Changes, SidebarView};
-pub use changes::{Commit, Push, ShowChanges, ShowFiles, StageAll, UnstageAll};
+pub use changes::{Commit, Push, ShowChanges, ShowFiles, ShowHistory, StageAll, UnstageAll};
+use history::History;
 use tabs::DocumentTab;
 
 #[cfg(feature = "memory-bench")]
@@ -196,6 +198,8 @@ pub struct Workspace {
     sidebar_view: SidebarView,
     /// The Git repository the folder is in, if any; see [`changes`].
     changes: Changes,
+    /// The repository's commits; see [`history`].
+    history: History,
     /// The sidebar and sheet widths, and the split between editor and
     /// preview. Owned here so they outlive the frames that do not show them:
     /// hiding the sidebar or leaving Split does not reset them.
@@ -249,6 +253,7 @@ impl Workspace {
 
         let tree = cx.new(|cx| TreeState::new(cx));
         let changes = Changes::new(window, cx);
+        let history = History::new(cx);
         let settings = cx.new(|cx| SettingsView::new(typography.clone(), cx));
         let sidebar = cx.new({
             let workspace = cx.weak_entity();
@@ -332,6 +337,7 @@ impl Workspace {
             sidebar_visible: true,
             sidebar_view: SidebarView::default(),
             changes,
+            history,
             panes: cx.new(|_| ResizableState::default()),
             split: cx.new(|_| ResizableState::default()),
             line_numbers,
@@ -1592,6 +1598,13 @@ impl Workspace {
     /// document sheet beside it is the only raised region.
     fn render_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let switch = self.render_sidebar_switch(cx);
+        // Changes and History replace the folder's header and tree.
+        let git_view = match self.sidebar_view {
+            _ if !self.has_repository() => None,
+            SidebarView::Files => None,
+            SidebarView::Changes => Some(self.render_changes(window, cx)),
+            SidebarView::History => Some(self.render_history(window, cx)),
+        };
         let theme = cx.theme();
         let active = self
             .tab()
@@ -1622,7 +1635,7 @@ impl Workspace {
                         .child(sidebar_toggle(true, cx)),
                 ),
         );
-        if self.sidebar_view == SidebarView::Changes && self.has_repository() {
+        if let Some(view) = git_view {
             return div()
                 .flex()
                 .flex_col()
@@ -1631,7 +1644,7 @@ impl Workspace {
                 .bg(theme.sidebar)
                 .text_color(theme.sidebar_foreground)
                 .child(controls_row)
-                .child(self.render_changes(window, cx))
+                .child(view)
                 .into_any_element();
         }
 
@@ -2685,6 +2698,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::show_files))
             .on_action(cx.listener(Self::show_changes))
+            .on_action(cx.listener(Self::show_history))
             .on_action(cx.listener(Self::stage_all))
             .on_action(cx.listener(Self::unstage_all))
             .on_action(cx.listener(Self::commit))
