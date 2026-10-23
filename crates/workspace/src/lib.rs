@@ -42,6 +42,9 @@ pub use workspace::{
 };
 
 const KEY_CONTEXT: &str = "Workspace";
+/// The sidebar's file tree while it has focus. Its Copy and Paste act on
+/// files, so they bind here alone and the editor keeps Cmd-C and Cmd-V.
+const TREE_KEY_CONTEXT: &str = "Workspace > Tree";
 
 gpui_kit::assets::icon_assets!(
     ExtraIcons,
@@ -100,6 +103,24 @@ pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("secondary-n", NewFile, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-shift-n", NewFolder, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-c", workspace::CopyEntry, Some(TREE_KEY_CONTEXT)),
+        KeyBinding::new("secondary-v", workspace::PasteEntry, Some(TREE_KEY_CONTEXT)),
+        KeyBinding::new(
+            "secondary-d",
+            workspace::DuplicateEntry,
+            Some(TREE_KEY_CONTEXT),
+        ),
+        // As in Zed and VS Code.
+        KeyBinding::new(
+            "alt-secondary-c",
+            workspace::CopyEntryPath,
+            Some(TREE_KEY_CONTEXT),
+        ),
+        KeyBinding::new(
+            "alt-secondary-r",
+            workspace::RevealEntry,
+            Some(TREE_KEY_CONTEXT),
+        ),
         KeyBinding::new("secondary-shift-o", OpenFolder, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-,", OpenSettings, Some(KEY_CONTEXT)),
         KeyBinding::new("escape", CloseSettings, Some(SETTINGS_KEY_CONTEXT)),

@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::folder::{find_note, folder_name_error, is_markdown, scan_folder};
+use crate::folder::{copy_entry, find_note, folder_name_error, is_markdown, scan_folder};
 use crate::session_file::Session;
 use crate::typography::Typography;
 use export::ExportFormat;
@@ -17,11 +17,11 @@ use gpui_kit::component::empty::{
     Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
 };
 use gpui_kit::component::input::{
-    EditorState, Enter, Escape, Indent, IndentInline, Input, InputEvent, InputState, Outdent,
+    self, EditorState, Enter, Escape, Indent, IndentInline, Input, InputEvent, InputState, Outdent,
     OutdentInline, RopeExt as _,
 };
 use gpui_kit::component::list::ListItem;
-use gpui_kit::component::menu::DropdownMenu as _;
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{
     ResizableState, h_resizable, resizable_panel, resize_handle_appearance,
@@ -30,7 +30,7 @@ use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::tree::{Tree, TreeEvent, TreeState};
+use gpui_kit::component::tree::{Tree, TreeEntry, TreeEvent, TreeState};
 use gpui_kit::component::{ActiveTheme as _, TitleBar, WindowExt as _};
 use gpui_kit::component::{Disableable as _, IconName, Sizable as _};
 use gpui_kit::{
@@ -72,6 +72,11 @@ gpui_kit::actions!(
         NextTab,
         PreviousTab,
         NewFolder,
+        CopyEntry,
+        PasteEntry,
+        DuplicateEntry,
+        CopyEntryPath,
+        RevealEntry,
         Open,
         OpenFolder,
         RefreshFolder,
@@ -173,8 +178,14 @@ pub struct Workspace {
     folder: Option<PathBuf>,
     tree: Entity<TreeState>,
     folder_task: Option<Task<()>>,
+    /// What the running scan selects once done. A scan that replaces it
+    /// takes it over, so a new item is still shown.
+    folder_select: Option<SharedString>,
     folder_empty: bool,
     expanded_folders: HashSet<SharedString>,
+    /// The file or folder the sidebar last copied, pasted by path when
+    /// pasted: what is there then, not a snapshot.
+    copied_entry: Option<PathBuf>,
     /// How many Markdown files each listed folder holds, at any depth.
     folder_file_counts: Rc<HashMap<SharedString, usize>>,
     sidebar_visible: bool,
@@ -303,8 +314,10 @@ impl Workspace {
             folder: None,
             tree,
             folder_task: None,
+            folder_select: None,
             folder_empty: true,
             expanded_folders: HashSet::new(),
+            copied_entry: None,
             folder_file_counts: Rc::default(),
             sidebar_visible: true,
             panes: cx.new(|_| ResizableState::default()),
@@ -1018,6 +1031,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let select = select.or_else(|| self.folder_select.take());
+        self.folder_select = select.clone();
         let scan = cx.background_spawn({
             let path = path.clone();
             async move {
@@ -1036,6 +1051,7 @@ impl Workspace {
             let result = scan.await;
             this.update_in(cx, |this, window, cx| {
                 this.folder_task = None;
+                this.folder_select = None;
                 match result {
                     Ok((path, entries, counts)) => {
                         this.folder_empty = entries.is_empty();
@@ -1044,17 +1060,15 @@ impl Workspace {
                             this.expanded_folders.clear();
                         }
                         // Another folder may have opened since `select` was made.
-                        let selected = select
-                            .filter(|id| Path::new(id.as_ref()).starts_with(&path))
-                            .or_else(|| {
-                                this.tab().document.path().map(|path| {
-                                    SharedString::from(path.to_string_lossy().into_owned())
-                                })
+                        let select = select.filter(|id| Path::new(id.as_ref()).starts_with(&path));
+                        let active =
+                            this.tab().document.path().map(|path| {
+                                SharedString::from(path.to_string_lossy().into_owned())
                             });
                         this.folder = Some(path);
                         this.remember_session(cx);
                         this.sidebar_visible |= reveal;
-                        this.tree.update(cx, |tree, cx| {
+                        let unlisted = this.tree.update(cx, |tree, cx| {
                             tree.set_items(
                                 entries
                                     .into_iter()
@@ -1062,11 +1076,34 @@ impl Workspace {
                                     .collect::<Vec<_>>(),
                                 cx,
                             );
+                            if let Some(id) = select.as_ref().or(active.as_ref()) {
+                                tree.reveal_item(id, gpui_kit::ScrollStrategy::Center, cx);
+                            }
+                            // A folder is selected, so a new file lands in it.
+                            // A file is only shown: selecting a file opens it,
+                            // which could ask to discard the open document.
+                            let entry =
+                                |id: &SharedString| tree.index_of(id).and_then(|ix| tree.entry(ix));
+                            let unlisted = select.clone().filter(|id| entry(id).is_none());
+                            let selected = select
+                                .filter(|id| entry(id).is_some_and(TreeEntry::is_folder))
+                                .or(active);
                             if let Some(id) = selected {
-                                tree.reveal_item(&id, gpui_kit::ScrollStrategy::Center, cx);
                                 tree.set_selected_index(tree.index_of(&id), cx);
                             }
+                            unlisted
                         });
+                        // A copied folder of only images is filtered out.
+                        if let Some(id) = unlisted {
+                            window.push_notification(
+                                Notification::info(format!(
+                                    "“{}” holds no Markdown files, so the sidebar doesn’t \
+                                     list it.",
+                                    file_name(Path::new(id.as_ref()))
+                                )),
+                                cx,
+                            );
+                        }
                     }
                     Err(error) => {
                         this.remember_session(cx);
@@ -1100,16 +1137,18 @@ impl Workspace {
             .tree
             .read(cx)
             .selected_entry()
-            .map(|entry| {
-                let path = PathBuf::from(entry.item().id.as_ref());
-                if entry.is_folder() {
-                    path
-                } else {
-                    path.parent().unwrap_or(folder).to_path_buf()
-                }
-            })
+            .map(entry_directory)
             .unwrap_or_else(|| folder.clone());
         Some(directory)
+    }
+
+    /// The file or folder selected in the sidebar.
+    fn selected_entry_path(&self, cx: &gpui_kit::App) -> Option<PathBuf> {
+        self.tree
+            .read(cx)
+            .selected_entry()
+            .filter(|entry| !entry.is_disabled())
+            .map(|entry| PathBuf::from(entry.item().id.as_ref()))
     }
 
     /// Ask for a new file's name, then create it and show it in the tab
@@ -1310,6 +1349,104 @@ impl Workspace {
         .detach();
     }
 
+    /// Remember `path` to paste. Only the path is kept, as in Finder.
+    fn set_copied_entry(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.copied_entry = Some(path);
+        cx.notify();
+    }
+
+    fn paste_into(&mut self, directory: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(source) = self.copied_entry.clone() {
+            self.copy_into(source, directory, "paste", window, cx);
+        }
+    }
+
+    /// Copy `path` beside itself.
+    fn duplicate(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(directory) = path.parent().map(Path::to_path_buf) {
+            self.copy_into(path, directory, "duplicate", window, cx);
+        }
+    }
+
+    /// Copy `source` into `directory` on a background thread, then show the
+    /// copy in the tree. The copy is taken from disk: edits not yet saved
+    /// stay in the open document.
+    fn copy_into(
+        &mut self,
+        source: PathBuf,
+        directory: PathBuf,
+        verb: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let copy = cx.background_spawn({
+            let source = source.clone();
+            async move { copy_entry(&source, &directory) }
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = copy.await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(path) => {
+                    let id = SharedString::from(path.to_string_lossy().into_owned());
+                    if let Some(folder) = this.folder.clone() {
+                        this.load_folder(folder, false, Some(id), window, cx);
+                    }
+                }
+                Err(error) => window.push_notification(
+                    Notification::error(format!(
+                        "Couldn’t {verb} “{}”. {}",
+                        file_name(&source),
+                        sentence(&error.to_string())
+                    )),
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn copy_selected_entry(&mut self, _: &CopyEntry, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = self.selected_entry_path(cx) {
+            self.set_copied_entry(path, cx);
+        }
+    }
+
+    /// Paste where a new file would go.
+    fn paste_entry(&mut self, _: &PasteEntry, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(directory) = self.target_directory(cx) {
+            self.paste_into(directory, window, cx);
+        }
+    }
+
+    fn duplicate_selected_entry(
+        &mut self,
+        _: &DuplicateEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(path) = self.selected_entry_path(cx) {
+            self.duplicate(path, window, cx);
+        }
+    }
+
+    fn copy_selected_entry_path(
+        &mut self,
+        _: &CopyEntryPath,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(path) = self.selected_entry_path(cx) {
+            copy_path(&path, cx);
+        }
+    }
+
+    fn reveal_selected_entry(&mut self, _: &RevealEntry, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = self.selected_entry_path(cx) {
+            cx.reveal_path(&path);
+        }
+    }
+
     /// Start the next list item when Enter ends one in the editor, in place of
     /// the editor's plain newline.
     fn continue_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1449,6 +1586,7 @@ impl Workspace {
             .map(|path| path.to_string_lossy().into_owned());
         let reading = self.folder_task.is_some();
         let can_open_folder = !reading && !self.is_busy();
+        let can_paste = self.copied_entry.is_some();
 
         // The window controls' row. It matches the sheet's margin, header
         // and margin, so the controls and this toggle share the header's
@@ -1541,6 +1679,7 @@ impl Workspace {
                         .accessibility_label("Folder actions")
                         .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
                             menu.menu("New Folder…", Box::new(NewFolder))
+                                .menu_with_disabled("Paste", Box::new(PasteEntry), !can_paste)
                                 .separator()
                                 .menu_with_disabled(
                                     "Open Folder…",
@@ -1632,11 +1771,19 @@ impl Workspace {
             // files and folders go to the top of the open folder.
             let row_pressed = Rc::new(Cell::new(false));
             let tree = self.tree.clone();
+            let workspace = cx.weak_entity();
             div()
                 .id("folder-tree")
                 .flex_1()
                 .min_h_0()
                 .pt_1()
+                // Edit > Copy and Paste act on the tree while it has focus.
+                .on_action(cx.listener(|this, _: &input::Copy, window, cx| {
+                    this.copy_selected_entry(&CopyEntry, window, cx)
+                }))
+                .on_action(cx.listener(|this, _: &input::Paste, window, cx| {
+                    this.paste_entry(&PasteEntry, window, cx)
+                }))
                 .on_mouse_down(gpui_kit::MouseButton::Left, {
                     let row_pressed = row_pressed.clone();
                     cx.listener(move |this, _, _, cx| {
@@ -1646,129 +1793,182 @@ impl Workspace {
                         }
                     })
                 })
-                .child(Tree::new(&self.tree, move |_, entry, _, window, _| {
-                    let item = entry.item();
-                    let rem = window.rem_size();
-                    let is_active = active.as_deref() == Some(item.id.as_ref());
-                    // Only folders carry a mark, their chevron; as in
-                    // Obsidian, names alone read faster than a column of
-                    // identical icons.
-                    let chevron = (entry.is_folder() && !entry.is_disabled()).then(|| {
-                        if entry.is_expanded() {
-                            IconName::ChevronDown
-                        } else {
-                            IconName::ChevronRight
-                        }
-                    });
-                    // A collapsed folder says how much it holds.
-                    let count = counts
-                        .get(&item.id)
-                        .copied()
-                        .filter(|count| *count > 0 && !entry.is_expanded());
-                    // Every file is Markdown, so names go without `.md`.
-                    let label = item.label.as_ref();
-                    let stem = match label.rfind('.') {
-                        Some(ix)
-                            if ix > 0 && !entry.is_folder() && is_markdown(Path::new(label)) =>
-                        {
-                            &label[..ix]
-                        }
-                        _ => label,
-                    };
-                    // One slot per ancestor, each with a hairline under that
-                    // ancestor's chevron, so a nested row reads as a branch.
-                    let guides = (0..entry.depth()).map(|_| {
-                        div()
-                            .flex_none()
-                            .w(rem * 1.25)
-                            .h_7()
-                            .pl(rem * 0.5)
-                            .child(div().w(gpui_kit::px(1.)).h_full().bg(guide))
-                    });
-                    // An empty folder's "Empty" row cannot be selected; a press
-                    // on it selects the folder, where a new file would go.
-                    let select_folder = entry.is_disabled().then(|| {
-                        let folder = Path::new(item.id.as_ref())
-                            .parent()
-                            .map(|path| SharedString::from(path.to_string_lossy().into_owned()));
-                        let tree = tree.clone();
-                        let row_pressed = row_pressed.clone();
-                        move |_: &gpui_kit::MouseDownEvent,
-                              _: &mut Window,
-                              cx: &mut gpui_kit::App| {
-                            row_pressed.set(true);
-                            tree.update(cx, |tree, cx| {
-                                let ix = folder.as_ref().and_then(|folder| tree.index_of(folder));
-                                tree.set_selected_index(ix, cx);
-                            });
-                        }
-                    });
-                    let row_pressed = row_pressed.clone();
-                    ListItem::new(item.id.clone())
-                        .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, _| {
-                            row_pressed.set(true)
-                        })
-                        .h_7()
-                        .mx_2()
-                        .px_0()
-                        .py_0()
-                        .pl(rem * 0.25)
-                        .pr_2()
-                        .rounded(row_radius)
-                        .text_sm()
-                        .accessibility_label(item.label.clone())
-                        .child(
+                .child(
+                    Tree::new(&self.tree, move |_, entry, _, window, _| {
+                        let item = entry.item();
+                        let rem = window.rem_size();
+                        let is_active = active.as_deref() == Some(item.id.as_ref());
+                        // Only folders carry a mark, their chevron; as in
+                        // Obsidian, names alone read faster than a column of
+                        // identical icons.
+                        let chevron = (entry.is_folder() && !entry.is_disabled()).then(|| {
+                            if entry.is_expanded() {
+                                IconName::ChevronDown
+                            } else {
+                                IconName::ChevronRight
+                            }
+                        });
+                        // A collapsed folder says how much it holds.
+                        let count = counts
+                            .get(&item.id)
+                            .copied()
+                            .filter(|count| *count > 0 && !entry.is_expanded());
+                        // Every file is Markdown, so names go without `.md`.
+                        let label = item.label.as_ref();
+                        let stem = match label.rfind('.') {
+                            Some(ix)
+                                if ix > 0
+                                    && !entry.is_folder()
+                                    && is_markdown(Path::new(label)) =>
+                            {
+                                &label[..ix]
+                            }
+                            _ => label,
+                        };
+                        // One slot per ancestor, each with a hairline under that
+                        // ancestor's chevron, so a nested row reads as a branch.
+                        let guides = (0..entry.depth()).map(|_| {
                             div()
-                                .flex()
-                                .items_center()
-                                .w_full()
-                                .min_w_0()
-                                .when_some(select_folder, |this, select_folder| {
-                                    this.on_mouse_down(gpui_kit::MouseButton::Left, select_folder)
-                                })
-                                .children(guides)
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_1()
-                                        .items_center()
-                                        .gap_1()
-                                        .min_w_0()
-                                        // Fixed slots keep labels on one spine
-                                        // whether or not a row has a chevron.
-                                        .child(icon_slot().text_color(muted).children(chevron.map(
-                                            |chevron| {
-                                                gpui_kit::component::Icon::new(chevron).xsmall()
-                                            },
-                                        )))
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .when(is_active, |row| {
-                                                    row.font_weight(FontWeight::MEDIUM)
-                                                })
-                                                .when(entry.is_disabled(), |row| {
-                                                    row.text_color(muted)
-                                                })
-                                                .child(
-                                                    div()
-                                                        .min_w_0()
-                                                        .truncate()
-                                                        .child(stem.to_string()),
-                                                ),
+                                .flex_none()
+                                .w(rem * 1.25)
+                                .h_7()
+                                .pl(rem * 0.5)
+                                .child(div().w(gpui_kit::px(1.)).h_full().bg(guide))
+                        });
+                        // An empty folder's "Empty" row cannot be selected; a press
+                        // on it selects the folder, where a new file would go.
+                        let select_folder = entry.is_disabled().then(|| {
+                            let folder = Path::new(item.id.as_ref()).parent().map(|path| {
+                                SharedString::from(path.to_string_lossy().into_owned())
+                            });
+                            let tree = tree.clone();
+                            let row_pressed = row_pressed.clone();
+                            move |_: &gpui_kit::MouseDownEvent,
+                                  _: &mut Window,
+                                  cx: &mut gpui_kit::App| {
+                                row_pressed.set(true);
+                                tree.update(cx, |tree, cx| {
+                                    let ix =
+                                        folder.as_ref().and_then(|folder| tree.index_of(folder));
+                                    tree.set_selected_index(ix, cx);
+                                });
+                            }
+                        });
+                        let row_pressed = row_pressed.clone();
+                        // A right-click focuses the tree, so the row's menu shows
+                        // the tree's shortcuts and they work once it closes.
+                        let focus_tree = {
+                            let tree = tree.clone();
+                            move |_: &gpui_kit::MouseDownEvent,
+                                  window: &mut Window,
+                                  cx: &mut gpui_kit::App| {
+                                tree.update(cx, |tree, cx| tree.focus(window, cx));
+                            }
+                        };
+                        ListItem::new(item.id.clone())
+                            .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, _| {
+                                row_pressed.set(true)
+                            })
+                            .on_mouse_down(gpui_kit::MouseButton::Right, focus_tree)
+                            .h_7()
+                            .mx_2()
+                            .px_0()
+                            .py_0()
+                            .pl(rem * 0.25)
+                            .pr_2()
+                            .rounded(row_radius)
+                            .text_sm()
+                            .accessibility_label(item.label.clone())
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .w_full()
+                                    .min_w_0()
+                                    .when_some(select_folder, |this, select_folder| {
+                                        this.on_mouse_down(
+                                            gpui_kit::MouseButton::Left,
+                                            select_folder,
                                         )
-                                        .children(count.map(|count| {
-                                            div()
-                                                .flex_none()
-                                                .text_xs()
-                                                .text_color(muted)
-                                                .child(format_count(count))
-                                        })),
-                                ),
+                                    })
+                                    .children(guides)
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_1()
+                                            .items_center()
+                                            .gap_1()
+                                            .min_w_0()
+                                            // Fixed slots keep labels on one spine
+                                            // whether or not a row has a chevron.
+                                            .child(icon_slot().text_color(muted).children(
+                                                chevron.map(|chevron| {
+                                                    gpui_kit::component::Icon::new(chevron).xsmall()
+                                                }),
+                                            ))
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .when(is_active, |row| {
+                                                        row.font_weight(FontWeight::MEDIUM)
+                                                    })
+                                                    .when(entry.is_disabled(), |row| {
+                                                        row.text_color(muted)
+                                                    })
+                                                    .child(
+                                                        div()
+                                                            .min_w_0()
+                                                            .truncate()
+                                                            .child(stem.to_string()),
+                                                    ),
+                                            )
+                                            .children(count.map(|count| {
+                                                div()
+                                                    .flex_none()
+                                                    .text_xs()
+                                                    .text_color(muted)
+                                                    .child(format_count(count))
+                                            })),
+                                    ),
+                            )
+                    })
+                    .context_menu(move |_, entry, menu, _, _| {
+                        let path = PathBuf::from(entry.item().id.as_ref());
+                        let directory = entry_directory(entry);
+                        menu.item(entry_menu_item("Copy", CopyEntry, &workspace, {
+                            let path = path.clone();
+                            move |this, _, cx| this.set_copied_entry(path.clone(), cx)
+                        }))
+                        .item(
+                            entry_menu_item(
+                                "Paste",
+                                PasteEntry,
+                                &workspace,
+                                move |this, window, cx| {
+                                    this.paste_into(directory.clone(), window, cx)
+                                },
+                            )
+                            .disabled(!can_paste),
                         )
-                }))
+                        .item(entry_menu_item("Duplicate", DuplicateEntry, &workspace, {
+                            let path = path.clone();
+                            move |this, window, cx| this.duplicate(path.clone(), window, cx)
+                        }))
+                        .separator()
+                        .item(entry_menu_item("Copy Path", CopyEntryPath, &workspace, {
+                            let path = path.clone();
+                            move |_, _, cx| copy_path(&path, cx)
+                        }))
+                        .item(entry_menu_item(
+                            "Reveal in Finder",
+                            RevealEntry,
+                            &workspace,
+                            move |_, _, cx| cx.reveal_path(&path),
+                        ))
+                    }),
+                )
                 .into_any_element()
         };
 
@@ -2429,6 +2629,11 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::next_tab))
             .on_action(cx.listener(Self::previous_tab))
             .on_action(cx.listener(Self::new_folder))
+            .on_action(cx.listener(Self::copy_selected_entry))
+            .on_action(cx.listener(Self::paste_entry))
+            .on_action(cx.listener(Self::duplicate_selected_entry))
+            .on_action(cx.listener(Self::copy_selected_entry_path))
+            .on_action(cx.listener(Self::reveal_selected_entry))
             .on_action(cx.listener(Self::open))
             .on_action(cx.listener(Self::open_linked_file))
             .on_action(cx.listener(Self::open_folder))
@@ -2562,6 +2767,39 @@ fn split_extension(name: &str) -> (String, Option<String>) {
         }
         _ => (name.to_string(), None),
     }
+}
+
+/// Where something pasted on `entry` goes: into a folder, beside a file.
+/// An empty folder's "Empty" row sits inside the folder, so it pastes there.
+fn entry_directory(entry: &TreeEntry) -> PathBuf {
+    let path = Path::new(entry.item().id.as_ref());
+    if entry.is_folder() {
+        path.to_path_buf()
+    } else {
+        path.parent().unwrap_or(path).to_path_buf()
+    }
+}
+
+fn copy_path(path: &Path, cx: &mut gpui_kit::App) {
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+        path.to_string_lossy().into_owned(),
+    ));
+}
+
+/// A sidebar row's menu item: runs `run` on the workspace, and shows the
+/// shortcut `action` has when the tree is focused.
+fn entry_menu_item(
+    label: &'static str,
+    action: impl gpui_kit::Action,
+    workspace: &gpui_kit::WeakEntity<Workspace>,
+    run: impl Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
+) -> PopupMenuItem {
+    let workspace = workspace.clone();
+    PopupMenuItem::new(label)
+        .action(Box::new(action))
+        .on_click(move |_, window, cx| {
+            workspace.update(cx, |this, cx| run(this, window, cx)).ok();
+        })
 }
 
 fn file_name(path: &Path) -> String {
