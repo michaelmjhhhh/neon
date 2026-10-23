@@ -17,4 +17,5 @@ anyhow.workspace = true
 futures = "0.3"
 
 [dev-dependencies]
+flate2 = "1"
 tempfile = "3"
