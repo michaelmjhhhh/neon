@@ -98,6 +98,11 @@ impl Change {
         self.kind
     }
 
+    /// Whether Git knew the file before: an untracked one is new to it.
+    pub(crate) fn tracked(&self) -> bool {
+        self.tracked
+    }
+
     pub(crate) fn staged(&self) -> Staged {
         self.staged
     }
@@ -273,7 +278,9 @@ impl Repo {
     fn discover_root(mut self) -> Option<Self> {
         let output = self.run(["rev-parse", "--show-toplevel"], None).ok()?;
         let root = String::from_utf8(output.stdout).ok()?;
-        self.root = PathBuf::from(root.trim_end_matches(['\n', '\r']));
+        let root = PathBuf::from(root.trim_end_matches(['\n', '\r']));
+        // Canonical, as open documents' paths are, so they compare directly.
+        self.root = std::fs::canonicalize(&root).unwrap_or(root);
         Some(self)
     }
 

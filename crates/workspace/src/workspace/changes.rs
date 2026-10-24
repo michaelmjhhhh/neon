@@ -13,7 +13,6 @@ use std::sync::Arc;
 
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::diff::{
     Diff, DiffChangeIndicator, DiffFile, DiffFileStatus, DiffHunkSeparator, DiffState,
 };
@@ -32,7 +31,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, TitleBar, WindowExt as _,
 };
 use gpui_kit::{
-    Anchor, AnyElement, AppContext as _, Context, Entity, FontFeatures, FontWeight,
+    Anchor, AnyElement, AppContext as _, Context, Entity, Focusable as _, FontFeatures, FontWeight,
     InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
     prelude::FluentBuilder as _,
@@ -845,7 +844,7 @@ impl Workspace {
         let selected = self.changes.selected.clone();
         let changes = status.changes();
         // One slot per enclosing folder, with a hairline under that folder's
-        // chevron, as in the Files view.
+        // chevron: the Files view's tree, on the same leading edge.
         let guides = move |depth: usize| {
             (0..depth).map(move |_| {
                 div()
@@ -863,19 +862,10 @@ impl Workspace {
                 .px_0()
                 .py_0()
                 .pl(rem * 0.25)
-                .pr_2()
+                // The ring's center lines up with the ⋯ button above it.
+                .pr(rem * 0.125)
                 .rounded(row_radius)
                 .text_sm()
-        };
-        // A fixed lane, so the words and counts line up down the list.
-        let lane = move |text: String| {
-            div()
-                .flex_none()
-                .w(rem * 3.5)
-                .text_right()
-                .text_xs()
-                .text_color(muted)
-                .child(text)
         };
         let rows = change_rows(changes, &self.changes.collapsed)
             .into_iter()
@@ -889,6 +879,11 @@ impl Workspace {
                     expanded,
                 } => {
                     let inside = paths_inside(changes, &path);
+                    let included = match staged {
+                        0 => Included::None,
+                        staged if staged == count => Included::All,
+                        _ => Included::Some,
+                    };
                     let toggle_path = path.clone();
                     row(format!("folder-{path}"))
                         .accessibility_label(SharedString::from(path.clone()))
@@ -902,22 +897,6 @@ impl Workspace {
                                 .gap_1()
                                 .w_full()
                                 .min_w_0()
-                                .child(
-                                    Checkbox::new(SharedString::from(format!("stage-folder-{path}")))
-                                        .small()
-                                        .checked(staged)
-                                        .accessibility_label(format!(
-                                            "{} everything in {path}",
-                                            if staged { "Unstage" } else { "Stage" }
-                                        ))
-                                        .disabled(busy)
-                                        .on_click(cx.listener(
-                                            move |this, checked: &bool, window, cx| {
-                                                cx.stop_propagation();
-                                                this.set_staged(inside.clone(), *checked, window, cx);
-                                            },
-                                        )),
-                                )
                                 .children(guides(depth))
                                 .child(
                                     super::icon_slot().text_color(muted).child(
@@ -930,7 +909,18 @@ impl Workspace {
                                     ),
                                 )
                                 .child(div().flex_1().min_w_0().truncate().child(label))
-                                .child(lane(format_count(count))),
+                                .child(stage_ring(
+                                    format!("stage-folder-{path}"),
+                                    included,
+                                    format!("everything in {path}"),
+                                    busy,
+                                    rem,
+                                    cx,
+                                    move |this, window, cx| {
+                                        let stage = included != Included::All;
+                                        this.set_staged(inside.clone(), stage, window, cx);
+                                    },
+                                )),
                         )
                 }
                 ChangeRow::File { index, depth } => {
@@ -944,16 +934,13 @@ impl Workspace {
                     } else {
                         name
                     };
-                    let staged = change.staged();
+                    let included = match change.staged() {
+                        Staged::No => Included::None,
+                        Staged::Partly => Included::Some,
+                        Staged::Yes => Included::All,
+                    };
                     let deleted = change.kind() == ChangeKind::Deleted;
-                    let checkbox_label = format!(
-                        "{} {path}",
-                        if staged == Staged::No {
-                            "Stage"
-                        } else {
-                            "Unstage"
-                        }
-                    );
+                    let (letter, meaning, color) = status_letter(change, cx);
                     let toggle_path = path.clone();
                     let select_path = path.clone();
                     row(format!("change-{path}"))
@@ -969,32 +956,6 @@ impl Workspace {
                                 .gap_1()
                                 .w_full()
                                 .min_w_0()
-                                .child(
-                                    Checkbox::new(SharedString::from(format!("stage-{path}")))
-                                        .small()
-                                        // A partly staged file commits its staged
-                                        // version; checking it again takes the rest.
-                                        .checked(staged != Staged::No)
-                                        .when(staged == Staged::Partly, |this| {
-                                            this.tooltip(
-                                                "Some edits aren’t staged. Check to stage them too.",
-                                            )
-                                        })
-                                        .accessibility_label(checkbox_label)
-                                        .disabled(busy)
-                                        .on_click(cx.listener(
-                                            move |this, checked: &bool, window, cx| {
-                                                cx.stop_propagation();
-                                                let stage = *checked || staged == Staged::Partly;
-                                                this.set_staged(
-                                                    vec![toggle_path.clone()],
-                                                    stage,
-                                                    window,
-                                                    cx,
-                                                );
-                                            },
-                                        )),
-                                )
                                 .children(guides(depth))
                                 // Names line up with folder names beside them.
                                 .child(super::icon_slot())
@@ -1006,10 +967,43 @@ impl Workspace {
                                         .when(is_selected, |this| {
                                             this.font_weight(FontWeight::MEDIUM)
                                         })
-                                        .when(deleted, |this| this.line_through())
+                                        .when(deleted, |this| this.line_through().text_color(muted))
                                         .child(name),
                                 )
-                                .child(lane(change.kind().label().to_string())),
+                                // Git's own letter, in a fixed lane; the
+                                // tooltip says it in words.
+                                .child(
+                                    div()
+                                        .id(SharedString::from(format!("status-{path}")))
+                                        .flex_none()
+                                        .w(rem)
+                                        .text_center()
+                                        .text_xs()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(color)
+                                        .tooltip(move |window, cx| {
+                                            Tooltip::new(meaning).build(window, cx)
+                                        })
+                                        .child(letter),
+                                )
+                                .child(stage_ring(
+                                    format!("stage-{path}"),
+                                    included,
+                                    path.clone(),
+                                    busy,
+                                    rem,
+                                    cx,
+                                    move |this, window, cx| {
+                                        // A partly staged file takes the rest.
+                                        let stage = included != Included::All;
+                                        this.set_staged(
+                                            vec![toggle_path.clone()],
+                                            stage,
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                )),
                         )
                 }
             });
@@ -1024,73 +1018,115 @@ impl Workspace {
             .overflow_y_scroll()
             .children(rows);
 
-        let count = if staged == 0 {
-            "Check the files to commit".to_string()
-        } else if all_staged {
-            files(total)
-        } else {
-            format!("{staged} of {}", files(total))
+        let theme = cx.theme();
+        let count = match staged {
+            0 => "Nothing staged".to_string(),
+            staged if all_staged => files(staged),
+            staged => format!("{staged} of {}", files(total)),
         };
-        let unsaved = self.tabs.iter().any(|tab| tab.document.is_dirty());
+        let root = self.changes.repo.as_ref().map(Repo::root);
+        let unsaved = self.tabs.iter().any(|tab| {
+            tab.document.is_dirty()
+                && tab
+                    .document
+                    .path()
+                    .zip(root)
+                    .is_some_and(|(path, root)| path.starts_with(root))
+        });
         let committing = self.changes.operation == Some(Operation::Committing);
+        let can_commit = self.can_commit(cx);
+        let focused = self.changes.message.focus_handle(cx).is_focused(window);
+        // One box: the message, then what it commits and the button. The
+        // button sits inside the box's corner, so its radius is the box's
+        // less the inset between them.
         let composer = div()
             .flex()
             .flex_none()
             .flex_col()
-            .gap_2()
+            .gap_1p5()
             .p_2()
-            .border_t_1()
-            .border_color(theme.sidebar_border)
-            .child(
-                div()
-                    .id("commit-message")
-                    // Cmd-Enter commits instead of starting a new line.
-                    .capture_action(cx.listener(|this, enter: &Enter, window, cx| {
-                        if enter.secondary {
-                            cx.stop_propagation();
-                            this.commit(&Commit, window, cx);
-                        }
-                    }))
-                    .child(
-                        Textarea::new(&self.changes.message)
-                            .small()
-                            .aria_label("Commit message")
-                            .disabled(committing),
-                    ),
-            )
             .when(unsaved, |this| {
                 this.child(
                     div()
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
                         .px_1()
                         .text_xs()
                         .text_color(muted)
-                        .child("Unsaved edits aren’t included. Save to commit them."),
+                        .child(
+                            div()
+                                .flex_none()
+                                .size_1p5()
+                                .rounded_full()
+                                .bg(theme.warning),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .child("Unsaved edits won’t be included"),
+                        ),
                 )
             })
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .pl_1()
+                    .flex_col()
+                    .rounded(theme.radius_lg)
+                    .border_1()
+                    .border_color(if focused { theme.ring } else { theme.input })
+                    .bg(theme.background)
                     .child(
                         div()
-                            .min_w_0()
-                            .truncate()
-                            .text_xs()
-                            .text_color(muted)
-                            .child(count),
+                            .id("commit-message")
+                            .px_1()
+                            .pt_1()
+                            // Cmd-Enter commits instead of starting a new line.
+                            .capture_action(cx.listener(|this, enter: &Enter, window, cx| {
+                                if enter.secondary {
+                                    cx.stop_propagation();
+                                    this.commit(&Commit, window, cx);
+                                }
+                            }))
+                            .child(
+                                Textarea::new(&self.changes.message)
+                                    .small()
+                                    .appearance(false)
+                                    .aria_label("Commit message")
+                                    .disabled(committing),
+                            ),
                     )
                     .child(
-                        Button::new("commit")
-                            .small()
-                            .primary()
-                            .label("Commit")
-                            .loading(committing)
-                            .disabled(!self.can_commit(cx))
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.commit(&Commit, window, cx)),
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .p_1()
+                            // The count starts where the message's text does.
+                            .pl_3()
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(count),
+                            )
+                            .child(
+                                Button::new("commit")
+                                    .small()
+                                    // Neutral until there is something to
+                                    // commit, so the accent marks readiness.
+                                    .when(can_commit || committing, |this| this.primary())
+                                    .rounded(theme.radius_lg - rem * 0.25)
+                                    .label("Commit")
+                                    .loading(committing)
+                                    .disabled(!can_commit)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.commit(&Commit, window, cx)
+                                    })),
                             ),
                     ),
             );
@@ -1285,6 +1321,8 @@ impl Workspace {
             ),
             Some(file) if file.has_changes() => Diff::new(&self.changes.diff)
                 .soft_wrap(true)
+                // As in History: signs and word emphasis, no line tint.
+                .change_background(false)
                 .header_visible(false)
                 .hunk_separator(DiffHunkSeparator::LineInfo)
                 .change_indicator(DiffChangeIndicator::Signs)
@@ -1370,5 +1408,81 @@ fn push_problem(error: &GitError) -> String {
             .into()
     } else {
         sentence(&text)
+    }
+}
+
+/// How much of a file or folder the next commit takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Included {
+    None,
+    /// Part of a file's edits, or some of a folder's files.
+    Some,
+    All,
+}
+
+/// The ring at a row's end that stages and unstages it: empty, filled with
+/// a check, or filled with a dash for part. In the text's color, not the
+/// accent, so a list of staged files stays calm beside the Commit button.
+fn stage_ring(
+    id: String,
+    included: Included,
+    object: String,
+    busy: bool,
+    rem: gpui_kit::Pixels,
+    cx: &mut Context<Workspace>,
+    toggle: impl Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
+) -> Button {
+    let theme = cx.theme();
+    let ring = div()
+        .size(rem * 0.875)
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .map(|this| match included {
+            Included::None => this.border_1().border_color(theme.muted_foreground),
+            Included::Some => this.bg(theme.muted_foreground).child(
+                Icon::new(IconName::Minus)
+                    .size(rem * 0.625)
+                    .text_color(theme.background),
+            ),
+            Included::All => this.bg(theme.sidebar_foreground).child(
+                Icon::new(IconName::Check)
+                    .size(rem * 0.625)
+                    .text_color(theme.sidebar),
+            ),
+        });
+    let (verb, tooltip) = match included {
+        Included::None => ("Stage", "Stage"),
+        Included::Some => ("Stage", "Partly staged. Stage the rest"),
+        Included::All => ("Unstage", "Unstage"),
+    };
+    Button::new(SharedString::from(id))
+        .xsmall()
+        .ghost()
+        .child(ring)
+        .accessibility_label(format!("{verb} {object}"))
+        .tooltip(tooltip)
+        .disabled(busy)
+        .on_click(cx.listener(move |this, _, window, cx| {
+            cx.stop_propagation();
+            toggle(this, window, cx);
+        }))
+}
+
+/// Git's letter for a change, what it means, and its color: the letters
+/// and colors most Git tools share, so the column reads at a glance.
+fn status_letter(
+    change: &Change,
+    cx: &Context<Workspace>,
+) -> (&'static str, &'static str, gpui_kit::Hsla) {
+    let theme = cx.theme();
+    match change.kind() {
+        ChangeKind::Edited => ("M", "Modified", theme.warning),
+        ChangeKind::New if change.tracked() => ("A", "Added", theme.success),
+        ChangeKind::New => ("U", "Untracked", theme.success),
+        ChangeKind::Deleted => ("D", "Deleted", theme.danger),
+        ChangeKind::Renamed => ("R", "Renamed", theme.info),
+        ChangeKind::Conflicted => ("C", "Conflict", theme.danger),
     }
 }

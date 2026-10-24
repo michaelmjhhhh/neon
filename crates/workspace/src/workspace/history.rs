@@ -33,6 +33,11 @@ const HISTORY_LIMIT: usize = 500;
 const MAX_LANES: usize = 6;
 /// A lane's width, in rems.
 const LANE_REMS: f32 = 0.75;
+/// A row's height, in rems: the subject, and its names and author below.
+const ROW_REMS: f32 = 2.75;
+/// How far down a row its commit's dot sits, in rems: on the subject's line,
+/// not the row's middle, so the dot marks the line that names the commit.
+const ROW_NODE_REMS: f32 = 1.0;
 
 /// The history and the commit shown in the sheet.
 pub(super) struct History {
@@ -265,6 +270,7 @@ impl Workspace {
             lane_width: rem * LANE_REMS,
             stroke: rem * 0.1,
             dot: rem * 0.22,
+            node_y: rem * ROW_NODE_REMS,
             palette: [
                 theme.chart_1,
                 theme.chart_2,
@@ -273,38 +279,56 @@ impl Workspace {
                 theme.chart_5,
             ],
         };
+        let palette = style.palette;
         let muted = theme.muted_foreground;
-        let foreground = theme.sidebar_foreground;
-        let border = theme.border;
+        let neutral_label = theme.muted;
         let row_radius = theme.radius;
-        let chip_radius = theme.radius / 1.5;
         let selected = self.history.selected.clone();
         let workspace = cx.weak_entity();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |since| since.as_secs() as i64);
+        let tnum = FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]));
 
         uniform_list("history", commits.len(), move |range, _, _| {
             range
                 .map(|ix| {
                     let commit = &commits[ix];
                     let row = graph[ix].clone();
+                    let lane_color = palette[row.color % palette.len()];
                     let style = style.clone();
                     let id = commit.id().to_string();
                     let is_selected = selected.as_deref() == Some(commit.id());
                     let is_head = commit.is_head();
                     let workspace = workspace.clone();
+                    // Branches wear their lane's color, so a name finds its
+                    // line in the graph; remotes and tags stay neutral.
+                    let pills = labels(commit.refs()).into_iter().map(|label| {
+                        div()
+                            .flex_none()
+                            .px_1p5()
+                            .rounded_full()
+                            .map(|this| match label.tone {
+                                Tone::Lane => this
+                                    .bg(lane_color.opacity(0.14))
+                                    .text_color(lane_color)
+                                    .when(label.current, |this| {
+                                        this.font_weight(FontWeight::SEMIBOLD)
+                                    }),
+                                Tone::Neutral => this.bg(neutral_label).text_color(muted),
+                            })
+                            .child(label.name)
+                    });
                     // Each row is laid out at the list's width, so the inset
                     // is padding around the row, not its margin.
                     let item = ListItem::new(SharedString::from(format!("commit-{id}")))
                         .selected(is_selected)
-                        .h_7()
+                        .h(rem * ROW_REMS)
                         .px_0()
                         .py_0()
                         .pl(rem * 0.25)
                         .pr_2()
                         .rounded(row_radius)
-                        .text_sm()
                         .accessibility_label(SharedString::from(commit.subject().to_string()))
                         .on_click(move |_, _, cx| {
                             let id = id.clone();
@@ -315,7 +339,6 @@ impl Workspace {
                         .child(
                             div()
                                 .flex()
-                                .items_center()
                                 .gap_1p5()
                                 .w_full()
                                 .h_full()
@@ -331,46 +354,58 @@ impl Workspace {
                                     .w(rem * LANE_REMS * lanes as f32)
                                     .h_full(),
                                 )
-                                .children(labels(commit.refs()).into_iter().map(
-                                    |(label, current)| {
-                                        div()
-                                            .flex_none()
-                                            .px_1()
-                                            .rounded(chip_radius)
-                                            .border_1()
-                                            .border_color(border)
-                                            .text_xs()
-                                            .map(|this| {
-                                                if current {
-                                                    this.font_weight(FontWeight::MEDIUM)
-                                                        .text_color(foreground)
-                                                } else {
-                                                    this.text_color(muted)
-                                                }
-                                            })
-                                            .child(label)
-                                    },
-                                ))
+                                // The subject's line centers on the dot.
                                 .child(
                                     div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_0p5()
                                         .flex_1()
                                         .min_w_0()
-                                        .truncate()
-                                        .when(is_selected, |this| {
-                                            this.font_weight(FontWeight::MEDIUM)
-                                        })
-                                        .child(commit.subject().to_string()),
-                                )
-                                .child(
-                                    div()
-                                        .flex_none()
-                                        .text_xs()
-                                        .text_color(muted)
-                                        .font_features(FontFeatures(std::sync::Arc::new(vec![(
-                                            "tnum".into(),
-                                            1,
-                                        )])))
-                                        .child(age(now, commit.time(), false)),
+                                        .pt(rem * (ROW_NODE_REMS - 0.625))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_baseline()
+                                                .gap_2()
+                                                .h(rem * 1.25)
+                                                .min_w_0()
+                                                .text_sm()
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .truncate()
+                                                        .when(is_selected, |this| {
+                                                            this.font_weight(FontWeight::MEDIUM)
+                                                        })
+                                                        .child(commit.subject().to_string()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_none()
+                                                        .text_xs()
+                                                        .text_color(muted)
+                                                        .font_features(tnum.clone())
+                                                        .child(age(now, commit.time(), false)),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap_1()
+                                                .min_w_0()
+                                                .text_xs()
+                                                .children(pills)
+                                                .child(
+                                                    div()
+                                                        .min_w_0()
+                                                        .truncate()
+                                                        .text_color(muted)
+                                                        .child(commit.author().to_string()),
+                                                ),
+                                        ),
                                 ),
                         );
                     div().px_2().child(item)
@@ -412,36 +447,26 @@ impl Workspace {
             .border_color(theme.border)
             .child(
                 div()
-                    .flex()
                     .flex_1()
-                    .items_center()
-                    .gap_2()
                     .min_w_0()
+                    .pr_4()
+                    .truncate()
                     .text_sm()
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(commit.map_or_else(String::new, |c| c.subject().to_string())),
-                    )
-                    .when_some(commit, |this, commit| {
-                        this.child(
-                            div()
-                                .flex_none()
-                                .text_xs()
-                                .text_color(muted)
-                                .font_family(theme.mono_font_family.clone())
-                                .child(commit.short_id().to_string()),
-                        )
-                    })
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(commit.map_or_else(String::new, |c| c.subject().to_string())),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap_3()
                     .when_some(
                         files.as_ref().zip(totals),
                         |this, (files, (added, removed))| {
                             this.child(
                                 div()
                                     .flex()
-                                    .flex_none()
                                     .gap_1p5()
                                     .text_xs()
                                     .font_features(tnum)
@@ -465,16 +490,18 @@ impl Workspace {
                                     }),
                             )
                         },
+                    )
+                    .child(
+                        Button::new("close-commit")
+                            .small()
+                            .ghost()
+                            .icon(IconName::Close)
+                            .accessibility_label("Close commit")
+                            .tooltip("Close commit (Esc)")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.close_diff(window, cx)),
+                            ),
                     ),
-            )
-            .child(
-                Button::new("close-commit")
-                    .small()
-                    .ghost()
-                    .icon(IconName::Close)
-                    .accessibility_label("Close commit")
-                    .tooltip("Close commit (Esc)")
-                    .on_click(cx.listener(|this, _, window, cx| this.close_diff(window, cx))),
             )
             .into_any_element()
     }
@@ -519,6 +546,9 @@ impl Workspace {
         }
         Diff::new(&self.history.diff)
             .soft_wrap(true)
+            // Signs and word emphasis carry the change; a tint on every line
+            // of a new file only adds weight.
+            .change_background(false)
             .hunk_separator(DiffHunkSeparator::LineInfo)
             .change_indicator(DiffChangeIndicator::Signs)
             .size_full()
@@ -531,26 +561,39 @@ impl Workspace {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |since| since.as_secs() as i64);
-        let note = self
+        let commit = self
             .history
             .selected
             .as_deref()
-            .and_then(|id| self.history.commit(id))
-            .map(|commit| {
-                let mut note = format!("{}, {}", commit.author(), age(now, commit.time(), true));
-                if commit.parents().len() > 1 {
-                    note.push_str(". A merge, compared with its first parent");
-                }
-                note
-            })
-            .unwrap_or_default();
+            .and_then(|id| self.history.commit(id));
+        let note = commit.map(|commit| {
+            let mut note = format!("{}, {}", commit.author(), age(now, commit.time(), true));
+            if commit.parents().len() > 1 {
+                note.push_str(". A merge, compared with its first parent");
+            }
+            note
+        });
         StatusBar::new()
             .bg(gpui_kit::transparent_black())
             .border_color(theme.border)
             .h_7()
             .py_0()
             .px_4()
-            .left(div().child(note))
+            .left(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .when_some(commit, |this, commit| {
+                        this.child(
+                            div()
+                                .font_family(theme.mono_font_family.clone())
+                                .text_color(theme.muted_foreground)
+                                .child(commit.short_id().to_string()),
+                        )
+                    })
+                    .children(note),
+            )
             .into_any_element()
     }
 
@@ -565,6 +608,8 @@ struct GraphStyle {
     lane_width: Pixels,
     stroke: Pixels,
     dot: Pixels,
+    /// The dot's distance from the row's top.
+    node_y: Pixels,
     palette: [Hsla; 5],
 }
 
@@ -580,7 +625,7 @@ fn paint_row(
     let x = |lane: usize| bounds.left() + style.lane_width * (lane as f32 + 0.5);
     let y = |height: Height| match height {
         Height::Top => bounds.top(),
-        Height::Middle => bounds.center().y,
+        Height::Middle => bounds.top() + style.node_y,
         Height::Bottom => bounds.bottom(),
     };
     let color = |index: usize| style.palette[index % style.palette.len()];
@@ -638,11 +683,25 @@ fn paint_row(
     }
 }
 
-/// The names a row shows, with whether each is the current branch: the
-/// first, then how many more, as the sidebar has room for one. A remote
-/// branch on the same commit as its local one says nothing new, so only one
-/// that differs counts: it marks where the remote is.
-fn labels(refs: &[RefLabel]) -> Vec<(String, bool)> {
+/// How a name is colored in the list.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tone {
+    /// A local branch, in its lane's color.
+    Lane,
+    /// A remote branch or a tag.
+    Neutral,
+}
+
+struct Label {
+    name: String,
+    tone: Tone,
+    current: bool,
+}
+
+/// The names a row shows: up to two, then how many more. A remote branch on
+/// the same commit as its local one says nothing new, so only one that
+/// differs shows: it marks where the remote is.
+fn labels(refs: &[RefLabel]) -> Vec<Label> {
     let local: Vec<&str> = refs
         .iter()
         .filter_map(|label| match label {
@@ -650,25 +709,41 @@ fn labels(refs: &[RefLabel]) -> Vec<(String, bool)> {
             _ => None,
         })
         .collect();
-    let names: Vec<(String, bool)> = refs
+    let mut names: Vec<Label> = refs
         .iter()
         .filter_map(|label| match label {
-            RefLabel::Branch { name, current } => Some((name.clone(), *current)),
+            RefLabel::Branch { name, current } => Some(Label {
+                name: name.clone(),
+                tone: Tone::Lane,
+                current: *current,
+            }),
             RefLabel::Remote(name) => {
                 let short = name
                     .split_once('/')
                     .map_or(name.as_str(), |(_, short)| short);
-                (!local.contains(&short)).then(|| (name.clone(), false))
+                (!local.contains(&short)).then(|| Label {
+                    name: name.clone(),
+                    tone: Tone::Neutral,
+                    current: false,
+                })
             }
-            RefLabel::Tag(name) => Some((name.clone(), false)),
+            RefLabel::Tag(name) => Some(Label {
+                name: name.clone(),
+                tone: Tone::Neutral,
+                current: false,
+            }),
         })
         .collect();
-    let more = names.len().saturating_sub(1);
+    if names.len() > 2 {
+        let more = names.len() - 1;
+        names.truncate(1);
+        names.push(Label {
+            name: format!("+{more}"),
+            tone: Tone::Neutral,
+            current: false,
+        });
+    }
     names
-        .into_iter()
-        .take(1)
-        .chain((more > 0).then(|| (format!("+{more}"), false)))
-        .collect()
 }
 
 /// How long ago `then` was: `3d` in the list, `3 days ago` in the sheet.

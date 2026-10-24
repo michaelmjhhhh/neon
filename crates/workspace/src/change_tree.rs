@@ -20,8 +20,8 @@ pub(crate) enum ChangeRow {
         depth: usize,
         /// Changes inside it, at any depth.
         count: usize,
-        /// Whether every change inside is staged, at least in part.
-        staged: bool,
+        /// How many changes inside are staged, at least in part.
+        staged: usize,
         expanded: bool,
     },
     File {
@@ -89,7 +89,10 @@ fn push_rows(
             label,
             depth,
             count: inside.len(),
-            staged: inside.iter().all(|ix| changes[*ix].staged() != Staged::No),
+            staged: inside
+                .iter()
+                .filter(|ix| changes[**ix].staged() != Staged::No)
+                .count(),
             expanded,
         });
         if expanded {
@@ -194,15 +197,16 @@ mod tests {
     }
 
     #[test]
-    fn checks_a_folder_only_when_everything_inside_is_staged() {
+    fn counts_what_is_staged_inside_a_folder() {
         let mut changes = changes(&["d/a.md", "d/b.md"]);
-        changes[0].set_staged(true);
         let staged = |changes: &[Change]| match &change_rows(changes, &HashSet::new())[0] {
-            ChangeRow::Folder { staged, .. } => *staged,
+            ChangeRow::Folder { staged, count, .. } => (*staged, *count),
             ChangeRow::File { .. } => unreachable!(),
         };
-        assert!(!staged(&changes));
+        assert_eq!(staged(&changes), (0, 2));
+        changes[0].set_staged(true);
+        assert_eq!(staged(&changes), (1, 2));
         changes[1].set_staged(true);
-        assert!(staged(&changes));
+        assert_eq!(staged(&changes), (2, 2));
     }
 }
