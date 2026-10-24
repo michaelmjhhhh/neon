@@ -73,7 +73,11 @@ fn push_rows(
     collapsed: &HashSet<String>,
     rows: &mut Vec<ChangeRow>,
 ) {
-    for (name, child) in &folder.folders {
+    // By name regardless of case, as files are, so `alpha` comes before
+    // `Zeta`.
+    let mut folders: Vec<_> = folder.folders.iter().collect();
+    folders.sort_by_cached_key(|(name, _)| name.to_lowercase());
+    for (name, child) in folders {
         let mut label = name.clone();
         let mut child = child;
         while child.files.is_empty() && child.folders.len() == 1 {

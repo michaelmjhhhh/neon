@@ -8,7 +8,9 @@
 //! working tree.
 
 use std::collections::HashSet;
+use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::assets::IconName as AssetIcon;
@@ -33,8 +35,8 @@ use gpui_kit::component::{
 use gpui_kit::{
     Anchor, AnyElement, AppContext as _, Context, Entity, Focusable as _, FontFeatures, FontWeight,
     InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
-    prelude::FluentBuilder as _,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, UniformListScrollHandle,
+    Window, div, prelude::FluentBuilder as _, uniform_list,
 };
 
 use super::{
@@ -93,18 +95,28 @@ pub(super) struct Changes {
     /// The last command that changes the repository. The next waits for it,
     /// so two never hold Git's index lock at once.
     git_task: Option<Task<()>>,
+    /// Commands that change the repository, started and not yet done. A
+    /// status read landing meanwhile may predate them, so it is dropped.
+    git_pending: usize,
     operation: Option<Operation>,
     message: Entity<TextareaState>,
+    /// Whether the message is blank, so typing redraws the panel only when
+    /// that, and with it the Commit button, changes.
+    message_empty: bool,
     /// The change whose diff the sheet shows, by path.
     selected: Option<String>,
     diff: Entity<DiffState>,
-    /// The path and patch the diff shows, so an unchanged patch is not
-    /// installed again and the reader keeps their place.
-    shown_patch: Option<(String, String)>,
+    /// The path the diff shows and a hash of its patch, so an unchanged
+    /// patch is not installed again and the reader keeps their place.
+    shown_patch: Option<(String, u64)>,
     diff_error: Option<SharedString>,
     diff_task: Option<Task<()>>,
     /// Folders of the list shown closed, by path.
     collapsed: HashSet<String>,
+    /// The list's rows, made again when the status or a folder changes
+    /// rather than on every frame.
+    rows: Rc<Vec<ListRow>>,
+    list_scroll: UniformListScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -117,11 +129,20 @@ impl Changes {
         });
         let diff = cx.new(|cx| DiffState::new([], cx));
         // The Commit button follows whether a message is written.
-        let subscriptions = vec![cx.subscribe(&message, |_, _, event, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify();
-            }
-        })];
+        let subscriptions = vec![
+            // The diff measures itself once painted and asks for another
+            // frame through its state; the sheet that shows it must follow.
+            cx.observe(&diff, |_, _, cx| cx.notify()),
+            cx.subscribe(&message, |this, message, event, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let empty = message.read(cx).value().trim().is_empty();
+                    if empty != this.changes.message_empty {
+                        this.changes.message_empty = empty;
+                        cx.notify();
+                    }
+                }
+            }),
+        ];
         Self {
             repo: None,
             status: None,
@@ -131,14 +152,18 @@ impl Changes {
             revision: 0,
             discover_task: None,
             git_task: None,
+            git_pending: 0,
             operation: None,
             message,
+            message_empty: true,
             selected: None,
             diff,
             shown_patch: None,
             diff_error: None,
             diff_task: None,
             collapsed: HashSet::new(),
+            rows: Rc::default(),
+            list_scroll: UniformListScrollHandle::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -147,12 +172,63 @@ impl Changes {
         self.repo.as_ref()
     }
 
-    pub(super) fn status(&self) -> Option<&Status> {
-        self.status.as_ref()
-    }
-
     fn change(&self, path: &str) -> Option<&Change> {
         self.status.as_ref()?.change(path)
+    }
+
+    /// Make the list's rows again from the status and the closed folders.
+    fn rebuild_rows(&mut self) {
+        let Some(status) = &self.status else {
+            self.rows = Rc::default();
+            return;
+        };
+        let changes = status.changes();
+        let rows = change_rows(changes, &self.collapsed)
+            .into_iter()
+            .map(|row| match row {
+                ChangeRow::Folder {
+                    path,
+                    label,
+                    depth,
+                    count,
+                    staged,
+                    expanded,
+                } => ListRow::Folder {
+                    path: path.into(),
+                    label: label.into(),
+                    depth,
+                    included: match staged {
+                        0 => Included::None,
+                        staged if staged == count => Included::All,
+                        _ => Included::Some,
+                    },
+                    expanded,
+                },
+                ChangeRow::File { index, depth } => {
+                    let change = &changes[index];
+                    let path = change.path();
+                    let name = path.rsplit('/').next().unwrap_or(path);
+                    // As in the Files view, Markdown names go without `.md`.
+                    let name = if crate::folder::is_markdown(Path::new(name)) {
+                        split_extension(name).0
+                    } else {
+                        name.to_string()
+                    };
+                    ListRow::File {
+                        path: path.to_string().into(),
+                        name: name.into(),
+                        depth,
+                        included: match change.staged() {
+                            Staged::No => Included::None,
+                            Staged::Partly => Included::Some,
+                            Staged::Yes => Included::All,
+                        },
+                        mark: Mark::of(change),
+                    }
+                }
+            })
+            .collect();
+        self.rows = Rc::new(rows);
     }
 
     fn staged_count(&self) -> usize {
@@ -198,6 +274,7 @@ impl Workspace {
                     this.changes.selected = None;
                     this.changes.shown_patch = None;
                     this.changes.collapsed.clear();
+                    this.changes.rebuild_rows();
                     this.reset_history();
                 }
                 this.changes.repo = repo;
@@ -227,12 +304,17 @@ impl Workspace {
             let result = read.await;
             this.update(cx, |this, cx| {
                 this.changes.status_task = None;
-                let stale = this.changes.revision != revision;
-                if stale || std::mem::take(&mut this.changes.refresh_queued) {
+                // A read from before a command that changed the repository
+                // would undo what its checkbox already shows. While one
+                // runs, its end reads the status again.
+                let pending = this.changes.git_pending > 0;
+                let stale = pending || this.changes.revision != revision;
+                let queued = std::mem::take(&mut this.changes.refresh_queued);
+                if !pending && (stale || queued) {
                     this.refresh_changes(cx);
-                    if stale {
-                        return;
-                    }
+                }
+                if stale {
+                    return;
                 }
                 match result {
                     Ok(status) => {
@@ -245,6 +327,7 @@ impl Workspace {
                             this.changes.selected = None;
                         }
                         this.changes.status = Some(status);
+                        this.changes.rebuild_rows();
                         this.load_diff(cx);
                         // A commit, push or branch switch changes the history.
                         if this.history_visible() {
@@ -274,6 +357,7 @@ impl Workspace {
             return;
         };
         self.changes.revision += 1;
+        self.changes.git_pending += 1;
         let previous = self.changes.git_task.take();
         self.changes.git_task = Some(cx.spawn_in(window, async move |this, cx| {
             if let Some(previous) = previous {
@@ -281,6 +365,7 @@ impl Workspace {
             }
             let result = cx.background_spawn(async move { command(&repo) }).await;
             this.update_in(cx, |this, window, cx| {
+                this.changes.git_pending -= 1;
                 done(this, result, window, cx);
                 this.changes.revision += 1;
                 this.refresh_changes(cx);
@@ -318,6 +403,7 @@ impl Workspace {
         if changes.is_empty() {
             return;
         }
+        self.changes.rebuild_rows();
         self.run_git(
             window,
             cx,
@@ -363,20 +449,26 @@ impl Workspace {
             .status
             .iter()
             .flat_map(Status::changes)
-            .filter(|change| (change.staged() == Staged::Yes) != stage)
+            // Stage All takes the rest of partly staged files; Unstage All
+            // takes back any part.
+            .filter(|change| match change.staged() {
+                Staged::No => stage,
+                Staged::Partly => true,
+                Staged::Yes => !stage,
+            })
             .map(|change| change.path().to_string())
             .collect();
         self.set_staged(paths, stage, window, cx);
     }
 
-    fn can_commit(&self, cx: &gpui_kit::App) -> bool {
+    fn can_commit(&self) -> bool {
         self.changes.operation.is_none()
             && self.changes.staged_count() > 0
-            && !self.changes.message.read(cx).value().trim().is_empty()
+            && !self.changes.message_empty
     }
 
     pub(super) fn commit(&mut self, _: &Commit, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.can_commit(cx) {
+        if !self.can_commit() {
             return;
         }
         let message = self.changes.message.read(cx).value().trim().to_string();
@@ -389,9 +481,13 @@ impl Workspace {
                 this.changes.operation = None;
                 match result {
                     // The committed files leave the list, which shows it worked.
-                    Ok(()) => this.changes.message.update(cx, |message, cx| {
-                        message.set_value("", window, cx);
-                    }),
+                    Ok(()) => {
+                        this.changes.message.update(cx, |message, cx| {
+                            message.set_value("", window, cx);
+                        });
+                        // Setting the value emits no change event.
+                        this.changes.message_empty = true;
+                    }
                     Err(error) => window.push_notification(
                         Notification::error(format!(
                             "Couldn’t commit. {}",
@@ -416,19 +512,17 @@ impl Workspace {
         self.run_git(
             window,
             cx,
-            move |repo| repo.push(&status).map(|()| status),
+            move |repo| {
+                let branch = status.branch().unwrap_or("The branch").to_string();
+                repo.push(&status).map(|remote| (branch, remote))
+            },
             |this, result, window, cx| {
                 this.changes.operation = None;
                 match result {
                     // Nothing in the window changes but a count, so say so.
-                    Ok(status) => {
-                        let branch = status.branch().unwrap_or("the branch");
-                        let target = status.upstream().map_or_else(
-                            || "its remote".to_string(),
-                            |upstream| upstream.split('/').next().unwrap_or(upstream).into(),
-                        );
+                    Ok((branch, remote)) => {
                         window.push_notification(
-                            Notification::success(format!("Pushed {branch} to {target}.")),
+                            Notification::success(format!("Pushed {branch} to {remote}.")),
                             cx,
                         );
                     }
@@ -442,13 +536,8 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn show_files(
-        &mut self,
-        _: &ShowFiles,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.set_sidebar_view(SidebarView::Files, window, cx);
+    pub(super) fn show_files(&mut self, _: &ShowFiles, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_sidebar_view(SidebarView::Files, cx);
     }
 
     pub(super) fn show_changes(
@@ -458,7 +547,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.require_repository("changes", window, cx) {
-            self.set_sidebar_view(SidebarView::Changes, window, cx);
+            self.set_sidebar_view(SidebarView::Changes, cx);
         }
     }
 
@@ -469,7 +558,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.require_repository("history", window, cx) {
-            self.set_sidebar_view(SidebarView::History, window, cx);
+            self.set_sidebar_view(SidebarView::History, cx);
         }
     }
 
@@ -489,7 +578,7 @@ impl Workspace {
         false
     }
 
-    fn set_sidebar_view(&mut self, view: SidebarView, window: &mut Window, cx: &mut Context<Self>) {
+    fn set_sidebar_view(&mut self, view: SidebarView, cx: &mut Context<Self>) {
         if view != SidebarView::Files && !self.has_repository() {
             return;
         }
@@ -501,8 +590,7 @@ impl Workspace {
             // on the first change.
             let active = self.tab().document.path().and_then(|path| {
                 let repo = self.changes.repo.as_ref()?;
-                let root = std::fs::canonicalize(repo.root()).ok()?;
-                let relative = path.strip_prefix(root).ok()?;
+                let relative = path.strip_prefix(repo.root()).ok()?;
                 Some(relative.to_string_lossy().replace('\\', "/"))
             });
             let changes = self.changes.status.as_ref().map(Status::changes);
@@ -513,7 +601,10 @@ impl Workspace {
                         .and_then(|c| c.first())
                         .map(|c| c.path().to_string())
                 });
-            self.select_change(selected, window, cx);
+            self.changes.selected = selected;
+            self.changes.diff_error = None;
+            // Diffs load only while Changes shows, so this one may be stale.
+            self.load_diff(cx);
             self.refresh_changes(cx);
         }
         if view == SidebarView::History && !shown {
@@ -522,7 +613,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn select_change(&mut self, path: Option<String>, _: &mut Window, cx: &mut Context<Self>) {
+    fn select_change(&mut self, path: Option<String>, cx: &mut Context<Self>) {
         if self.changes.selected == path {
             return;
         }
@@ -536,16 +627,32 @@ impl Workspace {
     pub(super) fn close_diff(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.sidebar_view {
             SidebarView::History => self.select_commit(None, cx),
-            _ => self.select_change(None, window, cx),
+            _ => self.select_change(None, cx),
         }
         self.focus_content(window, cx);
     }
 
-    fn toggle_folder(&mut self, path: String, cx: &mut Context<Self>) {
-        if !self.changes.collapsed.remove(&path) {
-            self.changes.collapsed.insert(path);
+    fn toggle_folder(&mut self, path: &str, cx: &mut Context<Self>) {
+        if !self.changes.collapsed.remove(path) {
+            self.changes.collapsed.insert(path.to_string());
         }
+        self.changes.rebuild_rows();
         cx.notify();
+    }
+
+    /// Stage or unstage everything inside the folder at `path`.
+    fn stage_folder(
+        &mut self,
+        path: &str,
+        stage: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(status) = &self.changes.status else {
+            return;
+        };
+        let paths = paths_inside(status.changes(), path);
+        self.set_staged(paths, stage, window, cx);
     }
 
     /// Open the shown change's file in the editor, in place of its diff.
@@ -572,6 +679,11 @@ impl Workspace {
     /// Read the selected change's patch into the diff, unless it is the one
     /// already shown.
     fn load_diff(&mut self, cx: &mut Context<Self>) {
+        // Nothing shows it outside the Changes view; entering it loads.
+        if self.sidebar_view != SidebarView::Changes {
+            self.changes.diff_task = None;
+            return;
+        }
         let (Some(repo), Some(change), Some(status)) = (
             self.changes.repo.clone(),
             self.changes
@@ -589,7 +701,9 @@ impl Workspace {
             let patch = repo.diff(&change, has_commits)?;
             let files = DiffFile::parse(&patch)
                 .map_err(|error| GitError::new(error.message().to_string()))?;
-            Ok::<_, GitError>((change.path().to_string(), patch, files))
+            let mut hasher = DefaultHasher::new();
+            patch.hash(&mut hasher);
+            Ok::<_, GitError>((change.path().to_string(), hasher.finish(), files))
         });
         self.changes.diff_task = Some(cx.spawn(async move |this, cx| {
             let result = read.await;
@@ -652,9 +766,9 @@ impl Workspace {
                 .child(tab(AssetIcon::GitCompare.into(), "Changes", &ShowChanges))
                 .child(tab(AssetIcon::GitGraph.into(), "History", &ShowHistory))
                 .selected_index(selected)
-                .on_click(cx.listener(|this, ix: &usize, window, cx| {
+                .on_click(cx.listener(|this, ix: &usize, _, cx| {
                     if let Some(view) = VIEWS.get(*ix) {
-                        this.set_sidebar_view(*view, window, cx);
+                        this.set_sidebar_view(*view, cx);
                     }
                 })),
         )
@@ -839,184 +953,19 @@ impl Workspace {
         }
 
         let rem = window.rem_size();
-        let row_radius = theme.radius;
-        let guide = theme.sidebar_border;
+        let rows = self.changes.rows.clone();
         let selected = self.changes.selected.clone();
-        let changes = status.changes();
-        // One slot per enclosing folder, with a hairline under that folder's
-        // chevron: the Files view's tree, on the same leading edge.
-        let guides = move |depth: usize| {
-            (0..depth).map(move |_| {
-                div()
-                    .flex_none()
-                    .w(rem * 1.25)
-                    .h_7()
-                    .pl(rem * 0.5)
-                    .child(div().w(gpui_kit::px(1.)).h_full().bg(guide))
-            })
-        };
-        let row = |id: String| {
-            ListItem::new(SharedString::from(id))
-                .h_7()
-                .mx_2()
-                .px_0()
-                .py_0()
-                .pl(rem * 0.25)
-                // The ring's center lines up with the ⋯ button above it.
-                .pr(rem * 0.125)
-                .rounded(row_radius)
-                .text_sm()
-        };
-        let rows = change_rows(changes, &self.changes.collapsed)
-            .into_iter()
-            .map(|entry| match entry {
-                ChangeRow::Folder {
-                    path,
-                    label,
-                    depth,
-                    count,
-                    staged,
-                    expanded,
-                } => {
-                    let inside = paths_inside(changes, &path);
-                    let included = match staged {
-                        0 => Included::None,
-                        staged if staged == count => Included::All,
-                        _ => Included::Some,
-                    };
-                    let toggle_path = path.clone();
-                    row(format!("folder-{path}"))
-                        .accessibility_label(SharedString::from(path.clone()))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.toggle_folder(toggle_path.clone(), cx);
-                        }))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .w_full()
-                                .min_w_0()
-                                .children(guides(depth))
-                                .child(
-                                    super::icon_slot().text_color(muted).child(
-                                        Icon::new(if expanded {
-                                            IconName::ChevronDown
-                                        } else {
-                                            IconName::ChevronRight
-                                        })
-                                        .xsmall(),
-                                    ),
-                                )
-                                .child(div().flex_1().min_w_0().truncate().child(label))
-                                .child(stage_ring(
-                                    format!("stage-folder-{path}"),
-                                    included,
-                                    format!("everything in {path}"),
-                                    busy,
-                                    rem,
-                                    cx,
-                                    move |this, window, cx| {
-                                        let stage = included != Included::All;
-                                        this.set_staged(inside.clone(), stage, window, cx);
-                                    },
-                                )),
-                        )
-                }
-                ChangeRow::File { index, depth } => {
-                    let change = &changes[index];
-                    let path = change.path().to_string();
-                    let is_selected = selected.as_deref() == Some(change.path());
-                    let name = path.rsplit('/').next().unwrap_or(&path).to_string();
-                    // As in the Files view, Markdown names go without `.md`.
-                    let name = if crate::folder::is_markdown(Path::new(&name)) {
-                        split_extension(&name).0
-                    } else {
-                        name
-                    };
-                    let included = match change.staged() {
-                        Staged::No => Included::None,
-                        Staged::Partly => Included::Some,
-                        Staged::Yes => Included::All,
-                    };
-                    let deleted = change.kind() == ChangeKind::Deleted;
-                    let (letter, meaning, color) = status_letter(change, cx);
-                    let toggle_path = path.clone();
-                    let select_path = path.clone();
-                    row(format!("change-{path}"))
-                        .selected(is_selected)
-                        .accessibility_label(SharedString::from(path.clone()))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.select_change(Some(select_path.clone()), window, cx);
-                        }))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .w_full()
-                                .min_w_0()
-                                .children(guides(depth))
-                                // Names line up with folder names beside them.
-                                .child(super::icon_slot())
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .when(is_selected, |this| {
-                                            this.font_weight(FontWeight::MEDIUM)
-                                        })
-                                        .when(deleted, |this| this.line_through().text_color(muted))
-                                        .child(name),
-                                )
-                                // Git's own letter, in a fixed lane; the
-                                // tooltip says it in words.
-                                .child(
-                                    div()
-                                        .id(SharedString::from(format!("status-{path}")))
-                                        .flex_none()
-                                        .w(rem)
-                                        .text_center()
-                                        .text_xs()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(color)
-                                        .tooltip(move |window, cx| {
-                                            Tooltip::new(meaning).build(window, cx)
-                                        })
-                                        .child(letter),
-                                )
-                                .child(stage_ring(
-                                    format!("stage-{path}"),
-                                    included,
-                                    path.clone(),
-                                    busy,
-                                    rem,
-                                    cx,
-                                    move |this, window, cx| {
-                                        // A partly staged file takes the rest.
-                                        let stage = included != Included::All;
-                                        this.set_staged(
-                                            vec![toggle_path.clone()],
-                                            stage,
-                                            window,
-                                            cx,
-                                        );
-                                    },
-                                )),
-                        )
-                }
-            });
-
-        let list = div()
-            .id("changes-list")
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h_0()
-            .pt_1()
-            .overflow_y_scroll()
-            .children(rows);
+        let workspace = cx.weak_entity();
+        // Virtualized: an unignored build folder can list thousands of files.
+        let list = uniform_list("changes-list", rows.len(), move |range, _, cx| {
+            range
+                .map(|ix| render_row(&rows[ix], selected.as_deref(), busy, rem, &workspace, cx))
+                .collect()
+        })
+        .track_scroll(&self.changes.list_scroll)
+        .flex_1()
+        .min_h_0()
+        .pt_1();
 
         let theme = cx.theme();
         let count = match staged {
@@ -1034,7 +983,7 @@ impl Workspace {
                     .is_some_and(|(path, root)| path.starts_with(root))
         });
         let committing = self.changes.operation == Some(Operation::Committing);
-        let can_commit = self.can_commit(cx);
+        let can_commit = self.can_commit();
         let focused = self.changes.message.focus_handle(cx).is_focused(window);
         // One box: the message, then what it commits and the button. The
         // button sits inside the box's corner, so its radius is the box's
@@ -1333,6 +1282,16 @@ impl Workspace {
                 "Only the name changed",
                 "The text is the same as in the last commit.".into(),
             ),
+            Some(file) if file.status() == DiffFileStatus::Added => message(
+                IconName::File,
+                "Empty file",
+                "This new file has no text yet.".into(),
+            ),
+            Some(file) if file.status() == DiffFileStatus::Deleted => message(
+                IconName::File,
+                "Empty file",
+                "The deleted file had no text.".into(),
+            ),
             _ => message(
                 IconName::Check,
                 "No changes to the text",
@@ -1352,8 +1311,7 @@ impl Workspace {
             .selected
             .as_ref()
             .zip(self.changes.repo.as_ref())
-            .and_then(|(path, repo)| std::fs::canonicalize(repo.absolute(path)).ok())
-            .and_then(|path| self.tab_index_of_path(&path))
+            .and_then(|(path, repo)| self.tab_index_of_path(&repo.absolute(path)))
             .is_some_and(|ix| self.tabs[ix].document.is_dirty());
         let has_commits = self
             .changes
@@ -1396,7 +1354,9 @@ fn files(count: usize) -> String {
 fn push_problem(error: &GitError) -> String {
     let text = error.to_string();
     let says = |words: &[&str]| words.iter().any(|word| text.contains(word));
-    if says(&["rejected", "fetch first", "non-fast-forward"]) {
+    // Git's own mark for a push the remote is ahead of; a hook's
+    // `[remote rejected]` says something else, so its words show as they are.
+    if says(&["[rejected]", "(fetch first)", "(non-fast-forward)"]) {
         "The remote has commits this branch doesn’t. Pull them in Terminal, then push again.".into()
     } else if says(&[
         "Authentication failed",
@@ -1420,17 +1380,239 @@ enum Included {
     All,
 }
 
+/// Git's mark for a change, as the list's status lane shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mark {
+    Modified,
+    Added,
+    Untracked,
+    Deleted,
+    Renamed,
+    Conflict,
+}
+
+impl Mark {
+    fn of(change: &Change) -> Self {
+        match change.kind() {
+            ChangeKind::Edited => Self::Modified,
+            ChangeKind::New if change.tracked() => Self::Added,
+            ChangeKind::New => Self::Untracked,
+            ChangeKind::Deleted => Self::Deleted,
+            ChangeKind::Renamed => Self::Renamed,
+            ChangeKind::Conflicted => Self::Conflict,
+        }
+    }
+
+    /// The letter, what it means, and its color: the letters and colors
+    /// most Git tools share, so the column reads at a glance.
+    fn appearance(self, cx: &gpui_kit::App) -> (&'static str, &'static str, gpui_kit::Hsla) {
+        let theme = cx.theme();
+        match self {
+            Self::Modified => ("M", "Modified", theme.warning),
+            Self::Added => ("A", "Added", theme.success),
+            Self::Untracked => ("U", "Untracked", theme.success),
+            Self::Deleted => ("D", "Deleted", theme.danger),
+            Self::Renamed => ("R", "Renamed", theme.info),
+            Self::Conflict => ("C", "Conflict", theme.danger),
+        }
+    }
+}
+
+/// One row of the Changes list, resolved when the status is read.
+#[derive(Clone, Debug)]
+enum ListRow {
+    Folder {
+        path: SharedString,
+        label: SharedString,
+        depth: usize,
+        included: Included,
+        expanded: bool,
+    },
+    File {
+        path: SharedString,
+        name: SharedString,
+        depth: usize,
+        included: Included,
+        mark: Mark,
+    },
+}
+
+/// A row of the Changes list: the Files view's tree, on its leading edge,
+/// with Git's letter and the staging ring in fixed lanes at the end.
+fn render_row(
+    row: &ListRow,
+    selected: Option<&str>,
+    busy: bool,
+    rem: gpui_kit::Pixels,
+    workspace: &gpui_kit::WeakEntity<Workspace>,
+    cx: &mut gpui_kit::App,
+) -> AnyElement {
+    let theme = cx.theme();
+    let muted = theme.muted_foreground;
+    let guide = theme.sidebar_border;
+    // One slot per enclosing folder, with a hairline under that folder's
+    // chevron.
+    let guides = |depth: usize| {
+        (0..depth).map(move |_| {
+            div()
+                .flex_none()
+                .w(rem * 1.25)
+                .h_7()
+                .pl(rem * 0.5)
+                .child(div().w(gpui_kit::px(1.)).h_full().bg(guide))
+        })
+    };
+    let item = |id: String| {
+        ListItem::new(SharedString::from(id))
+            .h_7()
+            .px_0()
+            .py_0()
+            .pl(rem * 0.25)
+            // The ring's center lines up with the ⋯ button above it.
+            .pr(rem * 0.125)
+            .rounded(theme.radius)
+            .text_sm()
+    };
+    let content = || div().flex().items_center().gap_1().w_full().min_w_0();
+    let element = match row {
+        ListRow::Folder {
+            path,
+            label,
+            depth,
+            included,
+            expanded,
+        } => {
+            let included = *included;
+            let toggle = path.clone();
+            let workspace_for_click = workspace.clone();
+            item(format!("folder-{path}"))
+                .accessibility_label(path.clone())
+                .on_click(move |_, _, cx| {
+                    workspace_for_click
+                        .update(cx, |this, cx| this.toggle_folder(&toggle, cx))
+                        .ok();
+                })
+                .child(
+                    content()
+                        .children(guides(*depth))
+                        .child(
+                            super::icon_slot().text_color(muted).child(
+                                Icon::new(if *expanded {
+                                    IconName::ChevronDown
+                                } else {
+                                    IconName::ChevronRight
+                                })
+                                .xsmall(),
+                            ),
+                        )
+                        .child(div().flex_1().min_w_0().truncate().child(label.clone()))
+                        .child(stage_ring(
+                            format!("stage-folder-{path}"),
+                            included,
+                            format!("everything in {path}"),
+                            busy,
+                            rem,
+                            workspace,
+                            {
+                                let path = path.clone();
+                                move |this, window, cx| {
+                                    let stage = included != Included::All;
+                                    this.stage_folder(&path, stage, window, cx);
+                                }
+                            },
+                            cx,
+                        )),
+                )
+        }
+        ListRow::File {
+            path,
+            name,
+            depth,
+            included,
+            mark,
+        } => {
+            let included = *included;
+            let is_selected = selected == Some(path.as_ref());
+            let (letter, meaning, color) = mark.appearance(cx);
+            let select = path.to_string();
+            let workspace_for_click = workspace.clone();
+            item(format!("change-{path}"))
+                .selected(is_selected)
+                .accessibility_label(path.clone())
+                .on_click(move |_, _, cx| {
+                    let select = select.clone();
+                    workspace_for_click
+                        .update(cx, |this, cx| this.select_change(Some(select), cx))
+                        .ok();
+                })
+                .child(
+                    content()
+                        .children(guides(*depth))
+                        // Names line up with folder names beside them.
+                        .child(super::icon_slot())
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .when(is_selected, |this| this.font_weight(FontWeight::MEDIUM))
+                                .when(*mark == Mark::Deleted, |this| {
+                                    this.line_through().text_color(muted)
+                                })
+                                .child(name.clone()),
+                        )
+                        // Git's own letter, in a fixed lane; the tooltip
+                        // says it in words.
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("status-{path}")))
+                                .flex_none()
+                                .w(rem)
+                                .text_center()
+                                .text_xs()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(color)
+                                .tooltip(move |window, cx| Tooltip::new(meaning).build(window, cx))
+                                .child(letter),
+                        )
+                        .child(stage_ring(
+                            format!("stage-{path}"),
+                            included,
+                            path.to_string(),
+                            busy,
+                            rem,
+                            workspace,
+                            {
+                                let path = path.to_string();
+                                move |this, window, cx| {
+                                    // A partly staged file takes the rest.
+                                    let stage = included != Included::All;
+                                    this.set_staged(vec![path.clone()], stage, window, cx);
+                                }
+                            },
+                            cx,
+                        )),
+                )
+        }
+    };
+    // Each row is laid out at the list's width, so the inset is padding
+    // around the row, not its margin.
+    div().px_2().child(element).into_any_element()
+}
+
 /// The ring at a row's end that stages and unstages it: empty, filled with
 /// a check, or filled with a dash for part. In the text's color, not the
 /// accent, so a list of staged files stays calm beside the Commit button.
+#[allow(clippy::too_many_arguments)]
 fn stage_ring(
     id: String,
     included: Included,
     object: String,
     busy: bool,
     rem: gpui_kit::Pixels,
-    cx: &mut Context<Workspace>,
+    workspace: &gpui_kit::WeakEntity<Workspace>,
     toggle: impl Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
+    cx: &gpui_kit::App,
 ) -> Button {
     let theme = cx.theme();
     let ring = div()
@@ -1457,6 +1639,7 @@ fn stage_ring(
         Included::Some => ("Stage", "Partly staged. Stage the rest"),
         Included::All => ("Unstage", "Unstage"),
     };
+    let workspace = workspace.clone();
     Button::new(SharedString::from(id))
         .xsmall()
         .ghost()
@@ -1464,25 +1647,11 @@ fn stage_ring(
         .accessibility_label(format!("{verb} {object}"))
         .tooltip(tooltip)
         .disabled(busy)
-        .on_click(cx.listener(move |this, _, window, cx| {
+        .on_click(move |_, window, cx| {
+            // The row's own click selects or folds it; this one stages.
             cx.stop_propagation();
-            toggle(this, window, cx);
-        }))
-}
-
-/// Git's letter for a change, what it means, and its color: the letters
-/// and colors most Git tools share, so the column reads at a glance.
-fn status_letter(
-    change: &Change,
-    cx: &Context<Workspace>,
-) -> (&'static str, &'static str, gpui_kit::Hsla) {
-    let theme = cx.theme();
-    match change.kind() {
-        ChangeKind::Edited => ("M", "Modified", theme.warning),
-        ChangeKind::New if change.tracked() => ("A", "Added", theme.success),
-        ChangeKind::New => ("U", "Untracked", theme.success),
-        ChangeKind::Deleted => ("D", "Deleted", theme.danger),
-        ChangeKind::Renamed => ("R", "Renamed", theme.info),
-        ChangeKind::Conflicted => ("C", "Conflict", theme.danger),
-    }
+            workspace
+                .update(cx, |this, cx| toggle(this, window, cx))
+                .ok();
+        })
 }

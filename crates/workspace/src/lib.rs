@@ -132,7 +132,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-,", OpenSettings, Some(KEY_CONTEXT)),
         KeyBinding::new("escape", CloseSettings, Some(SETTINGS_KEY_CONTEXT)),
         KeyBinding::new("secondary-shift-b", ToggleSidebar, Some(KEY_CONTEXT)),
-        // The sidebar's two views, with VS Code's shortcuts on macOS.
+        // Files and Changes in the sidebar, with VS Code's shortcuts on macOS.
         KeyBinding::new("secondary-shift-e", ShowFiles, Some(KEY_CONTEXT)),
         KeyBinding::new("ctrl-shift-g", ShowChanges, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-shift-l", ToggleLineNumbers, Some(KEY_CONTEXT)),

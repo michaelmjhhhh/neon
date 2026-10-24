@@ -8,7 +8,7 @@
 
 use std::ffi::OsStr;
 use std::fmt;
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::OnceLock;
@@ -17,6 +17,7 @@ use std::sync::OnceLock;
 /// the whole of any note, so the viewer can unfold all of it.
 const FULL_CONTEXT: &str = "--unified=100000";
 /// A patch larger than this is not shown; it would take seconds to lay out.
+/// Reading stops there, so a huge file is never held in memory whole.
 const MAX_PATCH_BYTES: usize = 4 * 1024 * 1024;
 
 /// What a failed Git command said, as a sentence to show.
@@ -49,8 +50,8 @@ pub(crate) enum ChangeKind {
 }
 
 impl ChangeKind {
-    /// The word the sidebar shows, in the words the sheet header already uses
-    /// for unsaved edits.
+    /// The word the diff's header shows, in the words the sheet header
+    /// already uses for unsaved edits.
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Edited => "Edited",
@@ -305,43 +306,71 @@ impl Repo {
             None,
         )?;
         let mut status = parse_status(&String::from_utf8_lossy(&output.stdout));
-        let remotes = self.run(["remote"], None)?;
-        status.has_remote = !remotes.stdout.trim_ascii().is_empty();
+        // A branch with an upstream has a remote; only one without asks.
+        status.has_remote = status.upstream.is_some() || {
+            let remotes = self.run(["remote"], None)?;
+            !remotes.stdout.trim_ascii().is_empty()
+        };
         Ok(status)
     }
 
     /// Stage every path of `changes`, deletions and renames included.
     pub(crate) fn stage<'a>(&self, changes: impl IntoIterator<Item = &'a Change>) -> Result<()> {
-        let mut args = vec!["add", "--all", "--"];
-        args.extend(changes.into_iter().flat_map(Change::pathspecs));
-        self.run(args, None).map(drop)
+        let paths = pathspec_input(changes);
+        self.run(
+            [
+                "add",
+                "--all",
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+            ],
+            Some(&paths),
+        )
+        .map(drop)
     }
 
     /// Return `changes` to the last commit's version in the index, leaving
     /// the files themselves alone. Before the first commit this empties the
     /// index of them.
     pub(crate) fn unstage<'a>(&self, changes: impl IntoIterator<Item = &'a Change>) -> Result<()> {
-        let mut args = vec!["reset", "--quiet", "--"];
-        args.extend(changes.into_iter().flat_map(Change::pathspecs));
-        // `reset` exits 1 when files stay modified; that is the point here.
-        match self.run(args, None) {
-            Ok(_) => Ok(()),
-            Err(error) if error.0.is_empty() => Ok(()),
-            Err(error) => Err(error),
+        let paths = pathspec_input(changes);
+        let output = self.output(
+            [
+                "reset",
+                "--quiet",
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+            ],
+            Some(&paths),
+        )?;
+        // `reset` exits 1, saying nothing, when files stay modified; that is
+        // the point here.
+        match output.status.code() {
+            Some(0) => Ok(()),
+            Some(1) if output.stderr.trim_ascii().is_empty() => Ok(()),
+            _ => Err(failure(&output)),
         }
     }
 
     /// Commit what is staged with `message`, as typed.
     pub(crate) fn commit(&self, message: &str) -> Result<()> {
-        self.run(["commit", "--quiet", "--file=-"], Some(message))
-            .map(drop)
+        // Detached from any terminal, so a signing key's passphrase prompt
+        // fails instead of waiting on a terminal nobody is watching.
+        let mut command = self.command(["commit", "--quiet", "--file=-"]);
+        detach_from_terminal(&mut command);
+        self.finish(command, Some(message.as_bytes())).map(drop)
     }
 
-    /// Push the current branch. A branch without an upstream is pushed to
-    /// `origin`, or the only remote, and tracks it from then on.
-    pub(crate) fn push(&self, status: &Status) -> Result<()> {
-        if status.upstream.is_some() {
-            return self.run(["push", "--quiet"], None).map(drop);
+    /// Push the current branch, and say which remote it went to. A branch
+    /// without an upstream is pushed to `origin`, or the only remote, and
+    /// tracks it from then on.
+    pub(crate) fn push(&self, status: &Status) -> Result<String> {
+        if let Some(upstream) = &status.upstream {
+            self.run_push(["push", "--quiet"])?;
+            let remote = upstream
+                .split_once('/')
+                .map_or(upstream.as_str(), |(remote, _)| remote);
+            return Ok(remote.to_string());
         }
         let output = self.run(["remote"], None)?;
         let remotes = String::from_utf8_lossy(&output.stdout);
@@ -362,14 +391,28 @@ impl Repo {
                 ));
             }
         };
-        self.run(["push", "--quiet", "--set-upstream", remote, "HEAD"], None)
-            .map(drop)
+        self.run_push(["push", "--quiet", "--set-upstream", remote, "HEAD"])?;
+        Ok(remote.to_string())
+    }
+
+    /// Run a push that can neither prompt nor wait forever on a stalled
+    /// connection.
+    fn run_push<'a>(&self, args: impl IntoIterator<Item = &'a str>) -> Result<()> {
+        let mut command = self.command(args);
+        // An SSH passphrase or host-key question would otherwise go to the
+        // terminal Neon was started from, if any, and wait there unseen.
+        detach_from_terminal(&mut command);
+        // Give up on HTTPS that moves less than a byte a second for a minute.
+        command
+            .env("GIT_HTTP_LOW_SPEED_LIMIT", "1")
+            .env("GIT_HTTP_LOW_SPEED_TIME", "60");
+        self.finish(command, None).map(drop)
     }
 
     /// The change as a Git patch against the last commit, with the whole
     /// file as context.
     pub(crate) fn diff(&self, change: &Change, has_commits: bool) -> Result<String> {
-        let output = if change.tracked && has_commits {
+        let patch = if change.tracked && has_commits {
             let mut args = vec![
                 "diff",
                 "--no-color",
@@ -381,11 +424,11 @@ impl Repo {
                 "--",
             ];
             args.extend(change.pathspecs());
-            self.run(args, None)?
+            self.read_capped(args, |code| code == Some(0))?
         } else {
             // Untracked, or nothing committed yet: the file is all new.
             // `--no-index` exits 1 when the files differ, which they do.
-            let output = self.output(
+            self.read_capped(
                 [
                     "diff",
                     "--no-index",
@@ -396,28 +439,22 @@ impl Repo {
                     "/dev/null",
                     change.path.as_str(),
                 ],
-                None,
-            )?;
-            if output.status.code() != Some(1) {
-                return Err(failure(&output));
-            }
-            output
+                |code| code == Some(1),
+            )?
         };
-        if output.stdout.len() > MAX_PATCH_BYTES {
-            return Err(GitError::new("This change is too large to show."));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        patch.ok_or_else(|| GitError::new("This change is too large to show."))
     }
 
     /// The newest `limit` commits of HEAD and every branch, local and
-    /// remote, children before parents.
+    /// remote, children before parents. Empty before the first commit.
     pub(crate) fn log(&self, limit: usize) -> Result<Vec<CommitInfo>> {
         let limit = format!("--max-count={limit}");
         let output = self.run(
             [
                 "log",
                 "--topo-order",
-                "--decorate=short",
+                // Full names tell `refs/heads/feature/x` from a remote's.
+                "--decorate=full",
                 // Fields apart by unit separators, commits by record separators.
                 "--format=%H%x1f%P%x1f%an%x1f%at%x1f%s%x1f%D%x1e",
                 limit.as_str(),
@@ -426,13 +463,24 @@ impl Repo {
                 "--remotes",
             ],
             None,
-        )?;
-        Ok(parse_log(&String::from_utf8_lossy(&output.stdout)))
+        );
+        match output {
+            Ok(output) => Ok(parse_log(&String::from_utf8_lossy(&output.stdout))),
+            // `git log HEAD` fails while HEAD names no commit yet.
+            Err(_)
+                if self
+                    .run(["rev-parse", "--verify", "--quiet", "HEAD"], None)
+                    .is_err() =>
+            {
+                Ok(Vec::new())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// What commit `id` changed, against its first parent for a merge.
     pub(crate) fn show(&self, id: &str) -> Result<String> {
-        let output = self.run(
+        self.read_capped(
             [
                 "show",
                 "--format=",
@@ -443,12 +491,9 @@ impl Repo {
                 "--diff-merges=first-parent",
                 id,
             ],
-            None,
-        )?;
-        if output.stdout.len() > MAX_PATCH_BYTES {
-            return Err(GitError::new("This commit is too large to show."));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+            |code| code == Some(0),
+        )?
+        .ok_or_else(|| GitError::new("This commit is too large to show."))
     }
 
     fn command<I, S>(&self, args: I) -> Command
@@ -468,6 +513,9 @@ impl Repo {
             // Status refreshes must not take the index lock from a commit
             // running in Terminal.
             .env("GIT_OPTIONAL_LOCKS", "0")
+            // A note named `draft[2].md` or `*idea*.md` is a name, not a
+            // pattern that could stage other files.
+            .env("GIT_LITERAL_PATHSPECS", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         #[cfg(test)]
@@ -486,45 +534,139 @@ impl Repo {
     }
 
     /// Run Git, feeding it `input`, whatever its exit status.
-    fn output<I, S>(&self, args: I, input: Option<&str>) -> Result<Output>
+    fn output<I, S>(&self, args: I, input: Option<&[u8]>) -> Result<Output>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let mut command = self.command(args);
+        self.spawn_output(self.command(args), input)
+    }
+
+    fn spawn_output(&self, mut command: Command, input: Option<&[u8]>) -> Result<Output> {
         command.stdin(if input.is_some() {
             Stdio::piped()
         } else {
             Stdio::null()
         });
-        let mut child = command
-            .spawn()
-            .map_err(|error| GitError::new(format!("Couldn’t run Git. {error}.")))?;
-        if let Some(input) = input
-            && let Some(mut stdin) = child.stdin.take()
-        {
-            stdin
-                .write_all(input.as_bytes())
-                .map_err(|error| GitError::new(format!("Couldn’t run Git. {error}.")))?;
+        let mut child = command.spawn().map_err(could_not_run)?;
+        // Written from another thread: Git may answer before reading all of
+        // it, and one that stops reading early should report its own error
+        // rather than a broken pipe.
+        let writer = input.zip(child.stdin.take()).map(|(input, mut stdin)| {
+            let input = input.to_vec();
+            std::thread::spawn(move || {
+                stdin.write_all(&input).ok();
+            })
+        });
+        let output = child.wait_with_output().map_err(could_not_run)?;
+        if let Some(writer) = writer {
+            writer.join().ok();
         }
-        child
-            .wait_with_output()
-            .map_err(|error| GitError::new(format!("Couldn’t run Git. {error}.")))
+        Ok(output)
     }
 
     /// Run Git, failing with what it said unless it succeeded.
-    fn run<I, S>(&self, args: I, input: Option<&str>) -> Result<Output>
+    fn run<I, S>(&self, args: I, input: Option<&[u8]>) -> Result<Output>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let output = self.output(args, input)?;
+        self.finish(self.command(args), input)
+    }
+
+    fn finish(&self, command: Command, input: Option<&[u8]>) -> Result<Output> {
+        let output = self.spawn_output(command, input)?;
         if output.status.success() {
             Ok(output)
         } else {
             Err(failure(&output))
         }
     }
+
+    /// Run Git and keep at most [`MAX_PATCH_BYTES`] of what it prints, as
+    /// text; `None` once it prints more, and Git is stopped. `succeeded`
+    /// says which exit codes are not failures.
+    fn read_capped<I, S>(
+        &self,
+        args: I,
+        succeeded: impl Fn(Option<i32>) -> bool,
+    ) -> Result<Option<String>>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let mut command = self.command(args);
+        command.stdin(Stdio::null());
+        let mut child = command.spawn().map_err(could_not_run)?;
+        let stderr = child.stderr.take();
+        let stderr = std::thread::spawn(move || {
+            let mut text = Vec::new();
+            if let Some(mut stderr) = stderr {
+                stderr.read_to_end(&mut text).ok();
+            }
+            text
+        });
+        let mut stdout = Vec::new();
+        if let Some(out) = child.stdout.take() {
+            out.take(MAX_PATCH_BYTES as u64 + 1)
+                .read_to_end(&mut stdout)
+                .map_err(could_not_run)?;
+        }
+        if stdout.len() > MAX_PATCH_BYTES {
+            child.kill().ok();
+            child.wait().ok();
+            stderr.join().ok();
+            return Ok(None);
+        }
+        let status = child.wait().map_err(could_not_run)?;
+        let output = Output {
+            status,
+            stdout,
+            stderr: stderr.join().unwrap_or_default(),
+        };
+        if succeeded(output.status.code()) {
+            Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()))
+        } else {
+            Err(failure(&output))
+        }
+    }
+}
+
+fn could_not_run(error: std::io::Error) -> GitError {
+    GitError::new(format!("Couldn’t run Git. {error}."))
+}
+
+/// The paths of `changes`, for `--pathspec-from-file` with NUL separators:
+/// no command-line length limit, and any character a name may hold.
+fn pathspec_input<'a>(changes: impl IntoIterator<Item = &'a Change>) -> Vec<u8> {
+    let mut input = Vec::new();
+    for path in changes.into_iter().flat_map(Change::pathspecs) {
+        input.extend_from_slice(path.as_bytes());
+        input.push(0);
+    }
+    input
+}
+
+/// Start `command` in a session of its own, with no controlling terminal,
+/// so a prompt for a passphrase fails at once instead of waiting.
+fn detach_from_terminal(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        unsafe extern "C" {
+            fn setsid() -> i32;
+        }
+        // SAFETY: runs in the forked child before exec, and `setsid` is
+        // async-signal-safe and touches no memory.
+        unsafe {
+            command.pre_exec(|| {
+                setsid();
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = command;
 }
 
 /// What Git printed about a failure, without its `error:` and `hint:`
@@ -622,19 +764,20 @@ fn parse_status(output: &str) -> Status {
             }
             continue;
         }
-        let (kind, rest) = record.split_at(record.len().min(2));
+        let (kind, rest) = record.split_at_checked(2).unwrap_or((record, ""));
+        let xy = rest.get(..2).unwrap_or("..");
         let change = match kind {
             // XY sub mH mI mW hH hI path
             "1 " => rest
                 .splitn(8, ' ')
                 .nth(7)
-                .map(|path| tracked_change(&rest[..2], path, None)),
+                .map(|path| tracked_change(xy, path, None)),
             // XY sub mH mI mW hH hI score path, then the original path
             "2 " => {
                 let original = records.next().map(String::from);
                 rest.splitn(9, ' ')
                     .nth(8)
-                    .map(|path| tracked_change(&rest[..2], path, original))
+                    .map(|path| tracked_change(xy, path, original))
             }
             // XY sub m1 m2 m3 mW h1 h2 h3 path
             "u " => rest.splitn(10, ' ').nth(9).map(|path| Change {
@@ -716,34 +859,29 @@ fn parse_log(output: &str) -> Vec<CommitInfo> {
         .collect()
 }
 
-/// `HEAD -> main, origin/main, tag: v1` as labels, and whether HEAD is
-/// among them. Remote `HEAD` aliases repeat a branch, so they are left out.
+/// `HEAD -> refs/heads/main, refs/remotes/origin/main, tag: refs/tags/v1`
+/// as labels, and whether HEAD is among them. Remote `HEAD` aliases repeat
+/// a branch, and stashes and notes are not branches, so they are left out.
 fn parse_decorations(decorations: &str) -> (Vec<RefLabel>, bool) {
     let mut is_head = false;
     let mut labels = Vec::new();
     for decoration in decorations.split(", ").filter(|d| !d.is_empty()) {
-        if let Some(branch) = decoration.strip_prefix("HEAD -> ") {
-            is_head = true;
+        let (current, name) = match decoration.strip_prefix("HEAD -> ") {
+            Some(name) => (true, name),
+            None => (false, decoration),
+        };
+        is_head |= current || name == "HEAD";
+        if let Some(branch) = name.strip_prefix("refs/heads/") {
             labels.push(RefLabel::Branch {
                 name: branch.into(),
-                current: true,
+                current,
             });
-        } else if decoration == "HEAD" {
-            is_head = true;
-        } else if let Some(tag) = decoration.strip_prefix("tag: ") {
+        } else if let Some(tag) = name.strip_prefix("tag: refs/tags/") {
             labels.push(RefLabel::Tag(tag.into()));
-        } else if decoration.ends_with("/HEAD") {
-            continue;
-        } else if decoration.contains('/') && !decoration.starts_with("refs/") {
-            // Short names: a slash marks a remote, unless a local branch
-            // is named with one; `--decorate=short` cannot tell them apart,
-            // so the remote reading is the common case.
-            labels.push(RefLabel::Remote(decoration.into()));
-        } else {
-            labels.push(RefLabel::Branch {
-                name: decoration.into(),
-                current: false,
-            });
+        } else if let Some(remote) = name.strip_prefix("refs/remotes/")
+            && !remote.ends_with("/HEAD")
+        {
+            labels.push(RefLabel::Remote(remote.into()));
         }
     }
     // The current branch leads, then other branches, remotes, tags.
@@ -814,7 +952,9 @@ mod tests {
     #[test]
     fn parses_the_log_with_its_labels() {
         let output = "aaa\x1fbbb ccc\x1fAda\x1f1700000000\x1fMerge storm\x1f\
-                      HEAD -> main, origin/main, origin/HEAD, tag: v1\x1e\n\
+                      HEAD -> refs/heads/main, refs/remotes/origin/main, \
+                      refs/remotes/origin/HEAD, tag: refs/tags/v1, refs/heads/feature/storm, \
+                      refs/stash\x1e\n\
                       bbb\x1f\x1fAda\x1f1690000000\x1fStart\x1f\x1e\n";
         let commits = parse_log(output);
         assert_eq!(commits.len(), 2);
@@ -826,6 +966,11 @@ mod tests {
                 RefLabel::Branch {
                     name: "main".into(),
                     current: true
+                },
+                // A branch with a slash in its name is still a branch.
+                RefLabel::Branch {
+                    name: "feature/storm".into(),
+                    current: false
                 },
                 RefLabel::Remote("origin/main".into()),
                 RefLabel::Tag("v1".into()),
@@ -1109,5 +1254,50 @@ mod tests {
         // The first commit shows against nothing.
         let first = commits.last().unwrap();
         assert!(repo.show(first.id()).unwrap().contains("+one"));
+    }
+
+    #[test]
+    fn stages_names_that_look_like_patterns_as_names() {
+        let Some(fixture) = Fixture::new() else {
+            return;
+        };
+        let repo = &fixture.repo;
+        // As a pattern, `a[1].md` would match `a1.md` and not itself.
+        fixture.write("a[1].md", "bracket\n");
+        fixture.write("a1.md", "plain\n");
+        let status = fixture.status();
+        repo.stage([status.change("a[1].md").unwrap()]).unwrap();
+        let status = fixture.status();
+        assert_eq!(status.change("a[1].md").unwrap().staged(), Staged::Yes);
+        assert_eq!(status.change("a1.md").unwrap().staged(), Staged::No);
+        assert!(
+            repo.diff(status.change("a[1].md").unwrap(), false)
+                .unwrap()
+                .contains("+bracket")
+        );
+    }
+
+    #[test]
+    fn stops_reading_a_patch_past_the_limit() {
+        let Some(fixture) = Fixture::new() else {
+            return;
+        };
+        let line = "x".repeat(99) + "\n";
+        fixture.write("huge.md", &line.repeat(MAX_PATCH_BYTES / 100 + 10));
+        let status = fixture.status();
+        let error = fixture
+            .repo
+            .diff(status.change("huge.md").unwrap(), false)
+            .unwrap_err();
+        assert!(error.to_string().contains("too large"));
+    }
+
+    #[test]
+    fn reads_no_history_before_the_first_commit() {
+        let Some(fixture) = Fixture::new() else {
+            return;
+        };
+        fixture.write("a.md", "one\n");
+        assert_eq!(fixture.repo.log(10).unwrap(), Vec::new());
     }
 }

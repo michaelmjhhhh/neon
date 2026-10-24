@@ -102,14 +102,19 @@ pub(crate) fn layout<'a>(
         // merged parent joins a lane already waiting for it, or opens one.
         for (nth, parent) in parents.iter().enumerate() {
             let parent = parent.as_str();
+            if nth == 0 {
+                lanes[lane] = Some((parent, color));
+                edges.push(Edge {
+                    from: (lane, Height::Middle),
+                    to: (lane, Height::Bottom),
+                    color,
+                });
+                continue;
+            }
             let existing = lanes
                 .iter()
                 .position(|slot| slot.is_some_and(|(expected, _)| expected == parent));
             let (target, edge_color) = match existing {
-                _ if nth == 0 => {
-                    lanes[lane] = Some((parent, color));
-                    (lane, color)
-                }
                 // The merge line takes the color of the branch it comes from.
                 Some(ix) => (ix, lanes[ix].map_or(0, |(_, color)| color)),
                 None => {

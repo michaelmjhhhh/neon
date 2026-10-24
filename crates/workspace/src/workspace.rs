@@ -2497,7 +2497,9 @@ impl Workspace {
                 .child(MarkdownPreview::pane(&self.tab().preview, cx))
         };
 
-        let panes = match self.layout {
+        // A change or commit picked in the sidebar takes the document's
+        // place; the document's panes are then not built at all.
+        let panes = (!self.showing_diff()).then(|| match self.layout {
             // Centered at a readable measure; the margins beside it scroll
             // the text too, so the pointer can rest anywhere.
             LayoutMode::Editor => {
@@ -2538,21 +2540,19 @@ impl Workspace {
                         .child(preview(true)),
                 )
                 .into_any_element(),
-        };
+        });
 
-        // A change picked in the Changes view takes the document's place.
-        let (header, panes, footer) = if self.showing_diff() {
-            (
-                self.render_diff_header(window, cx),
-                self.render_diff_body(cx),
-                self.render_diff_footer(cx),
-            )
-        } else {
-            (
+        let (header, panes, footer) = match panes {
+            Some(panes) => (
                 self.render_sheet_header(window, cx).into_any_element(),
                 panes,
                 self.render_sheet_footer(cx).into_any_element(),
-            )
+            ),
+            None => (
+                self.render_diff_header(window, cx),
+                self.render_diff_body(cx),
+                self.render_diff_footer(cx),
+            ),
         };
         let theme = cx.theme();
         div()

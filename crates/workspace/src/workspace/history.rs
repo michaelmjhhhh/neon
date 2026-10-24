@@ -16,10 +16,10 @@ use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, TitleBar};
 use gpui_kit::{
-    AnyElement, AppContext as _, BorderStyle, Bounds, Context, Entity, FontFeatures, FontWeight,
-    Hsla, IntoElement, ParentElement as _, PathBuilder, Pixels, SharedString, Styled as _, Task,
-    UniformListScrollHandle, Window, canvas, div, point, prelude::FluentBuilder as _, quad, size,
-    uniform_list,
+    AnyElement, AppContext as _, BorderStyle, Bounds, ContentMask, Context, Entity, FontFeatures,
+    FontWeight, Hsla, IntoElement, ParentElement as _, PathBuilder, Pixels, SharedString,
+    Styled as _, Subscription, Task, UniformListScrollHandle, Window, canvas, div, point,
+    prelude::FluentBuilder as _, quad, size, uniform_list,
 };
 
 use super::changes::SidebarView;
@@ -56,10 +56,12 @@ pub(super) struct History {
     diff_error: Option<SharedString>,
     diff_task: Option<Task<()>>,
     scroll: UniformListScrollHandle,
+    _diff_subscription: Subscription,
 }
 
 impl History {
     pub(super) fn new(cx: &mut Context<Workspace>) -> Self {
+        let diff = cx.new(|cx| DiffState::new([], cx));
         Self {
             commits: Rc::default(),
             graph: Rc::default(),
@@ -68,7 +70,10 @@ impl History {
             task: None,
             reload_queued: false,
             selected: None,
-            diff: cx.new(|cx| DiffState::new([], cx)),
+            // The diff measures itself once painted and asks for another
+            // frame through its state; the sheet that shows it must follow.
+            _diff_subscription: cx.observe(&diff, |_, _, cx| cx.notify()),
+            diff,
             shown: None,
             diff_error: None,
             diff_task: None,
@@ -109,18 +114,8 @@ impl Workspace {
             self.history.reload_queued = true;
             return;
         }
-        let has_commits = self
-            .changes
-            .status()
-            .is_none_or(|status| status.has_commits());
         let read = cx.background_spawn(async move {
-            // `git log HEAD` fails before the first commit; there is no
-            // history to show, not an error.
-            let commits = if has_commits {
-                repo.log(HISTORY_LIMIT)?
-            } else {
-                Vec::new()
-            };
+            let commits = repo.log(HISTORY_LIMIT)?;
             let graph =
                 commit_graph::layout(commits.iter().map(|commit| (commit.id(), commit.parents())));
             Ok::<_, GitError>((commits, graph))
@@ -630,57 +625,59 @@ fn paint_row(
     };
     let color = |index: usize| style.palette[index % style.palette.len()];
     let node = point(x(row.lane), y(Height::Middle));
+    // Lanes past the column's width would draw over the subject.
+    window.with_content_mask(Some(ContentMask { bounds }), |window| {
+        for Edge {
+            from,
+            to,
+            color: edge_color,
+        } in &row.edges
+        {
+            let mut start = point(x(from.0), y(from.1));
+            let mut end = point(x(to.0), y(to.1));
+            // Leave the dot's area clear.
+            if *from == (row.lane, Height::Middle) {
+                start.y += style.dot;
+            }
+            if *to == (row.lane, Height::Middle) {
+                end.y -= style.dot;
+            }
+            let mut path = PathBuilder::stroke(style.stroke);
+            path.move_to(start);
+            if start.x == end.x {
+                path.line_to(end);
+            } else {
+                // Leave and arrive vertically, so lanes read as continuous.
+                let middle = (start.y + end.y) / 2.;
+                path.cubic_bezier_to(end, point(start.x, middle), point(end.x, middle));
+            }
+            if let Ok(path) = path.build() {
+                window.paint_path(path, color(*edge_color));
+            }
+        }
 
-    for Edge {
-        from,
-        to,
-        color: edge_color,
-    } in &row.edges
-    {
-        let mut start = point(x(from.0), y(from.1));
-        let mut end = point(x(to.0), y(to.1));
-        // Leave the dot's area clear.
-        if *from == (row.lane, Height::Middle) {
-            start.y += style.dot;
-        }
-        if *to == (row.lane, Height::Middle) {
-            end.y -= style.dot;
-        }
-        let mut path = PathBuilder::stroke(style.stroke);
-        path.move_to(start);
-        if start.x == end.x {
-            path.line_to(end);
+        let dot = Bounds::centered_at(node, size(style.dot * 2., style.dot * 2.));
+        let color = color(row.color);
+        if is_head {
+            window.paint_quad(quad(
+                dot,
+                style.dot,
+                gpui_kit::transparent_black(),
+                style.stroke * 1.2,
+                color,
+                BorderStyle::Solid,
+            ));
         } else {
-            // Leave and arrive vertically, so lanes read as continuous.
-            let middle = (start.y + end.y) / 2.;
-            path.cubic_bezier_to(end, point(start.x, middle), point(end.x, middle));
+            window.paint_quad(quad(
+                dot,
+                style.dot,
+                color,
+                Pixels::ZERO,
+                gpui_kit::transparent_black(),
+                BorderStyle::Solid,
+            ));
         }
-        if let Ok(path) = path.build() {
-            window.paint_path(path, color(*edge_color));
-        }
-    }
-
-    let dot = Bounds::centered_at(node, size(style.dot * 2., style.dot * 2.));
-    let color = color(row.color);
-    if is_head {
-        window.paint_quad(quad(
-            dot,
-            style.dot,
-            gpui_kit::transparent_black(),
-            style.stroke * 1.2,
-            color,
-            BorderStyle::Solid,
-        ));
-    } else {
-        window.paint_quad(quad(
-            dot,
-            style.dot,
-            color,
-            Pixels::ZERO,
-            gpui_kit::transparent_black(),
-            BorderStyle::Solid,
-        ));
-    }
+    });
 }
 
 /// How a name is colored in the list.
