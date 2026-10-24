@@ -13,8 +13,9 @@ use workspace::LatencyBench;
 use workspace::{
     CloseTab, CloseWindow, ExportDocx, ExportHtml, ExportPdf, NewFile, NewFolder, NewTab, NextTab,
     Open, OpenFolder, OpenSettings, PreviousTab, Quit, RefreshFolder, ResetZoom, Save, SaveAs,
-    ShowEditor, ShowPreview, ShowSplit, ToggleBold, ToggleItalic, ToggleLineNumbers, ToggleSidebar,
-    ToggleTheme, ToggleZen, Workspace, ZoomIn, ZoomOut,
+    ShowChanges, ShowEditor, ShowFiles, ShowHistory, ShowPreview, ShowSplit, ToggleBold,
+    ToggleItalic, ToggleLineNumbers, ToggleSidebar, ToggleTheme, ToggleZen, Workspace, ZoomIn,
+    ZoomOut,
 };
 
 /// Every open document window, so files opened from Finder can reuse one.
@@ -287,6 +288,9 @@ fn set_menus(cx: &mut App) {
             MenuItem::action("Split", ShowSplit),
             MenuItem::action("Preview", ShowPreview),
             MenuItem::separator(),
+            MenuItem::action("Files", ShowFiles),
+            MenuItem::action("Changes", ShowChanges),
+            MenuItem::action("History", ShowHistory),
             MenuItem::action("Toggle Sidebar", ToggleSidebar),
             MenuItem::action("Toggle Line Numbers", ToggleLineNumbers),
             MenuItem::action("Toggle Dark Mode", ToggleTheme),

@@ -53,8 +53,13 @@ use crate::theme::{self, Appearance};
 use crate::word_count::WordCount;
 use crate::zen::{Zen, ZenView};
 
+mod changes;
+mod history;
 mod tabs;
 mod zen_mode;
+use changes::{Changes, SidebarView};
+pub use changes::{Commit, Push, ShowChanges, ShowFiles, ShowHistory, StageAll, UnstageAll};
+use history::History;
 use tabs::DocumentTab;
 
 #[cfg(feature = "memory-bench")]
@@ -189,6 +194,12 @@ pub struct Workspace {
     /// How many Markdown files each listed folder holds, at any depth.
     folder_file_counts: Rc<HashMap<SharedString, usize>>,
     sidebar_visible: bool,
+    /// Whether the sidebar lists the folder's files or its Git changes.
+    sidebar_view: SidebarView,
+    /// The Git repository the folder is in, if any; see [`changes`].
+    changes: Changes,
+    /// The repository's commits; see [`history`].
+    history: History,
     /// The sidebar and sheet widths, and the split between editor and
     /// preview. Owned here so they outlive the frames that do not show them:
     /// hiding the sidebar or leaving Split does not reset them.
@@ -241,6 +252,8 @@ impl Workspace {
         let word_count = cx.new(|_| WordCount::default());
 
         let tree = cx.new(|cx| TreeState::new(cx));
+        let changes = Changes::new(window, cx);
+        let history = History::new(cx);
         let settings = cx.new(|cx| SettingsView::new(typography.clone(), cx));
         let sidebar = cx.new({
             let workspace = cx.weak_entity();
@@ -302,6 +315,8 @@ impl Workspace {
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
                     this.remember_session(cx);
+                    // Commits made in Terminal meanwhile show up on return.
+                    this.refresh_changes(cx);
                 }
             }),
         ];
@@ -320,6 +335,9 @@ impl Workspace {
             copied_entry: None,
             folder_file_counts: Rc::default(),
             sidebar_visible: true,
+            sidebar_view: SidebarView::default(),
+            changes,
+            history,
             panes: cx.new(|_| ResizableState::default()),
             split: cx.new(|_| ResizableState::default()),
             line_numbers,
@@ -1065,6 +1083,7 @@ impl Workspace {
                             this.tab().document.path().map(|path| {
                                 SharedString::from(path.to_string_lossy().into_owned())
                             });
+                        this.discover_repository(path.clone(), cx);
                         this.folder = Some(path);
                         this.remember_session(cx);
                         this.sidebar_visible |= reveal;
@@ -1577,7 +1596,15 @@ impl Workspace {
     /// The folder sidebar. It runs the full height of the window on the
     /// chrome surface, with the window controls in its top row, so the
     /// document sheet beside it is the only raised region.
-    fn render_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let switch = self.render_sidebar_switch(cx);
+        // Changes and History replace the folder's header and tree.
+        let git_view = match self.sidebar_view {
+            _ if !self.has_repository() => None,
+            SidebarView::Files => None,
+            SidebarView::Changes => Some(self.render_changes(window, cx)),
+            SidebarView::History => Some(self.render_history(window, cx)),
+        };
         let theme = cx.theme();
         let active = self
             .tab()
@@ -1600,11 +1627,26 @@ impl Workspace {
                     div()
                         .flex()
                         .flex_1()
+                        .items_center()
                         .justify_end()
+                        .gap_1()
                         .pr_2()
+                        .children(switch)
                         .child(sidebar_toggle(true, cx)),
                 ),
         );
+        if let Some(view) = git_view {
+            return div()
+                .flex()
+                .flex_col()
+                .size_full()
+                .min_h_0()
+                .bg(theme.sidebar)
+                .text_color(theme.sidebar_foreground)
+                .child(controls_row)
+                .child(view)
+                .into_any_element();
+        }
 
         let header = self.folder.as_deref().map(|folder| {
             let total = self
@@ -1982,6 +2024,7 @@ impl Workspace {
             .child(controls_row)
             .children(header)
             .child(body)
+            .into_any_element()
     }
 
     fn show_editor(&mut self, _: &ShowEditor, window: &mut Window, cx: &mut Context<Self>) {
@@ -2454,7 +2497,9 @@ impl Workspace {
                 .child(MarkdownPreview::pane(&self.tab().preview, cx))
         };
 
-        let panes = match self.layout {
+        // A change or commit picked in the sidebar takes the document's
+        // place; the document's panes are then not built at all.
+        let panes = (!self.showing_diff()).then(|| match self.layout {
             // Centered at a readable measure; the margins beside it scroll
             // the text too, so the pointer can rest anywhere.
             LayoutMode::Editor => {
@@ -2495,10 +2540,20 @@ impl Workspace {
                         .child(preview(true)),
                 )
                 .into_any_element(),
-        };
+        });
 
-        let header = self.render_sheet_header(window, cx).into_any_element();
-        let footer = self.render_sheet_footer(cx).into_any_element();
+        let (header, panes, footer) = match panes {
+            Some(panes) => (
+                self.render_sheet_header(window, cx).into_any_element(),
+                panes,
+                self.render_sheet_footer(cx).into_any_element(),
+            ),
+            None => (
+                self.render_diff_header(window, cx),
+                self.render_diff_body(cx),
+                self.render_diff_footer(cx),
+            ),
+        };
         let theme = cx.theme();
         div()
             .size_full()
@@ -2641,6 +2696,13 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_settings))
             .on_action(cx.listener(Self::close_settings))
             .on_action(cx.listener(Self::toggle_sidebar))
+            .on_action(cx.listener(Self::show_files))
+            .on_action(cx.listener(Self::show_changes))
+            .on_action(cx.listener(Self::show_history))
+            .on_action(cx.listener(Self::stage_all))
+            .on_action(cx.listener(Self::unstage_all))
+            .on_action(cx.listener(Self::commit))
+            .on_action(cx.listener(Self::push))
             .on_action(cx.listener(Self::toggle_line_numbers))
             .on_action(cx.listener(Self::zoom_in))
             .on_action(cx.listener(Self::zoom_out))
@@ -2668,10 +2730,12 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_theme))
             .on_action(cx.listener(Self::toggle_zen))
             .on_action(cx.listener(Self::exit_zen_action))
-            // Escape that nothing inside had a use for leaves Zen.
+            // Escape that nothing inside had a use for leaves Zen, or a diff.
             .on_action(cx.listener(|this, _: &Escape, window, cx| {
                 if this.zen.is_some() {
                     this.exit_zen(window, cx);
+                } else if this.showing_diff() {
+                    this.close_diff(window, cx);
                 } else {
                     cx.propagate();
                 }
