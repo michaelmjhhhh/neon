@@ -452,7 +452,11 @@ impl Workspace {
                         this.close_entry_at(ix, window, cx);
                     }
                 }));
-            let close_always_shown = is_active && !is_dirty;
+            // A split tab marks each edited document beside its name, since
+            // one dot could not say which; the trailing slot keeps only the
+            // close button.
+            let trailing_dot = is_dirty && !is_split;
+            let close_always_shown = is_active && !trailing_dot;
             let trailing = div()
                 .relative()
                 .flex_none()
@@ -467,7 +471,7 @@ impl Workspace {
                         })
                         .child(close),
                 )
-                .when(is_dirty, |this| {
+                .when(trailing_dot, |this| {
                     this.child(
                         div()
                             .absolute()
@@ -493,6 +497,7 @@ impl Workspace {
                     .and_then(Path::parent)
                     .map(file_name);
                 let focused = is_active && *ix == self.active_tab;
+                let edited = is_split && tab.document.is_dirty();
                 div()
                     .flex()
                     .items_center()
@@ -538,6 +543,16 @@ impl Workspace {
                                 )
                             }),
                     )
+                    .when(edited, |this| {
+                        this.child(
+                            div()
+                                .flex_none()
+                                .ml_1p5()
+                                .size_1p5()
+                                .rounded_full()
+                                .bg(theme.primary),
+                        )
+                    })
             });
 
             Tab::new(group.clone())
