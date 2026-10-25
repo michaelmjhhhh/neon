@@ -34,6 +34,7 @@ Groups, in this order:
 - A folder in a Git repository gets a Changes view in the sidebar (⌃⇧G; ⌘⇧E returns to Files): changed files grouped by folder with Git's status letters, a ring at each row's end to stage a file or a whole folder, a message, Commit (⌘↩) and Push. Picking a file shows what changed since the last commit in the sheet, with + and − beside each line and changed words marked inside it; Escape or Edit goes back to writing.
 - History in the sidebar draws the commits of every branch as a graph, each branch in its own colored lane with its merges and forks, with branch names in their lane's color, tags, authors and times; picking a commit shows what it changed.
 - Right-click a file or folder in the sidebar to Copy, Paste, Duplicate, Copy Path or Reveal in Finder; with the sidebar focused, ⌘C, ⌘V, ⌘D, ⌥⌘C and ⌥⌘R do the same, and the folder's ⋯ menu can paste too. A copy never overwrites: a taken name becomes "name copy", "name copy 2" and so on, a folder copy brings its images and other files along, and a folder cannot be pasted into itself.
+- The word count in the status bar shows the selection's words beside the total while text is selected, as in "250/500 words".
 
 ## [0.10.0] - 2026-10-23
 
