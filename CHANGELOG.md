@@ -32,7 +32,7 @@ Groups, in this order:
 ### Added
 
 - Split tabs show two documents side by side in one tab: ⌘D opens an empty pane to the right of the document and ⌘⇧D to its left, and the next file opened fills it. Dragging a file from the sidebar onto the left or right half of the document opens it there, beside the document or in place of the pane it is dropped on. The tab names both documents with the focused one in front; ⌥⌘← and ⌥⌘→ move between the panes, ⌘W closes the focused one and the tab's close button closes both. Each pane follows the Editor, Split or Preview layout.
-- Settings has a Shortcuts section that lists every keyboard shortcut by menu, with a field to search them by name.
+- Settings has a Shortcuts section that lists the keyboard shortcuts by menu and by the area they work in, with a field to search them by name.
 
 ### Changed
 

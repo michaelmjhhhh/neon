@@ -5,7 +5,7 @@ mod shortcuts;
 
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::select::Select;
@@ -75,6 +75,7 @@ pub(crate) struct SettingsView {
     line_numbers: bool,
     /// Filters the Shortcuts section by command name.
     shortcut_query: Entity<InputState>,
+    shortcuts: Vec<shortcuts::Group>,
     focus_handle: FocusHandle,
     _subscriptions: [Subscription; 1],
 }
@@ -101,6 +102,7 @@ impl SettingsView {
             typography,
             line_numbers: settings_file::saved(cx).line_numbers,
             shortcut_query,
+            shortcuts: shortcuts::all(cx),
             focus_handle: cx.focus_handle(),
             _subscriptions: subscriptions,
         }
@@ -192,6 +194,9 @@ impl SettingsView {
                             )
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.section = section;
+                                // The search field may have focus, and it is
+                                // not drawn in other sections.
+                                this.focus_handle.focus(window, cx);
                                 this.set_open(true, window, cx);
                                 cx.notify();
                             }))
@@ -377,7 +382,7 @@ impl SettingsView {
     /// the command's name and its keys.
     fn render_shortcuts(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let query = self.shortcut_query.read(cx).value().to_string();
-        let groups = shortcuts::groups(&query, cx);
+        let groups = shortcuts::filter(&self.shortcuts, &query);
         let theme = cx.theme();
         let search = Input::new(&self.shortcut_query)
             .prefix(
@@ -387,6 +392,18 @@ impl SettingsView {
             )
             .cleanable(true)
             .aria_label("Search shortcuts");
+        // Escape clears the search first, then closes Settings.
+        let search = div()
+            .on_action(cx.listener(|this, _: &Escape, window, cx| {
+                if this.shortcut_query.read(cx).value().is_empty() {
+                    cx.propagate();
+                    return;
+                }
+                this.shortcut_query
+                    .update(cx, |query, cx| query.set_value("", window, cx));
+                cx.notify();
+            }))
+            .child(search);
         let body = if groups.is_empty() {
             div()
                 .py_8()
@@ -400,25 +417,25 @@ impl SettingsView {
                 .flex()
                 .flex_col()
                 .gap_8()
-                .children(groups.into_iter().map(|group| {
-                    let rows = group
-                        .shortcuts
-                        .into_iter()
-                        .enumerate()
-                        .map(|(ix, shortcut)| {
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .gap_4()
-                                .h_8()
-                                .px_4()
-                                .when(ix > 0, |this| this.border_t_1().border_color(theme.border))
-                                .child(div().min_w_0().truncate().text_sm().child(shortcut.label))
-                                .child(div().flex().flex_none().items_center().gap_1().children(
-                                    shortcut.keys.into_iter().map(|key| Kbd::new(key).outline()),
-                                ))
-                        });
+                .children(groups.into_iter().map(|(group, shortcuts)| {
+                    let rows = shortcuts.into_iter().enumerate().map(|(ix, shortcut)| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_4()
+                            .h_8()
+                            .px_4()
+                            .when(ix > 0, |this| this.border_t_1().border_color(theme.border))
+                            .child(div().min_w_0().truncate().text_sm().child(shortcut.label))
+                            .child(div().flex().flex_none().items_center().gap_1().children(
+                                shortcut.keys.iter().map(|chord| {
+                                    div().flex().items_center().gap_0p5().children(
+                                        chord.iter().map(|key| Kbd::new(key.clone()).outline()),
+                                    )
+                                }),
+                            ))
+                    });
                     section(
                         group.title,
                         group.description,
@@ -546,8 +563,8 @@ impl SettingsView {
     }
 }
 
-/// A titled block of the column: a heading with a short description, an
-/// optional action at the trailing edge, then its content.
+/// A titled block of the column: a heading with an optional short description,
+/// an optional action at the trailing edge, then its content.
 fn section(
     title: &'static str,
     description: Option<&'static str>,

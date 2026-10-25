@@ -1,6 +1,7 @@
-//! The Shortcuts section's list: each command the app binds a key to, in
-//! groups that follow the menus. The keys come from the keymap itself, so
-//! the list shows what `crate::init` and the views actually bind.
+//! The Shortcuts section's list: each command the app binds a key to,
+//! grouped by menu, or by the area that must have focus for the keys to work.
+//! The keys come from the keymap itself, so a row shows what `crate::init`
+//! and the views actually bind; the commands are listed here by hand.
 
 use gpui_kit::component::input::{
     Copy, Cut, Indent, IndentInline, Outdent, OutdentInline, Paste, Redo, Replace, Search,
@@ -29,19 +30,32 @@ pub(super) struct Group {
 pub(super) struct Shortcut {
     pub(super) label: &'static str,
     /// Every key bound to the command, in the order they were bound: the
-    /// menus show the first.
-    pub(super) keys: Vec<Keystroke>,
+    /// menus show the first. Each is one keystroke, or several for a chord.
+    pub(super) keys: Vec<Vec<Keystroke>>,
 }
 
 /// One command per row, named as the menus name it. A row may join several
 /// actions that do one thing, such as Tab and Cmd-] for Indent.
 type Row = (&'static str, Vec<Box<dyn Action>>);
 
-fn rows(cx: &App) -> [(&'static str, Option<&'static str>, Vec<Row>); 7] {
+fn rows(cx: &App) -> [(&'static str, Option<&'static str>, Vec<Row>); 8] {
     let a = |actions: &[&dyn Action]| actions.iter().map(|action| action.boxed_clone()).collect();
     // GPUI Kit binds these but does not export their types.
-    let named = |name: &str| cx.build_action(name, None).into_iter().collect();
+    let named = |name: &str| {
+        let action = cx.build_action(name, None);
+        debug_assert!(action.is_ok(), "GPUI Kit no longer registers {name}");
+        action.into_iter().collect()
+    };
     [
+        (
+            "Neon",
+            None,
+            vec![
+                ("Settings", a(&[&OpenSettings])),
+                ("Close settings", a(&[&CloseSettings])),
+                ("Quit Neon", a(&[&Quit])),
+            ],
+        ),
         (
             "File",
             None,
@@ -55,9 +69,6 @@ fn rows(cx: &App) -> [(&'static str, Option<&'static str>, Vec<Row>); 7] {
                 ("Save as", a(&[&SaveAs])),
                 ("Close tab", a(&[&CloseTab])),
                 ("Close window", a(&[&CloseWindow])),
-                ("Settings", a(&[&OpenSettings])),
-                ("Close settings", a(&[&CloseSettings])),
-                ("Quit Neon", a(&[&Quit])),
             ],
         ),
         (
@@ -141,31 +152,28 @@ fn rows(cx: &App) -> [(&'static str, Option<&'static str>, Vec<Row>); 7] {
     ]
 }
 
-/// The groups whose title or command names contain `query`, ignoring case,
-/// with their keys read from the keymap. A command without a key is left out.
-pub(super) fn groups(query: &str, cx: &App) -> Vec<Group> {
-    let query = query.trim().to_lowercase();
+/// Every group with its keys read from the keymap. A command without a key
+/// is left out. The keymap is complete once `crate::init` has run, so this
+/// is read once rather than on each frame.
+pub(super) fn all(cx: &App) -> Vec<Group> {
     let keymap = cx.key_bindings();
     let keymap = keymap.borrow();
     rows(cx)
         .into_iter()
         .filter_map(|(title, description, rows)| {
-            let title_matches = title.to_lowercase().contains(&query);
             let shortcuts: Vec<_> = rows
-                .iter()
-                .filter(|(label, _)| title_matches || label.to_lowercase().contains(&query))
+                .into_iter()
                 .filter_map(|(label, actions)| {
-                    let mut keys: Vec<Keystroke> = Vec::new();
-                    for action in actions {
+                    let mut keys: Vec<Vec<Keystroke>> = Vec::new();
+                    for action in &actions {
                         for binding in keymap.bindings_for_action(action.as_ref()) {
-                            // No binding here is a chord, so its first
-                            // keystroke is the whole shortcut.
-                            let Some(key) = binding.keystrokes().first() else {
-                                continue;
-                            };
-                            let key = key.as_keystroke();
-                            if !keys.contains(key) {
-                                keys.push(key.clone());
+                            let key: Vec<_> = binding
+                                .keystrokes()
+                                .iter()
+                                .map(|key| key.as_keystroke().clone())
+                                .collect();
+                            if !keys.contains(&key) {
+                                keys.push(key);
                             }
                         }
                     }
@@ -177,6 +185,24 @@ pub(super) fn groups(query: &str, cx: &App) -> Vec<Group> {
                 description,
                 shortcuts,
             })
+        })
+        .collect()
+}
+
+/// The groups whose title or command names contain `query`, ignoring case:
+/// a matching title keeps all its commands.
+pub(super) fn filter<'a>(groups: &'a [Group], query: &str) -> Vec<(&'a Group, Vec<&'a Shortcut>)> {
+    let query = query.trim().to_lowercase();
+    groups
+        .iter()
+        .filter_map(|group| {
+            let title_matches = group.title.to_lowercase().contains(&query);
+            let shortcuts: Vec<_> = group
+                .shortcuts
+                .iter()
+                .filter(|shortcut| title_matches || shortcut.label.to_lowercase().contains(&query))
+                .collect();
+            (!shortcuts.is_empty()).then_some((group, shortcuts))
         })
         .collect()
 }
