@@ -29,6 +29,8 @@ Groups, in this order:
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-25
+
 ### Added
 
 - A folder in a Git repository gets a Changes view in the sidebar (⌃⇧G; ⌘⇧E returns to Files): changed files grouped by folder with Git's status letters, a ring at each row's end to stage a file or a whole folder, a message, Commit (⌘↩) and Push. Picking a file shows what changed since the last commit in the sheet, with + and − beside each line and changed words marked inside it; Escape or Edit goes back to writing.
