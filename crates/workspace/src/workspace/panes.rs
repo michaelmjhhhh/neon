@@ -127,7 +127,7 @@ impl Workspace {
             self.close_diff(window, cx);
         }
         let current = self.tab().id;
-        let ix = self.insert_tab(self.tabs.len(), window, cx);
+        let ix = self.push_tab(window, cx);
         let new = self.tabs[ix].id;
         self.pair(new, side, current);
         self.show_tab_id(new, window, cx);
@@ -297,7 +297,7 @@ impl Workspace {
         let target = match open {
             Some(id) => id,
             None => {
-                let ix = self.insert_tab(self.tabs.len(), window, cx);
+                let ix = self.push_tab(window, cx);
                 self.tabs[ix].id
             }
         };

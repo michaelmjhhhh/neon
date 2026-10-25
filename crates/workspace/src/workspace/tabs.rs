@@ -126,7 +126,7 @@ impl Workspace {
         if self.is_busy() {
             return;
         }
-        let ix = self.insert_tab(self.tabs.len(), window, cx);
+        let ix = self.push_tab(window, cx);
         if self.zen.is_some() {
             self.show_zen_in_editors(window, cx);
         }
@@ -134,14 +134,9 @@ impl Workspace {
         self.set_settings_open(false, window, cx);
     }
 
-    /// Add an empty, untitled tab at `ix` without showing it, and return
-    /// `ix`.
-    pub(super) fn insert_tab(
-        &mut self,
-        ix: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> usize {
+    /// Add an empty, untitled tab after the last one without showing it,
+    /// and return its index.
+    pub(super) fn push_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> usize {
         self.next_tab_id += 1;
         let tab = DocumentTab::new(
             self.next_tab_id,
@@ -151,11 +146,8 @@ impl Workspace {
             window,
             cx,
         );
-        self.tabs.insert(ix, tab);
-        if ix <= self.active_tab {
-            self.active_tab += 1;
-        }
-        ix
+        self.tabs.push(tab);
+        self.tabs.len() - 1
     }
 
     /// Show the document at `ix`, keeping the one it replaces as it was.
