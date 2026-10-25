@@ -29,7 +29,13 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Added
+
+- Two documents side by side: ⌘D opens an empty pane to the right of the document and ⌘⇧D to its left, and the next file opened fills it. Dragging a file from the sidebar onto the left or right half of the document opens it in a pane on that side, or in the pane it is dropped on. Each pane follows the Editor, Split or Preview layout; a click in a pane focuses it, the other pane's tab stays lightly filled, and closing either pane's tab returns to one pane.
+
 ### Changed
+
+- A file in the sidebar opens when the click ends rather than when it starts, so it can be dragged to a pane instead.
 
 - Diffs tint each changed line, so a reworked paragraph reads as one block with its changed words darker inside, instead of scattered marks with white gaps. In History, a commit that changed one file no longer repeats its counts in the title.
 

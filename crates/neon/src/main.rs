@@ -13,9 +13,9 @@ use workspace::LatencyBench;
 use workspace::{
     CloseTab, CloseWindow, ExportDocx, ExportHtml, ExportPdf, NewFile, NewFolder, NewTab, NextTab,
     Open, OpenFolder, OpenSettings, PreviousTab, Quit, RefreshFolder, ResetZoom, Save, SaveAs,
-    ShowChanges, ShowEditor, ShowFiles, ShowHistory, ShowPreview, ShowSplit, ToggleBold,
-    ToggleItalic, ToggleLineNumbers, ToggleSidebar, ToggleTheme, ToggleZen, Workspace, ZoomIn,
-    ZoomOut,
+    ShowChanges, ShowEditor, ShowFiles, ShowHistory, ShowPreview, ShowSplit, SplitLeft, SplitRight,
+    ToggleBold, ToggleItalic, ToggleLineNumbers, ToggleSidebar, ToggleTheme, ToggleZen, Workspace,
+    ZoomIn, ZoomOut,
 };
 
 /// Every open document window, so files opened from Finder can reuse one.
@@ -302,6 +302,9 @@ fn set_menus(cx: &mut App) {
             MenuItem::separator(),
             MenuItem::action("Show Next Tab", NextTab),
             MenuItem::action("Show Previous Tab", PreviousTab),
+            // "New Pane", not "Split": Split is already a layout above.
+            MenuItem::action("New Pane on Right", SplitRight),
+            MenuItem::action("New Pane on Left", SplitLeft),
         ]),
     ]);
 }

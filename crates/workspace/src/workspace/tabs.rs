@@ -1,6 +1,7 @@
 //! Document tabs: each tab keeps its own file, editor and preview, so
 //! switching tabs keeps every document's edits, undo history and scroll
-//! position. The window shows one tab at a time.
+//! position. The window shows one tab at a time, or two side by side while
+//! the sheet is split; see [`super::panes`].
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -12,9 +13,9 @@ use gpui_kit::component::input::EditorState;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _};
 use gpui_kit::{
-    AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement,
-    MouseButton, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, div, prelude::FluentBuilder as _,
+    AppContext as _, Context, Entity, Focusable as _, FontWeight, InteractiveElement as _,
+    IntoElement, MouseButton, ParentElement as _, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Subscription, Window, div, prelude::FluentBuilder as _,
 };
 use markdown_preview::MarkdownPreview;
 
@@ -38,7 +39,7 @@ pub(super) struct DocumentTab {
     pub(super) revealed_cursor: Option<usize>,
     /// Made the first time this tab shows in Zen.
     pub(super) zen_focus: Option<ZenFocus>,
-    _subscriptions: [Subscription; 2],
+    _subscriptions: [Subscription; 4],
 }
 
 impl DocumentTab {
@@ -69,9 +70,18 @@ impl DocumentTab {
         preview.update(cx, |preview, cx| preview.set_typography(font, scale, cx));
         let editor_pane =
             cx.new(|cx| EditorPane::new(editor.clone(), typography.clone(), window, cx));
+        // A click in the other pane's editor or preview focuses that pane.
+        let editor_focus = editor.read(cx).focus_handle(cx);
+        let preview_focus = preview.read(cx).focus_handle(cx);
         let subscriptions = [
             cx.subscribe_in(&editor, window, Workspace::on_editor_event),
             cx.observe_in(&editor, window, Workspace::on_editor_notified),
+            cx.on_focus_in(&editor_focus, window, move |this, window, cx| {
+                this.on_pane_focused(id, window, cx)
+            }),
+            cx.on_focus_in(&preview_focus, window, move |this, window, cx| {
+                this.on_pane_focused(id, window, cx)
+            }),
         ];
         Self {
             id,
@@ -116,6 +126,22 @@ impl Workspace {
         if self.is_busy() {
             return;
         }
+        let ix = self.insert_tab(self.tabs.len(), window, cx);
+        if self.zen.is_some() {
+            self.show_zen_in_editors(window, cx);
+        }
+        self.activate_tab(ix, window, cx);
+        self.set_settings_open(false, window, cx);
+    }
+
+    /// Add an empty, untitled tab at `ix` without showing it, and return
+    /// `ix`.
+    pub(super) fn insert_tab(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> usize {
         self.next_tab_id += 1;
         let tab = DocumentTab::new(
             self.next_tab_id,
@@ -125,23 +151,26 @@ impl Workspace {
             window,
             cx,
         );
-        self.tabs.push(tab);
-        if self.zen.is_some() {
-            self.show_zen_in_editors(window, cx);
+        self.tabs.insert(ix, tab);
+        if ix <= self.active_tab {
+            self.active_tab += 1;
         }
-        // Switch first: closing Settings then turns on only the new preview.
-        self.activate_tab(self.tabs.len() - 1, window, cx);
-        self.set_settings_open(false, window, cx);
+        ix
     }
 
-    /// Show the tab at `ix`, keeping the one it replaces as it was.
+    /// Show the tab at `ix`, keeping the one it replaces as it was. A tab
+    /// the other pane shows is not moved: focus goes to that pane instead.
     pub fn activate_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if ix >= self.tabs.len() || ix == self.active_tab || self.is_busy() {
             return;
         }
-        self.tab()
-            .preview
-            .update(cx, |preview, cx| preview.set_active(false, cx));
+        let current = self.tab().id;
+        if let Some(split) = &mut self.pane_split
+            && split.other_tab == self.tabs[ix].id
+        {
+            split.other_tab = current;
+            split.active_side = split.active_side.opposite();
+        }
         self.active_tab = ix;
         self.show_active_tab(window, cx);
     }
@@ -167,8 +196,7 @@ impl Workspace {
         self.slash_commands.dismiss();
         let tab = self.tab();
         let (editor, preview) = (tab.editor.clone(), tab.preview.clone());
-        let preview_shown = self.preview_shown();
-        preview.update(cx, |preview, cx| preview.set_active(preview_shown, cx));
+        self.sync_previews(cx);
         let source = editor.read(cx).text().clone();
         self.word_count
             .update(cx, |count, cx| count.set_source(source, cx));
@@ -234,14 +262,25 @@ impl Workspace {
     }
 
     /// Drop the tab at `ix`. Closing the shown tab shows its right
-    /// neighbor, or its left one at the end.
+    /// neighbor, or its left one at the end. Closing a tab either pane shows
+    /// joins the panes; the other pane's document then fills the sheet.
     pub(super) fn remove_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.tabs.len() < 2 || ix >= self.tabs.len() {
             return;
         }
         let was_active = ix == self.active_tab;
+        let removed = self.tabs[ix].id;
+        let mut next = None;
+        if let Some(split) = self.pane_split
+            && (was_active || split.other_tab == removed)
+        {
+            self.pane_split = None;
+            next = was_active.then_some(split.other_tab);
+        }
         self.tabs.remove(ix);
-        if ix < self.active_tab || self.active_tab == self.tabs.len() {
+        if let Some(ix) = next.and_then(|id| self.tabs.iter().position(|tab| tab.id == id)) {
+            self.active_tab = ix;
+        } else if ix < self.active_tab || self.active_tab == self.tabs.len() {
             self.active_tab -= 1;
         }
         if was_active {
@@ -269,8 +308,12 @@ impl Workspace {
             }
         }
 
+        let other_pane = self.other_pane_tab().map(|tab| tab.id);
         let tabs = self.tabs.iter().enumerate().map(|(ix, tab)| {
             let is_active = ix == self.active_tab;
+            // The other pane's tab is on screen too, so it is filled more
+            // lightly than the focused one.
+            let in_other_pane = other_pane == Some(tab.id);
             let is_dirty = tab.document.is_dirty();
             let name = tab.document.display_name();
             let (stem, extension) = split_extension(&name);
@@ -360,6 +403,8 @@ impl Workspace {
                 .map(|this| {
                     if is_active {
                         this.bg(theme.secondary_active).text_color(theme.foreground)
+                    } else if in_other_pane {
+                        this.bg(theme.muted).text_color(theme.foreground)
                     } else {
                         this.hover(|style| style.bg(theme.muted).text_color(theme.foreground))
                     }

@@ -39,9 +39,9 @@ pub use workspace::MemoryBench;
 pub use workspace::{
     CloseSettings, CloseTab, CloseWindow, Commit, ExitZen, ExportDocx, ExportHtml, ExportPdf,
     LayoutMode, NewFile, NewFolder, NewTab, NextTab, Open, OpenFolder, OpenSettings, PreviousTab,
-    Quit, RefreshFolder, ResetZoom, Save, SaveAs, ShowEditor, ShowPreview, ShowSplit, ToggleBold,
-    ToggleItalic, ToggleLineNumbers, ToggleSidebar, ToggleTheme, ToggleZen, Workspace, ZoomIn,
-    ZoomOut,
+    Quit, RefreshFolder, ResetZoom, Save, SaveAs, ShowEditor, ShowPreview, ShowSplit, SplitLeft,
+    SplitRight, ToggleBold, ToggleItalic, ToggleLineNumbers, ToggleSidebar, ToggleTheme, ToggleZen,
+    Workspace, ZoomIn, ZoomOut,
 };
 pub use workspace::{Push, ShowChanges, ShowFiles, ShowHistory, StageAll, UnstageAll};
 
@@ -160,6 +160,9 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-tab", NextTab, Some(KEY_CONTEXT)),
         KeyBinding::new("ctrl-shift-tab", PreviousTab, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-}", NextTab, Some(KEY_CONTEXT)),
+        // As in iTerm. The tree's Cmd-D duplicates while it has focus.
+        KeyBinding::new("secondary-d", SplitRight, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-shift-d", SplitLeft, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-{", PreviousTab, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-q", Quit, None),
     ]);
