@@ -31,7 +31,7 @@ Groups, in this order:
 
 ### Added
 
-- Two documents side by side: ⌘D opens an empty pane to the right of the document and ⌘⇧D to its left, and the next file opened fills it. Dragging a file from the sidebar onto the left or right half of the document opens it in a pane on that side, or in the pane it is dropped on. Each pane follows the Editor, Split or Preview layout; a click in a pane focuses it, the other pane's tab stays lightly filled, and closing either pane's tab returns to one pane.
+- Split tabs show two documents side by side in one tab: ⌘D opens an empty pane to the right of the document and ⌘⇧D to its left, and the next file opened fills it. Dragging a file from the sidebar onto the left or right half of the document opens it there, beside the document or in place of the pane it is dropped on. The tab names both documents with the focused one in front; ⌘W closes the focused pane and the tab's close button closes both. Each pane follows the Editor, Split or Preview layout.
 
 ### Changed
 

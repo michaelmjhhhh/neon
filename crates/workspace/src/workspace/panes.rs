@@ -1,7 +1,10 @@
-//! Split panes: the sheet can show two documents side by side. The pane with
-//! focus shows the active tab, so every command that acts on the document,
-//! such as Save or Close Tab, acts on that one. The other pane shows another
-//! tab, kept by id; both are tabs in the one strip.
+//! Split panes: a tab in the strip can hold two documents side by side, as
+//! one split tab. The pane with focus shows the active document, so every
+//! command that acts on the document, such as Save, acts on that one.
+//!
+//! Each document keeps its own entry in [`Workspace::tabs`]; a split pairs
+//! two of them, kept next to each other there, and the strip draws the pair
+//! as one tab.
 
 use std::path::PathBuf;
 
@@ -30,13 +33,33 @@ impl Side {
     }
 }
 
-/// The sheet's second pane, while it is split.
+/// Two documents shown as one split tab, by tab id. The left one comes
+/// right before the right one in the tabs.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PaneSplit {
-    /// The tab the other pane shows. Never the active tab.
-    pub(super) other_tab: u64,
-    /// The side of the pane with focus, which shows the active tab.
-    pub(super) active_side: Side,
+    pub(super) left: u64,
+    pub(super) right: u64,
+    /// The pane that had focus last, which a click on the tab returns to.
+    pub(super) focused: Side,
+}
+
+impl PaneSplit {
+    pub(super) fn side_of(&self, id: u64) -> Option<Side> {
+        if id == self.left {
+            Some(Side::Left)
+        } else if id == self.right {
+            Some(Side::Right)
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn id(&self, side: Side) -> u64 {
+        match side {
+            Side::Left => self.left,
+            Side::Right => self.right,
+        }
+    }
 }
 
 /// A sidebar file on its way to a pane. It draws as its name under the
@@ -84,8 +107,8 @@ impl Workspace {
     }
 
     /// Open an empty pane on `side` of the focused document and focus it,
-    /// so the next file opened lands there. Only two panes show at once:
-    /// a pane already beside the document gives way, and its tab stays open.
+    /// so the next file opened lands there. A tab holds two panes at most:
+    /// the pane already beside the document gives way, to a tab of its own.
     fn split_pane(&mut self, side: Side, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_busy() {
             return;
@@ -96,29 +119,87 @@ impl Workspace {
             self.close_diff(window, cx);
         }
         let current = self.tab().id;
-        let ix = self.insert_tab(self.beside_active(side), window, cx);
-        self.pane_split = Some(PaneSplit {
-            other_tab: current,
-            active_side: side,
-        });
-        self.active_tab = ix;
-        self.show_active_tab(window, cx);
+        let ix = self.insert_tab(self.tabs.len(), window, cx);
+        let new = self.tabs[ix].id;
+        self.pair(new, side, current);
+        self.show_tab_id(new, window, cx);
     }
 
-    /// Where a tab for a pane on `side` of the active tab goes in the strip,
-    /// so the strip reads in the panes' order.
-    fn beside_active(&self, side: Side) -> usize {
-        match side {
-            Side::Left => self.active_tab,
-            Side::Right => self.active_tab + 1,
+    /// The split the tab with `id` is in, by index.
+    pub(super) fn split_index_of(&self, id: u64) -> Option<usize> {
+        self.splits
+            .iter()
+            .position(|split| split.side_of(id).is_some())
+    }
+
+    /// The split the active document is in, and its side there.
+    pub(super) fn active_split(&self) -> Option<(PaneSplit, Side)> {
+        let id = self.tab().id;
+        let split = self.splits[self.split_index_of(id)?];
+        Some((split, split.side_of(id)?))
+    }
+
+    /// The document the other pane shows, while it is on screen. Zen shows
+    /// the focused document alone.
+    pub(super) fn other_pane_tab(&self) -> Option<&DocumentTab> {
+        let (split, side) = self.active_split().filter(|_| self.zen.is_none())?;
+        let other = split.id(side.opposite());
+        self.tabs.iter().find(|tab| tab.id == other)
+    }
+
+    /// Show the document with tab id `focused` on `side` and `other` beside
+    /// it, as one split tab where the earlier of the two was in the strip.
+    /// Either one's split, if any, ends: its other document keeps a tab of
+    /// its own.
+    fn pair(&mut self, focused: u64, side: Side, other: u64) {
+        self.unpair(focused);
+        self.unpair(other);
+        let (left, right) = match side {
+            Side::Left => (focused, other),
+            Side::Right => (other, focused),
+        };
+        let active = self.tab().id;
+        let position = |tabs: &[DocumentTab], id| tabs.iter().position(|tab| tab.id == id);
+        let (Some(left_ix), Some(right_ix)) =
+            (position(&self.tabs, left), position(&self.tabs, right))
+        else {
+            return;
+        };
+        let at = left_ix.min(right_ix);
+        let (first, second) = if left_ix < right_ix {
+            (right_ix, left_ix)
+        } else {
+            (left_ix, right_ix)
+        };
+        let mut removed = [self.tabs.remove(first), self.tabs.remove(second)];
+        if removed[0].id != right {
+            removed.swap(0, 1);
+        }
+        let [right_tab, left_tab] = removed;
+        self.tabs.insert(at, right_tab);
+        self.tabs.insert(at, left_tab);
+        self.active_tab = position(&self.tabs, active).unwrap_or_default();
+        self.splits.push(PaneSplit {
+            left,
+            right,
+            focused: side,
+        });
+    }
+
+    /// End the split the tab with `id` is in, if any. Both documents stay
+    /// open, each in a tab of its own.
+    pub(super) fn unpair(&mut self, id: u64) {
+        if let Some(ix) = self.split_index_of(id) {
+            self.splits.remove(ix);
         }
     }
 
-    /// The tab the other pane shows, while it is on screen. Zen shows the
-    /// focused document alone.
-    pub(super) fn other_pane_tab(&self) -> Option<&DocumentTab> {
-        let split = self.pane_split.filter(|_| self.zen.is_none())?;
-        self.tabs.iter().find(|tab| tab.id == split.other_tab)
+    /// Show the document with tab id `id`, with its split partner if any.
+    fn show_tab_id(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.tabs.iter().position(|tab| tab.id == id) {
+            self.active_tab = ix;
+            self.show_active_tab(window, cx);
+        }
     }
 
     /// Move focus to the other pane.
@@ -148,26 +229,11 @@ impl Workspace {
         }
     }
 
-    /// Show the tab at `ix` in the focused pane. A tab the other pane shows
-    /// trades places with the focused one.
-    fn show_in_focused_pane(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if ix == self.active_tab {
-            return;
-        }
-        let current = self.tab().id;
-        if let Some(split) = &mut self.pane_split
-            && split.other_tab == self.tabs[ix].id
-        {
-            split.other_tab = current;
-        }
-        self.active_tab = ix;
-        self.show_active_tab(window, cx);
-    }
-
     /// Open a file dropped from the sidebar on `side` of the sheet. Without
-    /// a split it opens in a new pane there, beside the document; with one,
-    /// it opens in the pane it was dropped on, as a click in the sidebar
-    /// would, except that edits there are kept by opening it in a new tab.
+    /// a split it joins the document as a split tab, on that side; with one,
+    /// it takes the place of the pane it was dropped on, whose document keeps
+    /// a tab of its own. A document already open moves rather than opening
+    /// twice.
     pub(super) fn drop_file(
         &mut self,
         path: PathBuf,
@@ -175,42 +241,45 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.is_busy() || self.tab().document.path() == Some(path.as_path()) {
+        if self.is_busy() {
             return;
         }
-        let Some(split) = self.pane_split else {
-            let current = self.tab().id;
-            let ix = match self.tab_index_of_path(&path) {
-                Some(ix) => ix,
-                None => self.insert_tab(self.beside_active(side), window, cx),
-            };
-            self.pane_split = Some(PaneSplit {
-                other_tab: current,
-                active_side: side,
-            });
-            self.active_tab = ix;
-            self.show_active_tab(window, cx);
-            if self.tab().document.path().is_none() {
-                self.open_path(path, window, cx);
-            }
-            return;
-        };
-        if side != split.active_side {
-            self.focus_other_pane(window, cx);
-        }
-        if self.tab().document.path() == Some(path.as_path()) {
-            return;
-        }
-        match self.tab_index_of_path(&path) {
-            Some(ix) => self.show_in_focused_pane(ix, window, cx),
-            None => {
-                if self.tab().document.is_dirty() {
-                    let ix = self.insert_tab(self.active_tab + 1, window, cx);
-                    self.show_in_focused_pane(ix, window, cx);
+        let open = self.tab_id_of_path(&path);
+        // The document the dropped one goes beside.
+        let beside = match self.active_split() {
+            Some((split, _)) => {
+                let (here, there) = (split.id(side), split.id(side.opposite()));
+                if open == Some(here) {
+                    self.show_tab_id(here, window, cx);
+                    return;
                 }
-                self.open_path(path, window, cx);
+                // The other pane's document: the two trade places.
+                if open == Some(there) {
+                    self.pair(there, side, here);
+                    self.show_tab_id(there, window, cx);
+                    return;
+                }
+                there
             }
+            None if open == Some(self.tab().id) => return,
+            None => self.tab().id,
+        };
+        let target = match open {
+            Some(id) => id,
+            None => {
+                let ix = self.insert_tab(self.tabs.len(), window, cx);
+                self.tabs[ix].id
+            }
+        };
+        self.pair(target, side, beside);
+        self.show_tab_id(target, window, cx);
+        if self.tab().document.path().is_none() {
+            self.open_path(path, window, cx);
         }
+    }
+
+    fn tab_id_of_path(&self, path: &std::path::Path) -> Option<u64> {
+        self.tab_index_of_path(path).map(|ix| self.tabs[ix].id)
     }
 
     /// Turn on the previews on screen and off the rest, so a hidden preview

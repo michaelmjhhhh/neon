@@ -184,8 +184,8 @@ pub struct Workspace {
     /// Never empty.
     tabs: Vec<DocumentTab>,
     active_tab: usize,
-    /// The second pane while the sheet shows two documents; see [`panes`].
-    pane_split: Option<PaneSplit>,
+    /// The pairs of documents shown as split tabs; see [`panes`].
+    splits: Vec<PaneSplit>,
     /// The last tab id handed out.
     next_tab_id: u64,
     tab_scroll: ScrollHandle,
@@ -221,7 +221,7 @@ pub struct Workspace {
     /// The two document panes, and each one's own editor and preview
     /// split, apart from `split` so a lone pane's sizes survive a split.
     pane_sizes: Entity<ResizableState>,
-    pane_splits: [Entity<ResizableState>; 2],
+    pane_columns: [Entity<ResizableState>; 2],
     /// Starts from the saved setting; the shortcut changes it for this
     /// window only.
     line_numbers: bool,
@@ -336,7 +336,7 @@ impl Workspace {
         let workspace = Self {
             tabs: vec![tab],
             active_tab: 0,
-            pane_split: None,
+            splits: Vec::new(),
             next_tab_id: 0,
             tab_scroll: ScrollHandle::new(),
             folder: None,
@@ -355,7 +355,7 @@ impl Workspace {
             panes: cx.new(|_| ResizableState::default()),
             split: cx.new(|_| ResizableState::default()),
             pane_sizes: cx.new(|_| ResizableState::default()),
-            pane_splits: [
+            pane_columns: [
                 cx.new(|_| ResizableState::default()),
                 cx.new(|_| ResizableState::default()),
             ],
@@ -2000,11 +2000,20 @@ impl Workspace {
                             })
                             .on_mouse_down(gpui_kit::MouseButton::Right, focus_tree)
                             .when(is_file, |this| {
-                                this.on_click(open_file)
-                                    .on_drag(dragged, move |file, _, _, cx| {
+                                this.on_click(open_file).on_drag(dragged, {
+                                    let workspace = row_workspace.clone();
+                                    move |file, _, _, cx| {
                                         tree_press.set(false);
+                                        // The press selected the row; a drag
+                                        // is not a pick, so the selection
+                                        // goes back to the open document
+                                        // rather than opening this file here.
+                                        workspace
+                                            .update(cx, |this, cx| this.sync_tree_selection(cx))
+                                            .ok();
                                         cx.new(|_| file.clone())
-                                    })
+                                    }
+                                })
                             })
                             .h_7()
                             .mx_2()
@@ -2563,7 +2572,8 @@ impl Workspace {
     /// half of a lone one, takes it.
     fn render_documents(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let dragging = cx.has_active_drag();
-        let (Some(split), Some(other)) = (self.pane_split, self.other_pane_tab()) else {
+        let (Some((_, active_side)), Some(other)) = (self.active_split(), self.other_pane_tab())
+        else {
             return div()
                 .relative()
                 .size_full()
@@ -2580,7 +2590,7 @@ impl Workspace {
                 })
                 .into_any_element();
         };
-        let (left, right) = match split.active_side {
+        let (left, right) = match active_side {
             Side::Left => (self.tab(), other),
             Side::Right => (other, self.tab()),
         };
@@ -2588,7 +2598,7 @@ impl Workspace {
         let min_width = window.rem_size() * SPLIT_PANE_MIN_REMS;
         let border = cx.theme().border;
         let pane = |tab: &DocumentTab, side: Side, cx: &mut Context<Self>| {
-            let focused = side == split.active_side;
+            let focused = side == active_side;
             div()
                 .relative()
                 .size_full()
@@ -2700,7 +2710,7 @@ impl Workspace {
             LayoutMode::Preview => preview(false).into_any_element(),
             LayoutMode::Split => h_resizable(("split", slot))
                 .with_state(if beside_other {
-                    &self.pane_splits[slot]
+                    &self.pane_columns[slot]
                 } else {
                     &self.split
                 })
