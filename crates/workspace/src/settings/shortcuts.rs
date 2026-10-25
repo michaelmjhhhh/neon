@@ -15,8 +15,8 @@ use markdown_preview::{
 use crate::workspace::{
     CloseSettings, CloseTab, CloseWindow, CopyEntry, CopyEntryPath, ExitZen, FocusLeftPane,
     FocusRightPane, NewFile, NewFolder, NewTab, NextTab, Open, OpenFolder, OpenSettings,
-    PasteEntry, PreviousTab, Quit, ResetZoom, RevealEntry, Save, SaveAs, ShowChanges, ShowEditor,
-    ShowFiles, ShowPreview, ShowSplit, SplitLeft, SplitRight, ToggleBold, ToggleItalic,
+    PasteEntry, PreviousTab, Push, Quit, ResetZoom, RevealEntry, Save, SaveAs, ShowChanges,
+    ShowEditor, ShowFiles, ShowPreview, ShowSplit, SplitLeft, SplitRight, ToggleBold, ToggleItalic,
     ToggleLineNumbers, ToggleSidebar, ToggleZen, ZoomIn, ZoomOut,
 };
 
@@ -125,6 +125,7 @@ fn rows(cx: &App) -> [(&'static str, Option<&'static str>, Vec<Row>); 8] {
                 ("Toggle sidebar", a(&[&ToggleSidebar])),
                 ("Files", a(&[&ShowFiles])),
                 ("Changes", a(&[&ShowChanges])),
+                ("Push", a(&[&Push])),
             ],
         ),
         (

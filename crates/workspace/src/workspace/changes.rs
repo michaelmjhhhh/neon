@@ -855,7 +855,7 @@ impl Workspace {
                             .outline()
                             .icon(IconName::ArrowUp)
                             .label("Push")
-                            .tooltip(target)
+                            .tooltip_with_action(target, &Push, Some(KEY_CONTEXT))
                             .loading(pushing)
                             .disabled(busy)
                             .on_click(
