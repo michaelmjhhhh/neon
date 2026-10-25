@@ -550,9 +550,7 @@ impl Workspace {
             // paragraph one block, with its changed words darker inside;
             // without it, the few unchanged words show as holes.
             .change_background(true)
-            // The lines between hunks are not in the patch, so their count
-            // only says something is skipped; a band says that quietly.
-            .hunk_separator(DiffHunkSeparator::Simple)
+            .hunk_separator(DiffHunkSeparator::LineInfo)
             .change_indicator(DiffChangeIndicator::Signs)
             .size_full()
             .into_any_element()
