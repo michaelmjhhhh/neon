@@ -484,6 +484,20 @@ impl Workspace {
             .update(cx, |pane, cx| pane.set_readonly(readonly, cx));
     }
 
+    /// Count the active editor's selection for the status bar. A selection
+    /// in a hidden editor is not shown, so the Preview layout counts none.
+    fn count_selection(&self, cx: &mut Context<Self>) {
+        let editor = self.tab().editor.read(cx);
+        let source = editor.text().clone();
+        let range = if self.layout.shows_editor() {
+            editor.selected_range()
+        } else {
+            0..0
+        };
+        self.word_count
+            .update(cx, |count, cx| count.set_selection(source, range, cx));
+    }
+
     fn show_document(
         &mut self,
         path: Option<PathBuf>,
@@ -497,6 +511,7 @@ impl Workspace {
         let source = self.tab().editor.read(cx).text().clone();
         self.word_count
             .update(cx, |count, cx| count.set_source(source.clone(), cx));
+        self.count_selection(cx);
         let base_dir = path.as_deref().and_then(Path::parent).map(Arc::from);
         self.tab()
             .preview
@@ -569,6 +584,7 @@ impl Workspace {
         }
         self.word_count
             .update(cx, |count, cx| count.set_source(source, cx));
+        self.count_selection(cx);
         self.zen_follow_cursor(cx);
         self.hide_zen_chrome(cx);
         self.draw_soon(window, cx);
@@ -590,6 +606,9 @@ impl Workspace {
         if self.tab().editor != editor {
             return;
         }
+        // Before the cursor check: a selection can change around a cursor
+        // that stays put, as when Shift-Left is undone by Shift-Right.
+        self.count_selection(cx);
         self.settle_zen_lift(cx);
         let cursor = editor.read(cx).cursor();
         if self.tab().revealed_cursor == Some(cursor) {
@@ -2071,6 +2090,7 @@ impl Workspace {
             .update(cx, |preview, cx| preview.set_active(preview_shown, cx));
         self.scroll_metrics
             .update(cx, |metrics, cx| metrics.set_layout(layout, cx));
+        self.count_selection(cx);
         if layout != LayoutMode::Editor {
             let cursor = self.tab().editor.read(cx).cursor();
             self.tab()
