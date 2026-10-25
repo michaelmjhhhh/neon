@@ -204,6 +204,9 @@ pub struct Workspace {
     /// pressed, but a press may start a drag to a pane, so the file opens
     /// on the click instead.
     tree_press: Rc<Cell<bool>>,
+    /// Set while a file from the sidebar is being dragged, so the panes
+    /// offer to take it. Other drags, such as a resize handle's, do not.
+    dragging_file: Cell<bool>,
     /// How many Markdown files each listed folder holds, at any depth.
     folder_file_counts: Rc<HashMap<SharedString, usize>>,
     sidebar_visible: bool,
@@ -347,6 +350,7 @@ impl Workspace {
             expanded_folders: HashSet::new(),
             copied_entry: None,
             tree_press: Rc::default(),
+            dragging_file: Cell::new(false),
             folder_file_counts: Rc::default(),
             sidebar_visible: true,
             sidebar_view: SidebarView::default(),
@@ -447,6 +451,13 @@ impl Workspace {
             None => self.confirm_discard(window, cx, move |this, window, cx| {
                 this.open_path(path.clone(), window, cx);
             }),
+        }
+    }
+
+    /// A press on a sidebar row ended without a click or a drag.
+    fn end_tree_press(&mut self, cx: &mut Context<Self>) {
+        if self.tree_press.replace(false) {
+            self.select_open_file_in_tree(false, cx);
         }
     }
 
@@ -970,6 +981,12 @@ impl Workspace {
     }
 
     fn sync_tree_selection(&self, cx: &mut Context<Self>) {
+        self.select_open_file_in_tree(true, cx);
+    }
+
+    /// Select the open document's row in the sidebar, scrolling it into
+    /// view if `reveal`.
+    fn select_open_file_in_tree(&self, reveal: bool, cx: &mut Context<Self>) {
         let id = self
             .tab()
             .document
@@ -977,7 +994,9 @@ impl Workspace {
             .map(|path| SharedString::from(path.to_string_lossy().into_owned()));
         self.tree.update(cx, |tree, cx| {
             if let Some(id) = id {
-                tree.reveal_item(&id, gpui_kit::ScrollStrategy::Center, cx);
+                if reveal {
+                    tree.reveal_item(&id, gpui_kit::ScrollStrategy::Center, cx);
+                }
                 tree.set_selected_index(tree.index_of(&id), cx);
             } else {
                 tree.set_selected_index(None, cx);
@@ -1871,14 +1890,16 @@ impl Workspace {
                 .flex_1()
                 .min_h_0()
                 .pt_1()
-                // A press that ends anywhere, as a click or not, is over.
+                // A press that ends anywhere but in a click on its row
+                // picked nothing, so the open document's row is selected
+                // again. A click clears the press first.
                 .on_mouse_up(
                     gpui_kit::MouseButton::Left,
-                    cx.listener(|this, _, _, _| this.tree_press.set(false)),
+                    cx.listener(|this, _, _, cx| this.end_tree_press(cx)),
                 )
                 .on_mouse_up_out(
                     gpui_kit::MouseButton::Left,
-                    cx.listener(|this, _, _, _| this.tree_press.set(false)),
+                    cx.listener(|this, _, _, cx| this.end_tree_press(cx)),
                 )
                 // Edit > Copy and Paste act on the tree while it has focus.
                 .on_action(cx.listener(|this, _: &input::Copy, window, cx| {
@@ -2008,8 +2029,14 @@ impl Workspace {
                                         // is not a pick, so the selection
                                         // goes back to the open document
                                         // rather than opening this file here.
+                                        // In place: scrolling would move the
+                                        // tree under the pointer.
                                         workspace
-                                            .update(cx, |this, cx| this.sync_tree_selection(cx))
+                                            .update(cx, |this, cx| {
+                                                this.dragging_file.set(true);
+                                                this.select_open_file_in_tree(false, cx);
+                                                cx.notify();
+                                            })
                                             .ok();
                                         cx.new(|_| file.clone())
                                     }
@@ -2571,7 +2598,11 @@ impl Workspace {
     /// split. While a file is dragged from the sidebar, each pane, or each
     /// half of a lone one, takes it.
     fn render_documents(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let dragging = cx.has_active_drag();
+        // A drag that ended anywhere, dropped or not, is over.
+        if !cx.has_active_drag() {
+            self.dragging_file.set(false);
+        }
+        let dragging = self.dragging_file.get();
         let (Some((_, active_side)), Some(other)) = (self.active_split(), self.other_pane_tab())
         else {
             return div()
