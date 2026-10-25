@@ -276,7 +276,7 @@ impl Workspace {
         let tree = cx.new(|cx| TreeState::new(cx));
         let changes = Changes::new(window, cx);
         let history = History::new(cx);
-        let settings = cx.new(|cx| SettingsView::new(typography.clone(), cx));
+        let settings = cx.new(|cx| SettingsView::new(typography.clone(), window, cx));
         let sidebar = cx.new({
             let workspace = cx.weak_entity();
             |_| WorkspaceSidebar { workspace }
