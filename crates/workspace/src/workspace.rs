@@ -2002,6 +2002,7 @@ impl Workspace {
                         let dragged = DraggedFile {
                             path: PathBuf::from(item.id.as_ref()),
                             name: SharedString::from(stem.to_string()),
+                            press_offset: gpui_kit::Point::default(),
                         };
                         // A right-click focuses the tree, so the row's menu shows
                         // the tree's shortcuts and they work once it closes.
@@ -2025,7 +2026,7 @@ impl Workspace {
                             .when(is_file, |this| {
                                 this.on_click(open_file).on_drag(dragged, {
                                     let workspace = row_workspace.clone();
-                                    move |file, _, _, cx| {
+                                    move |file, press_offset, _, cx| {
                                         tree_press.set(false);
                                         // The press selected the row; a drag
                                         // is not a pick, so the selection
@@ -2040,7 +2041,10 @@ impl Workspace {
                                                 cx.notify();
                                             })
                                             .ok();
-                                        cx.new(|_| file.clone())
+                                        cx.new(|_| DraggedFile {
+                                            press_offset,
+                                            ..file.clone()
+                                        })
                                     }
                                 })
                             })

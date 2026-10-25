@@ -10,8 +10,8 @@ use std::path::PathBuf;
 
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::{
-    Context, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    Styled as _, Window, div,
+    Context, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point, Render,
+    SharedString, Styled as _, Window, div, px,
 };
 
 use super::tabs::DocumentTab;
@@ -62,18 +62,22 @@ impl PaneSplit {
     }
 }
 
-/// A sidebar file on its way to a pane. It draws as its name under the
+/// A sidebar file on its way to a pane. It draws as its name beside the
 /// pointer.
 #[derive(Clone)]
 pub(super) struct DraggedFile {
     pub(super) path: PathBuf,
     pub(super) name: SharedString,
+    /// Where the row was pressed, from its corner. A drag draws from the
+    /// pressed row's corner, so the name is pushed this far to sit by the
+    /// pointer, as Zed's file drags do.
+    pub(super) press_offset: Point<Pixels>,
 }
 
 impl Render for DraggedFile {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        div()
+        let chip = div()
             .px_2()
             .py_1()
             .rounded(theme.radius)
@@ -83,7 +87,11 @@ impl Render for DraggedFile {
             .shadow_md()
             .text_sm()
             .text_color(theme.popover_foreground)
-            .child(self.name.clone())
+            .child(self.name.clone());
+        div()
+            .pl(self.press_offset.x + px(12.))
+            .pt(self.press_offset.y + px(8.))
+            .child(chip)
     }
 }
 
