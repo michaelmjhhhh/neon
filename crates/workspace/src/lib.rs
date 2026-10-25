@@ -131,6 +131,7 @@ pub fn init(cx: &mut App) {
         // Files and Changes in the sidebar, with VS Code's shortcuts on macOS.
         KeyBinding::new("secondary-shift-e", ShowFiles, Some(KEY_CONTEXT)),
         KeyBinding::new("ctrl-shift-g", ShowChanges, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-p", Push, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-shift-l", ToggleLineNumbers, Some(KEY_CONTEXT)),
         // Z for Zen. macOS menus cannot show Enter, so not Cmd-Shift-Enter.
         KeyBinding::new("ctrl-secondary-z", ToggleZen, Some(KEY_CONTEXT)),
