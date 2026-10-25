@@ -1,7 +1,12 @@
 //! Settings: sections in a sidebar on the window chrome, the chosen section
 //! on the document sheet, in one reading-width column.
 
+mod shortcuts;
+
+use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::select::Select;
 use gpui_kit::component::switch::Switch;
@@ -10,9 +15,10 @@ use gpui_kit::component::{
     try_parse_color,
 };
 use gpui_kit::{
-    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Window, div, prelude::FluentBuilder as _, relative, rems,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    SharedString, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, relative,
+    rems,
 };
 
 use crate::SETTINGS_KEY_CONTEXT;
@@ -29,24 +35,32 @@ enum Section {
     Appearance,
     Typography,
     Editor,
+    Shortcuts,
 }
 
 impl Section {
-    const ALL: [Self; 3] = [Self::Appearance, Self::Typography, Self::Editor];
+    const ALL: [Self; 4] = [
+        Self::Appearance,
+        Self::Typography,
+        Self::Editor,
+        Self::Shortcuts,
+    ];
 
     fn title(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
             Self::Typography => "Typography",
             Self::Editor => "Editor",
+            Self::Shortcuts => "Shortcuts",
         }
     }
 
-    fn icon(self) -> IconName {
+    fn icon(self) -> AssetIcon {
         match self {
-            Self::Appearance => IconName::Palette,
-            Self::Typography => IconName::ALargeSmall,
-            Self::Editor => IconName::FileText,
+            Self::Appearance => AssetIcon::Palette,
+            Self::Typography => AssetIcon::ALargeSmall,
+            Self::Editor => AssetIcon::FileText,
+            Self::Shortcuts => AssetIcon::Keyboard,
         }
     }
 }
@@ -59,18 +73,36 @@ pub(crate) struct SettingsView {
     typography: Entity<Typography>,
     /// The saved setting, not a window's temporary toggle.
     line_numbers: bool,
+    /// Filters the Shortcuts section by command name.
+    shortcut_query: Entity<InputState>,
     focus_handle: FocusHandle,
+    _subscriptions: [Subscription; 1],
 }
 
 impl EventEmitter<LineNumbersChanged> for SettingsView {}
 
 impl SettingsView {
-    pub(crate) fn new(typography: Entity<Typography>, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        typography: Entity<Typography>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let shortcut_query =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search shortcuts"));
+        let subscriptions = [
+            cx.subscribe(&shortcut_query, |_, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
+        ];
         Self {
             section: Section::Appearance,
             typography,
             line_numbers: settings_file::saved(cx).line_numbers,
+            shortcut_query,
             focus_handle: cx.focus_handle(),
+            _subscriptions: subscriptions,
         }
     }
 
@@ -173,6 +205,7 @@ impl SettingsView {
             Section::Appearance => self.render_appearance(cx).into_any_element(),
             Section::Typography => self.render_typography(cx).into_any_element(),
             Section::Editor => self.render_editor(cx).into_any_element(),
+            Section::Shortcuts => self.render_shortcuts(cx).into_any_element(),
         };
         let theme = cx.theme();
         let inset = window.rem_size() * SHEET_INSET_REMS;
@@ -249,7 +282,7 @@ impl SettingsView {
         let theme = cx.theme();
         section(
             "Theme",
-            "System follows the appearance set in macOS.",
+            Some("System follows the appearance set in macOS."),
             None,
             div()
                 .flex()
@@ -312,7 +345,7 @@ impl SettingsView {
         let theme = cx.theme();
         section(
             "Line numbers",
-            "Cmd+Shift+L shows or hides them in the current window until it closes.",
+            Some("Cmd+Shift+L shows or hides them in the current window until it closes."),
             None,
             div()
                 .flex()
@@ -338,6 +371,72 @@ impl SettingsView {
                         })),
                 ),
         )
+    }
+
+    /// A search field, then each group of commands as a card of rows with
+    /// the command's name and its keys.
+    fn render_shortcuts(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let query = self.shortcut_query.read(cx).value().to_string();
+        let groups = shortcuts::groups(&query, cx);
+        let theme = cx.theme();
+        let search = Input::new(&self.shortcut_query)
+            .prefix(
+                Icon::new(IconName::Search)
+                    .small()
+                    .text_color(theme.muted_foreground),
+            )
+            .cleanable(true)
+            .aria_label("Search shortcuts");
+        let body = if groups.is_empty() {
+            div()
+                .py_8()
+                .text_center()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child(format!("No shortcuts match “{}”.", query.trim()))
+                .into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .gap_8()
+                .children(groups.into_iter().map(|group| {
+                    let rows = group
+                        .shortcuts
+                        .into_iter()
+                        .enumerate()
+                        .map(|(ix, shortcut)| {
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap_4()
+                                .h_8()
+                                .px_4()
+                                .when(ix > 0, |this| this.border_t_1().border_color(theme.border))
+                                .child(div().min_w_0().truncate().text_sm().child(shortcut.label))
+                                .child(div().flex().flex_none().items_center().gap_1().children(
+                                    shortcut.keys.into_iter().map(|key| Kbd::new(key).outline()),
+                                ))
+                        });
+                    section(
+                        group.title,
+                        group.description,
+                        None,
+                        div()
+                            .flex()
+                            .flex_col()
+                            .rounded(theme.radius_lg)
+                            .border_1()
+                            .border_color(theme.border)
+                            .bg(theme.sidebar.opacity(0.4))
+                            .overflow_hidden()
+                            .children(rows),
+                    )
+                }))
+                .into_any_element()
+        };
+        div().flex().flex_col().gap_8().child(search).child(body)
     }
 
     fn render_typography(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -392,7 +491,7 @@ impl SettingsView {
 
         let pane = section(
             title,
-            description,
+            Some(description),
             reset,
             div()
                 .flex()
@@ -451,7 +550,7 @@ impl SettingsView {
 /// optional action at the trailing edge, then its content.
 fn section(
     title: &'static str,
-    description: &'static str,
+    description: Option<&'static str>,
     action: Option<AnyElement>,
     content: impl IntoElement,
 ) -> impl IntoElement {
@@ -476,7 +575,7 @@ fn section(
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(title),
                         )
-                        .child(SectionDescription(description)),
+                        .children(description.map(SectionDescription)),
                 )
                 .children(action),
         )

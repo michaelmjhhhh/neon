@@ -62,6 +62,7 @@ gpui_kit::assets::icon_assets!(
         GitCompare,
         GitGraph,
         ImageOff,
+        Keyboard,
         Lightbulb,
         PenLine,
         Quote,
