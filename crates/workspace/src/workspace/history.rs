@@ -456,8 +456,12 @@ impl Workspace {
                     .flex_none()
                     .items_center()
                     .gap_3()
+                    // One file's header below already gives its counts.
                     .when_some(
-                        files.as_ref().zip(totals),
+                        files
+                            .as_ref()
+                            .zip(totals)
+                            .filter(|(files, _)| files.len() > 1),
                         |this, (files, (added, removed))| {
                             this.child(
                                 div()
@@ -465,10 +469,11 @@ impl Workspace {
                                     .gap_1p5()
                                     .text_xs()
                                     .font_features(tnum)
-                                    .child(div().text_color(muted).child(match files.len() {
-                                        1 => "1 file".to_string(),
-                                        count => format!("{} files", format_count(count)),
-                                    }))
+                                    .child(
+                                        div()
+                                            .text_color(muted)
+                                            .child(format!("{} files", format_count(files.len()))),
+                                    )
                                     .when(added > 0, |this| {
                                         this.child(
                                             div()
@@ -541,10 +546,13 @@ impl Workspace {
         }
         Diff::new(&self.history.diff)
             .soft_wrap(true)
-            // Signs and word emphasis carry the change; a tint on every line
-            // of a new file only adds weight.
-            .change_background(false)
-            .hunk_separator(DiffHunkSeparator::LineInfo)
+            // A faint tint under each changed line keeps a reworked
+            // paragraph one block, with its changed words darker inside;
+            // without it, the few unchanged words show as holes.
+            .change_background(true)
+            // The lines between hunks are not in the patch, so their count
+            // only says something is skipped; a band says that quietly.
+            .hunk_separator(DiffHunkSeparator::Simple)
             .change_indicator(DiffChangeIndicator::Signs)
             .size_full()
             .into_any_element()

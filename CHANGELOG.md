@@ -29,6 +29,10 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Changed
+
+- Diffs tint each changed line, so a reworked paragraph reads as one block with its changed words darker inside, instead of scattered marks with white gaps. In History, a commit that changed one file no longer repeats its counts in the title, and the break between distant changes is a quiet band.
+
 ## [0.11.0] - 2026-10-25
 
 ### Added

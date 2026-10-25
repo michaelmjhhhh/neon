@@ -1270,8 +1270,8 @@ impl Workspace {
             ),
             Some(file) if file.has_changes() => Diff::new(&self.changes.diff)
                 .soft_wrap(true)
-                // As in History: signs and word emphasis, no line tint.
-                .change_background(false)
+                // As in History: changed lines tinted, changed words darker.
+                .change_background(true)
                 .header_visible(false)
                 .hunk_separator(DiffHunkSeparator::LineInfo)
                 .change_indicator(DiffChangeIndicator::Signs)
