@@ -233,7 +233,8 @@ impl Workspace {
     /// a split it joins the document as a split tab, on that side; with one,
     /// it takes the place of the pane it was dropped on, whose document keeps
     /// a tab of its own. A document already open moves rather than opening
-    /// twice.
+    /// twice, and a blank document, as in a pane just opened with Cmd-D,
+    /// takes the file in place.
     pub(super) fn drop_file(
         &mut self,
         path: PathBuf,
@@ -241,6 +242,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.dragging_file.set(false);
         if self.is_busy() {
             return;
         }
@@ -259,9 +261,19 @@ impl Workspace {
                     self.show_tab_id(there, window, cx);
                     return;
                 }
+                if open.is_none() && self.is_blank(here, cx) {
+                    self.show_tab_id(here, window, cx);
+                    self.open_path(path, window, cx);
+                    return;
+                }
                 there
             }
             None if open == Some(self.tab().id) => return,
+            // Nothing to keep beside the file.
+            None if open.is_none() && self.is_blank(self.tab().id, cx) => {
+                self.open_path(path, window, cx);
+                return;
+            }
             None => self.tab().id,
         };
         let target = match open {
@@ -276,6 +288,17 @@ impl Workspace {
         if self.tab().document.path().is_none() {
             self.open_path(path, window, cx);
         }
+    }
+
+    /// Whether the document with tab id `id` is untitled and empty, with
+    /// nothing a file opened in its place would lose.
+    fn is_blank(&self, id: u64, cx: &gpui_kit::App) -> bool {
+        self.tabs.iter().any(|tab| {
+            tab.id == id
+                && tab.document.path().is_none()
+                && !tab.document.is_dirty()
+                && tab.editor.read(cx).text().len() == 0
+        })
     }
 
     fn tab_id_of_path(&self, path: &std::path::Path) -> Option<u64> {
