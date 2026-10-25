@@ -29,7 +29,14 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Added
+
+- Split tabs show two documents side by side in one tab: ⌘D opens an empty pane to the right of the document and ⌘⇧D to its left, and the next file opened fills it. Dragging a file from the sidebar onto the left or right half of the document opens it there, beside the document or in place of the pane it is dropped on. The tab names both documents with the focused one in front; ⌥⌘← and ⌥⌘→ move between the panes, ⌘W closes the focused one and the tab's close button closes both. Each pane follows the Editor, Split or Preview layout.
+
 ### Changed
+
+- A file in the sidebar opens when the click ends rather than when it starts, so it can be dragged to a pane instead.
+- ⌘D splits the tab even while the sidebar has focus, so it no longer duplicates the selected file there; Duplicate stays in the file's right-click menu.
 
 - Diffs tint each changed line, so a reworked paragraph reads as one block with its changed words darker inside, instead of scattered marks with white gaps. In History, a commit that changed one file no longer repeats its counts in the title.
 

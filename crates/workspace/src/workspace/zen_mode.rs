@@ -92,10 +92,10 @@ impl Workspace {
     /// Turn the preview on or off for Zen's view, keep it on the caret's
     /// block, and give the view focus.
     fn show_zen_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_previews(cx);
         let preview_shown = self.preview_shown();
         let cursor = self.tab().editor.read(cx).cursor();
         self.tab().preview.update(cx, |preview, cx| {
-            preview.set_active(preview_shown, cx);
             if preview_shown {
                 preview.reveal_offset(cursor, cx);
             }
@@ -283,10 +283,10 @@ impl Workspace {
         if zen.exits_fullscreen && window.is_fullscreen() {
             window.toggle_fullscreen();
         }
+        self.sync_previews(cx);
         let preview_shown = self.preview_shown();
         let cursor = self.tab().editor.read(cx).cursor();
         self.tab().preview.update(cx, |preview, cx| {
-            preview.set_active(preview_shown, cx);
             if preview_shown {
                 preview.reveal_offset(cursor, cx);
             }
@@ -351,7 +351,7 @@ impl Workspace {
     /// the measure in the editor's font plus the editor's insets beside the
     /// text.
     fn zen_column_width(&self, window: &Window, cx: &App) -> Pixels {
-        let measure = self.editor_measure(zen::MEASURE_CHARS, window, cx);
+        let measure = self.editor_measure(zen::MEASURE_CHARS, &self.tab().editor, window, cx);
         measure.max(window.viewport_size().width * zen::COLUMN_SHARE)
     }
 

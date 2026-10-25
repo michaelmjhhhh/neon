@@ -55,11 +55,13 @@ use crate::zen::{Zen, ZenView};
 
 mod changes;
 mod history;
+mod panes;
 mod tabs;
 mod zen_mode;
 use changes::{Changes, SidebarView};
 pub use changes::{Commit, Push, ShowChanges, ShowFiles, ShowHistory, StageAll, UnstageAll};
 use history::History;
+use panes::{DraggedFile, PaneSplit, Side};
 use tabs::DocumentTab;
 
 #[cfg(feature = "memory-bench")]
@@ -76,6 +78,10 @@ gpui_kit::actions!(
         CloseTab,
         NextTab,
         PreviousTab,
+        SplitRight,
+        SplitLeft,
+        FocusLeftPane,
+        FocusRightPane,
         NewFolder,
         CopyEntry,
         PasteEntry,
@@ -118,6 +124,9 @@ const MIN_EAGER_PRESENT_INTERVAL: Duration = Duration::from_micros(16_600);
 pub(crate) const SHEET_INSET_REMS: f32 = 0.5;
 /// The sheet header's height, in rems.
 pub(crate) const SHEET_HEADER_REMS: f32 = 2.5;
+/// The narrowest a document pane gets beside another, in rems. In the
+/// Split layout its editor and preview get half each.
+const SPLIT_PANE_MIN_REMS: f32 = 20.;
 /// The sidebar's default width, in rems.
 pub(crate) const SIDEBAR_WIDTH_REMS: f32 = 15.;
 /// The editor's widest measure when it has the sheet to itself, in
@@ -177,6 +186,8 @@ pub struct Workspace {
     /// Never empty.
     tabs: Vec<DocumentTab>,
     active_tab: usize,
+    /// The pairs of documents shown as split tabs; see [`panes`].
+    splits: Vec<PaneSplit>,
     /// The last tab id handed out.
     next_tab_id: u64,
     tab_scroll: ScrollHandle,
@@ -191,6 +202,13 @@ pub struct Workspace {
     /// The file or folder the sidebar last copied, pasted by path when
     /// pasted: what is there then, not a snapshot.
     copied_entry: Option<PathBuf>,
+    /// Set while a file row is pressed. The tree selects a row as it is
+    /// pressed, but a press may start a drag to a pane, so the file opens
+    /// on the click instead.
+    tree_press: Rc<Cell<bool>>,
+    /// Set while a file from the sidebar is being dragged, so the panes
+    /// offer to take it. Other drags, such as a resize handle's, do not.
+    dragging_file: Cell<bool>,
     /// How many Markdown files each listed folder holds, at any depth.
     folder_file_counts: Rc<HashMap<SharedString, usize>>,
     sidebar_visible: bool,
@@ -205,6 +223,10 @@ pub struct Workspace {
     /// hiding the sidebar or leaving Split does not reset them.
     panes: Entity<ResizableState>,
     split: Entity<ResizableState>,
+    /// The two document panes, and each one's own editor and preview
+    /// split, apart from `split` so a lone pane's sizes survive a split.
+    pane_sizes: Entity<ResizableState>,
+    pane_columns: [Entity<ResizableState>; 2],
     /// Starts from the saved setting; the shortcut changes it for this
     /// window only.
     line_numbers: bool,
@@ -268,23 +290,18 @@ impl Workspace {
                     this.expanded_folders.remove(id);
                 }
             }),
+            // A file selected from the keyboard opens at once.
             cx.observe_in(&tree, window, |this, tree, window, cx| {
+                if this.tree_press.get() {
+                    return;
+                }
                 let path = tree
                     .read(cx)
                     .selected_entry()
                     .filter(|entry| !entry.is_folder() && !entry.is_disabled())
                     .map(|entry| PathBuf::from(entry.item().id.as_ref()));
-                if let Some(path) = path
-                    && this.tab().document.path() != Some(path.as_path())
-                    && !this.is_busy()
-                {
-                    // A file open in another tab is shown there, not twice.
-                    match this.tab_index_of_path(&path) {
-                        Some(ix) => this.activate_tab(ix, window, cx),
-                        None => this.confirm_discard(window, cx, move |this, window, cx| {
-                            this.open_path(path.clone(), window, cx);
-                        }),
-                    }
+                if let Some(path) = path {
+                    this.open_tree_file(path, window, cx);
                 }
             }),
             cx.subscribe(&typography, |this, state, _, cx| {
@@ -324,6 +341,7 @@ impl Workspace {
         let workspace = Self {
             tabs: vec![tab],
             active_tab: 0,
+            splits: Vec::new(),
             next_tab_id: 0,
             tab_scroll: ScrollHandle::new(),
             folder: None,
@@ -333,6 +351,8 @@ impl Workspace {
             folder_empty: true,
             expanded_folders: HashSet::new(),
             copied_entry: None,
+            tree_press: Rc::default(),
+            dragging_file: Cell::new(false),
             folder_file_counts: Rc::default(),
             sidebar_visible: true,
             sidebar_view: SidebarView::default(),
@@ -340,6 +360,11 @@ impl Workspace {
             history,
             panes: cx.new(|_| ResizableState::default()),
             split: cx.new(|_| ResizableState::default()),
+            pane_sizes: cx.new(|_| ResizableState::default()),
+            pane_columns: [
+                cx.new(|_| ResizableState::default()),
+                cx.new(|_| ResizableState::default()),
+            ],
             line_numbers,
             gutter_digits: Cell::new(0),
             settings_open: false,
@@ -413,6 +438,28 @@ impl Workspace {
         } else {
             let handle = self.tab().preview.read(cx).focus_handle(cx);
             handle.focus(window, cx);
+        }
+    }
+
+    /// Show a file picked in the sidebar in the focused pane, once any
+    /// edits there may be discarded.
+    fn open_tree_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tab().document.path() == Some(path.as_path()) || self.is_busy() {
+            return;
+        }
+        // A file open in another tab is shown there, not twice.
+        match self.tab_index_of_path(&path) {
+            Some(ix) => self.activate_tab(ix, window, cx),
+            None => self.confirm_discard(window, cx, move |this, window, cx| {
+                this.open_path(path.clone(), window, cx);
+            }),
+        }
+    }
+
+    /// A press on a sidebar row ended without a click or a drag.
+    fn end_tree_press(&mut self, cx: &mut Context<Self>) {
+        if self.tree_press.replace(false) {
+            self.select_open_file_in_tree(false, cx);
         }
     }
 
@@ -936,6 +983,12 @@ impl Workspace {
     }
 
     fn sync_tree_selection(&self, cx: &mut Context<Self>) {
+        self.select_open_file_in_tree(true, cx);
+    }
+
+    /// Select the open document's row in the sidebar, scrolling it into
+    /// view if `reveal`.
+    fn select_open_file_in_tree(&self, reveal: bool, cx: &mut Context<Self>) {
         let id = self
             .tab()
             .document
@@ -943,7 +996,9 @@ impl Workspace {
             .map(|path| SharedString::from(path.to_string_lossy().into_owned()));
         self.tree.update(cx, |tree, cx| {
             if let Some(id) = id {
-                tree.reveal_item(&id, gpui_kit::ScrollStrategy::Center, cx);
+                if reveal {
+                    tree.reveal_item(&id, gpui_kit::ScrollStrategy::Center, cx);
+                }
                 tree.set_selected_index(tree.index_of(&id), cx);
             } else {
                 tree.set_selected_index(None, cx);
@@ -1602,10 +1657,7 @@ impl Workspace {
         self.settings_open = open;
         self.settings
             .update(cx, |settings, cx| settings.set_open(open, window, cx));
-        let preview_shown = self.preview_shown();
-        self.tab()
-            .preview
-            .update(cx, |preview, cx| preview.set_active(preview_shown, cx));
+        self.sync_previews(cx);
         // Move focus now: the pane that held it is not rendered next frame,
         // and keys sent to it would not reach the workspace.
         self.focus_content(window, cx);
@@ -1831,13 +1883,26 @@ impl Workspace {
             // the space around the rows, which clears the selection so new
             // files and folders go to the top of the open folder.
             let row_pressed = Rc::new(Cell::new(false));
+            let tree_press = self.tree_press.clone();
             let tree = self.tree.clone();
             let workspace = cx.weak_entity();
+            let row_workspace = workspace.clone();
             div()
                 .id("folder-tree")
                 .flex_1()
                 .min_h_0()
                 .pt_1()
+                // A press that ends anywhere but in a click on its row
+                // picked nothing, so the open document's row is selected
+                // again. A click clears the press first.
+                .on_mouse_up(
+                    gpui_kit::MouseButton::Left,
+                    cx.listener(|this, _, _, cx| this.end_tree_press(cx)),
+                )
+                .on_mouse_up_out(
+                    gpui_kit::MouseButton::Left,
+                    cx.listener(|this, _, _, cx| this.end_tree_press(cx)),
+                )
                 // Edit > Copy and Paste act on the tree while it has focus.
                 .on_action(cx.listener(|this, _: &input::Copy, window, cx| {
                     this.copy_selected_entry(&CopyEntry, window, cx)
@@ -1916,6 +1981,29 @@ impl Workspace {
                             }
                         });
                         let row_pressed = row_pressed.clone();
+                        let is_file = !entry.is_folder() && !entry.is_disabled();
+                        let tree_press = tree_press.clone();
+                        // A file opens on the click, or goes to a pane when
+                        // dragged onto the sheet.
+                        let open_file = {
+                            let workspace = row_workspace.clone();
+                            let path = PathBuf::from(item.id.as_ref());
+                            move |_: &gpui_kit::ClickEvent,
+                                  window: &mut Window,
+                                  cx: &mut gpui_kit::App| {
+                                workspace
+                                    .update(cx, |this, cx| {
+                                        this.tree_press.set(false);
+                                        this.open_tree_file(path.clone(), window, cx);
+                                    })
+                                    .ok();
+                            }
+                        };
+                        let dragged = DraggedFile {
+                            path: PathBuf::from(item.id.as_ref()),
+                            name: SharedString::from(stem.to_string()),
+                            press_offset: gpui_kit::Point::default(),
+                        };
                         // A right-click focuses the tree, so the row's menu shows
                         // the tree's shortcuts and they work once it closes.
                         let focus_tree = {
@@ -1927,10 +2015,39 @@ impl Workspace {
                             }
                         };
                         ListItem::new(item.id.clone())
-                            .on_mouse_down(gpui_kit::MouseButton::Left, move |_, _, _| {
-                                row_pressed.set(true)
+                            .on_mouse_down(gpui_kit::MouseButton::Left, {
+                                let tree_press = tree_press.clone();
+                                move |_, _, _| {
+                                    row_pressed.set(true);
+                                    tree_press.set(is_file);
+                                }
                             })
                             .on_mouse_down(gpui_kit::MouseButton::Right, focus_tree)
+                            .when(is_file, |this| {
+                                this.on_click(open_file).on_drag(dragged, {
+                                    let workspace = row_workspace.clone();
+                                    move |file, press_offset, _, cx| {
+                                        tree_press.set(false);
+                                        // The press selected the row; a drag
+                                        // is not a pick, so the selection
+                                        // goes back to the open document
+                                        // rather than opening this file here.
+                                        // In place: scrolling would move the
+                                        // tree under the pointer.
+                                        workspace
+                                            .update(cx, |this, cx| {
+                                                this.dragging_file.set(true);
+                                                this.select_open_file_in_tree(false, cx);
+                                                cx.notify();
+                                            })
+                                            .ok();
+                                        cx.new(|_| DraggedFile {
+                                            press_offset,
+                                            ..file.clone()
+                                        })
+                                    }
+                                })
+                            })
                             .h_7()
                             .mx_2()
                             .px_0()
@@ -2084,10 +2201,7 @@ impl Workspace {
             return;
         }
         self.layout = layout;
-        let preview_shown = self.preview_shown();
-        self.tab()
-            .preview
-            .update(cx, |preview, cx| preview.set_active(preview_shown, cx));
+        self.sync_previews(cx);
         self.scroll_metrics
             .update(cx, |metrics, cx| metrics.set_layout(layout, cx));
         self.count_selection(cx);
@@ -2451,10 +2565,16 @@ impl Workspace {
     }
 
     /// The width of `chars` characters of the editor's font, plus the
-    /// editor's insets beside the text and, when line numbers show, their
-    /// gutter, so the text keeps its measure with or without them. Zen
-    /// hides line numbers, so its column never counts them.
-    pub(super) fn editor_measure(&self, chars: f32, window: &Window, cx: &gpui_kit::App) -> Pixels {
+    /// editor's insets beside the text and, when line numbers show, the
+    /// gutter `editor` needs, so the text keeps its measure with or without
+    /// them. Zen hides line numbers, so its column never counts them.
+    pub(super) fn editor_measure(
+        &self,
+        chars: f32,
+        editor: &Entity<EditorState>,
+        window: &Window,
+        cx: &gpui_kit::App,
+    ) -> Pixels {
         let typography = self.typography.read(cx);
         let font = gpui_kit::font(typography.editor_font(cx));
         let size = window.rem_size() * (typography.editor_size(cx) / 16.);
@@ -2466,8 +2586,12 @@ impl Workspace {
             // gpui-base sizes the gutter to a run of `+` signs, one per
             // digit, before the margin and fold lane that TEXT_LEADING
             // already counts.
-            let digits = gutter_digits(self.tab().editor.read(cx).text().lines_len());
-            self.gutter_digits.set(digits);
+            let digits = gutter_digits(editor.read(cx).text().lines_len());
+            // Only the active editor is typed in, so only its count is
+            // watched for a new digit.
+            if editor == &self.tab().editor {
+                self.gutter_digits.set(digits);
+            }
             let digit = text_system
                 .advance(font_id, size, '+')
                 .map_or(ch, |advance| advance.width);
@@ -2476,29 +2600,106 @@ impl Workspace {
         measure
     }
 
-    fn scroll_editor_from_margin(
-        &mut self,
-        event: &gpui_kit::ScrollWheelEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.tab().editor.update(cx, |editor, cx| {
-            let Some(line_height) = editor.line_height() else {
-                return;
-            };
-            let delta = event.delta.pixel_delta(line_height);
-            let offset = editor.scroll_offset();
-            editor.set_scroll_offset(gpui_kit::point(offset.x, offset.y + delta.y), cx);
-        });
+    /// The document panes: one, or two side by side while the sheet is
+    /// split. While a file is dragged from the sidebar, each pane, or each
+    /// half of a lone one, takes it.
+    fn render_documents(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        // A drag that ended anywhere, dropped or not, is over.
+        if !cx.has_active_drag() {
+            self.dragging_file.set(false);
+        }
+        let dragging = self.dragging_file.get();
+        let (Some((_, active_side)), Some(other)) = (self.active_split(), self.other_pane_tab())
+        else {
+            return div()
+                .relative()
+                .size_full()
+                .child(self.render_document(self.tab(), Side::Left, window, cx))
+                .when(dragging, |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .child(self.drop_zone(Side::Left, cx))
+                            .child(self.drop_zone(Side::Right, cx)),
+                    )
+                })
+                .into_any_element();
+        };
+        let (left, right) = match active_side {
+            Side::Left => (self.tab(), other),
+            Side::Right => (other, self.tab()),
+        };
+        // Room for both of Split's columns at their narrowest.
+        let min_width = window.rem_size() * SPLIT_PANE_MIN_REMS;
+        let border = cx.theme().border;
+        let pane = |tab: &DocumentTab, side: Side, cx: &mut Context<Self>| {
+            let focused = side == active_side;
+            div()
+                .relative()
+                .size_full()
+                .min_w_0()
+                .when(side == Side::Right, |this| {
+                    this.border_l_1().border_color(border)
+                })
+                // A press anywhere in the other pane, margins included,
+                // focuses it before the press lands.
+                .when(!focused, |this| {
+                    this.capture_any_mouse_down(
+                        cx.listener(|this, _, window, cx| this.focus_other_pane(window, cx)),
+                    )
+                })
+                .child(self.render_document(tab, side, window, cx))
+                .when(dragging, |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .child(self.drop_zone(side, cx)),
+                    )
+                })
+        };
+        let left = pane(left, Side::Left, cx);
+        let right = pane(right, Side::Right, cx);
+        h_resizable("document-panes")
+            .with_state(&self.pane_sizes)
+            .with_handle_appearance(quiet_resize_handle())
+            .child(
+                resizable_panel()
+                    .size_range(min_width..Pixels::MAX)
+                    .child(left),
+            )
+            .child(
+                resizable_panel()
+                    .size_range(min_width..Pixels::MAX)
+                    .child(right),
+            )
+            .into_any_element()
     }
 
-    /// The document as one sheet: its header, the editor and preview, and
-    /// a footer with facts about the text. Split mode divides the panes with
-    /// a single hairline that the preview owns.
-    fn render_sheet(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    /// One pane's document in the window's layout: its editor, its
+    /// preview, or both. Split mode divides them with a single hairline
+    /// that the preview owns.
+    fn render_document(
+        &self,
+        tab: &DocumentTab,
+        side: Side,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // Below this a pane cannot show a readable line of either source or
-        // prose; it follows the rem size so zoom keeps the proportion.
-        let min_pane_width = window.rem_size() * 16.;
+        // prose; it follows the rem size so zoom keeps the proportion. Beside
+        // another document, Split's four columns make do with less.
+        let beside_other = self.other_pane_tab().is_some();
+        let min_pane_width = window.rem_size()
+            * if beside_other {
+                SPLIT_PANE_MIN_REMS / 2.
+            } else {
+                16.
+            };
+        let slot = side as usize;
         // Cached views keep their last frame until notified, so typing does
         // not re-render the preview, and preview updates skip the editor.
         let pane_style = || StyleRefinement::default().size_full();
@@ -2506,7 +2707,7 @@ impl Workspace {
             div()
                 .size_full()
                 .min_w_0()
-                .child(self.tab().editor_pane.clone().cached(pane_style()))
+                .child(tab.editor_pane.clone().cached(pane_style()))
         };
         let border = cx.theme().border;
         let preview = |divided: bool| {
@@ -2514,22 +2715,20 @@ impl Workspace {
                 .size_full()
                 .min_w_0()
                 .when(divided, |this| this.border_l_1().border_color(border))
-                .child(MarkdownPreview::pane(&self.tab().preview, cx))
+                .child(MarkdownPreview::pane(&tab.preview, cx))
         };
-
-        // A change or commit picked in the sidebar takes the document's
-        // place; the document's panes are then not built at all.
-        let panes = (!self.showing_diff()).then(|| match self.layout {
+        match self.layout {
             // Centered at a readable measure; the margins beside it scroll
             // the text too, so the pointer can rest anywhere.
             LayoutMode::Editor => {
                 let margin = |id: &'static str| {
+                    let editor = tab.editor.clone();
                     div()
-                        .id(id)
+                        .id((id, slot))
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .on_scroll_wheel(cx.listener(Self::scroll_editor_from_margin))
+                        .on_scroll_wheel(move |event, _, cx| scroll_editor(&editor, event, cx))
                 };
                 div()
                     .flex()
@@ -2537,7 +2736,7 @@ impl Workspace {
                     .child(margin("editor-leading"))
                     .child(
                         div()
-                            .w(self.editor_measure(EDITOR_MEASURE_CHARS, window, cx))
+                            .w(self.editor_measure(EDITOR_MEASURE_CHARS, &tab.editor, window, cx))
                             .min_w_0()
                             .h_full()
                             .child(editor()),
@@ -2546,8 +2745,12 @@ impl Workspace {
                     .into_any_element()
             }
             LayoutMode::Preview => preview(false).into_any_element(),
-            LayoutMode::Split => h_resizable("split")
-                .with_state(&self.split)
+            LayoutMode::Split => h_resizable(("split", slot))
+                .with_state(if beside_other {
+                    &self.pane_columns[slot]
+                } else {
+                    &self.split
+                })
                 .with_handle_appearance(quiet_resize_handle())
                 .child(
                     resizable_panel()
@@ -2560,7 +2763,15 @@ impl Workspace {
                         .child(preview(true)),
                 )
                 .into_any_element(),
-        });
+        }
+    }
+
+    /// The document as one sheet: its header, the document panes, and a
+    /// footer with facts about the text.
+    fn render_sheet(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        // A change or commit picked in the sidebar takes the document's
+        // place; the document's panes are then not built at all.
+        let panes = (!self.showing_diff()).then(|| self.render_documents(window, cx));
 
         let (header, panes, footer) = match panes {
             Some(panes) => (
@@ -2703,6 +2914,14 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(Self::next_tab))
             .on_action(cx.listener(Self::previous_tab))
+            .on_action(cx.listener(Self::split_right))
+            .on_action(cx.listener(Self::split_left))
+            .on_action(cx.listener(|this, _: &FocusLeftPane, window, cx| {
+                this.focus_pane(Side::Left, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FocusRightPane, window, cx| {
+                this.focus_pane(Side::Right, window, cx)
+            }))
             .on_action(cx.listener(Self::new_folder))
             .on_action(cx.listener(Self::copy_selected_entry))
             .on_action(cx.listener(Self::paste_entry))
@@ -2786,6 +3005,22 @@ fn sidebar_toggle(sidebar_visible: bool, cx: &Context<Workspace>) -> Button {
         .on_click(
             cx.listener(|this, _, window, cx| this.toggle_sidebar(&ToggleSidebar, window, cx)),
         )
+}
+
+/// Scroll `editor` by a wheel turned over the margins beside it.
+fn scroll_editor(
+    editor: &Entity<EditorState>,
+    event: &gpui_kit::ScrollWheelEvent,
+    cx: &mut gpui_kit::App,
+) {
+    editor.update(cx, |editor, cx| {
+        let Some(line_height) = editor.line_height() else {
+            return;
+        };
+        let delta = event.delta.pixel_delta(line_height);
+        let offset = editor.scroll_offset();
+        editor.set_scroll_offset(gpui_kit::point(offset.x, offset.y + delta.y), cx);
+    });
 }
 
 /// A one-rem square that centers a tree row's chevron or icon.
