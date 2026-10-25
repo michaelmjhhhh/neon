@@ -213,6 +213,16 @@ impl Workspace {
         self.activate_tab(ix, window, cx);
     }
 
+    /// Move focus to the pane on `side` of a split tab.
+    pub(super) fn focus_pane(&mut self, side: Side, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .active_split()
+            .is_some_and(|(_, active_side)| active_side != side)
+        {
+            self.focus_other_pane(window, cx);
+        }
+    }
+
     /// Focus reached a tab's editor or preview, as when clicked: if the other
     /// pane shows it, that pane becomes the focused one.
     pub(super) fn on_pane_focused(

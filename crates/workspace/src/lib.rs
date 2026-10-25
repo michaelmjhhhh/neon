@@ -38,10 +38,10 @@ pub use settings_file::load as load_settings;
 pub use workspace::MemoryBench;
 pub use workspace::{
     CloseSettings, CloseTab, CloseWindow, Commit, ExitZen, ExportDocx, ExportHtml, ExportPdf,
-    LayoutMode, NewFile, NewFolder, NewTab, NextTab, Open, OpenFolder, OpenSettings, PreviousTab,
-    Quit, RefreshFolder, ResetZoom, Save, SaveAs, ShowEditor, ShowPreview, ShowSplit, SplitLeft,
-    SplitRight, ToggleBold, ToggleItalic, ToggleLineNumbers, ToggleSidebar, ToggleTheme, ToggleZen,
-    Workspace, ZoomIn, ZoomOut,
+    FocusLeftPane, FocusRightPane, LayoutMode, NewFile, NewFolder, NewTab, NextTab, Open,
+    OpenFolder, OpenSettings, PreviousTab, Quit, RefreshFolder, ResetZoom, Save, SaveAs,
+    ShowEditor, ShowPreview, ShowSplit, SplitLeft, SplitRight, ToggleBold, ToggleItalic,
+    ToggleLineNumbers, ToggleSidebar, ToggleTheme, ToggleZen, Workspace, ZoomIn, ZoomOut,
 };
 pub use workspace::{Push, ShowChanges, ShowFiles, ShowHistory, StageAll, UnstageAll};
 
@@ -163,6 +163,9 @@ pub fn init(cx: &mut App) {
         // As in iTerm. The tree's Cmd-D duplicates while it has focus.
         KeyBinding::new("secondary-d", SplitRight, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-shift-d", SplitLeft, Some(KEY_CONTEXT)),
+        // The editor leaves Option-Command arrows unbound.
+        KeyBinding::new("alt-secondary-left", FocusLeftPane, Some(KEY_CONTEXT)),
+        KeyBinding::new("alt-secondary-right", FocusRightPane, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-{", PreviousTab, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-q", Quit, None),
     ]);

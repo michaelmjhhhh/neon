@@ -80,6 +80,8 @@ gpui_kit::actions!(
         PreviousTab,
         SplitRight,
         SplitLeft,
+        FocusLeftPane,
+        FocusRightPane,
         NewFolder,
         CopyEntry,
         PasteEntry,
@@ -2910,6 +2912,12 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::previous_tab))
             .on_action(cx.listener(Self::split_right))
             .on_action(cx.listener(Self::split_left))
+            .on_action(cx.listener(|this, _: &FocusLeftPane, window, cx| {
+                this.focus_pane(Side::Left, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FocusRightPane, window, cx| {
+                this.focus_pane(Side::Right, window, cx)
+            }))
             .on_action(cx.listener(Self::new_folder))
             .on_action(cx.listener(Self::copy_selected_entry))
             .on_action(cx.listener(Self::paste_entry))
