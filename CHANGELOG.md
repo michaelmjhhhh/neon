@@ -36,6 +36,7 @@ Groups, in this order:
 ### Changed
 
 - A file in the sidebar opens when the click ends rather than when it starts, so it can be dragged to a pane instead.
+- ⌘D splits the tab even while the sidebar has focus, so it no longer duplicates the selected file there; Duplicate stays in the file's right-click menu.
 
 - Diffs tint each changed line, so a reworked paragraph reads as one block with its changed words darker inside, instead of scattered marks with white gaps. In History, a commit that changed one file no longer repeats its counts in the title.
 

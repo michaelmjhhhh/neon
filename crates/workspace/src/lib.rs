@@ -112,11 +112,6 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-shift-n", NewFolder, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-c", workspace::CopyEntry, Some(TREE_KEY_CONTEXT)),
         KeyBinding::new("secondary-v", workspace::PasteEntry, Some(TREE_KEY_CONTEXT)),
-        KeyBinding::new(
-            "secondary-d",
-            workspace::DuplicateEntry,
-            Some(TREE_KEY_CONTEXT),
-        ),
         // As in Zed and VS Code.
         KeyBinding::new(
             "alt-secondary-c",
@@ -160,7 +155,9 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-tab", NextTab, Some(KEY_CONTEXT)),
         KeyBinding::new("ctrl-shift-tab", PreviousTab, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-}", NextTab, Some(KEY_CONTEXT)),
-        // As in iTerm. The tree's Cmd-D duplicates while it has focus.
+        // As in iTerm. Not Duplicate in the sidebar, as in Finder: a click on
+        // a file leaves the tree focused, so Cmd-D right after it would
+        // copy the file instead of splitting.
         KeyBinding::new("secondary-d", SplitRight, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-shift-d", SplitLeft, Some(KEY_CONTEXT)),
         // The editor leaves Option-Command arrows unbound.
