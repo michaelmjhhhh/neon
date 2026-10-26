@@ -2,16 +2,13 @@
 //! templates, such as a list or a table, and accepting one inserts it in place
 //! of the command. Tab instead completes the command's name, so an argument
 //! can be typed before the template is inserted.
+//!
+//! This module holds the menu's state; [`crate::slash_menu`] draws it.
 
-use std::cell::{Cell, RefCell};
 use std::ops::Range;
 
-use gpui_kit::component::input::{CompletionProvider, Rope, RopeExt as _};
-use gpui_kit::{App, Result, Task, Window};
-use lsp_types::{
-    CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit,
-    Documentation, MarkupContent, MarkupKind, TextEdit,
-};
+use gpui_kit::EntityId;
+use gpui_kit::component::input::{Rope, RopeExt as _};
 
 const DEFAULT_LIST_ITEMS: usize = 3;
 const MAX_LIST_ITEMS: usize = 50;
@@ -245,25 +242,14 @@ fn command_line(command: Command, template: &Template) -> String {
 }
 
 /// The menu's preview of a template: its Markdown source, cut short when
-/// long, and how to give the command an argument.
-fn preview(command: Command, template: &Template) -> Documentation {
+/// long.
+fn preview(template: &Template) -> String {
     let mut lines: Vec<&str> = template.text.lines().take(PREVIEW_LINES + 1).collect();
     if lines.len() > PREVIEW_LINES {
         lines.truncate(PREVIEW_LINES);
         lines.push("…");
     }
-    // A fence longer than any in the template, so a code block shows whole.
-    let mut value = format!("````markdown\n{}\n````", lines.join("\n"));
-    if template.argument.is_none()
-        && let Some(hint) = command.hint()
-    {
-        value.push_str("\n\n");
-        value.push_str(hint);
-    }
-    Documentation::MarkupContent(MarkupContent {
-        kind: MarkupKind::Markdown,
-        value,
-    })
+    lines.join("\n")
 }
 
 /// A slash command being typed: where its `/` is, and the indentation before
@@ -325,196 +311,217 @@ pub(crate) fn in_code_block(text: &Rope, row: usize) -> bool {
     fence.is_some()
 }
 
-/// A template inserted at `start` as `text`, to place the cursor afterwards.
-struct Offered {
-    start: usize,
+/// A template on offer in the menu.
+#[derive(Debug, Clone)]
+pub(crate) struct MenuItem {
+    pub(crate) label: String,
+    /// The length of the label's start that matches what was typed.
+    pub(crate) matched: usize,
+    pub(crate) detail: String,
+    /// The template's Markdown source, cut short when long.
+    pub(crate) preview: String,
+    /// How to give the command an argument, until one is typed. Text in
+    /// backticks is an example to type.
+    pub(crate) hint: Option<&'static str>,
+    /// The text accepting the item replaces: the command typed, and the line
+    /// break before it when the template needs a blank line above.
+    range: Range<usize>,
+    /// The template, indented like the command.
     text: String,
+    /// The range of the inserted template to select.
     selection: Range<usize>,
-    /// What replaces `text` when the template was accepted with Tab: the
-    /// command written out, such as `/table `, ready for an argument.
+    /// What replaces `range` when the item is accepted with Tab: the command
+    /// written out, such as `/table `, ready for an argument.
     command: String,
 }
 
-/// What to do after an edit inserted one of the offered templates.
+/// The edit accepting a menu item makes.
 #[derive(Debug, PartialEq)]
-pub(crate) enum Insertion {
-    /// Accepted with Enter: select this range of the template.
-    Select(Range<usize>),
-    /// Accepted with Tab: replace the template at `range` with `command` and
-    /// open the menu again.
-    Complete {
-        range: Range<usize>,
-        command: String,
-    },
+pub(crate) struct Edit {
+    pub(crate) range: Range<usize>,
+    pub(crate) text: String,
+    /// The range to select afterwards; `None` leaves the cursor after `text`.
+    pub(crate) selection: Option<Range<usize>>,
 }
 
-/// The completion provider behind the slash menu.
+/// The menu open over an editor.
+struct OpenMenu {
+    editor: EntityId,
+    /// Where the command's `/` is.
+    start: usize,
+    /// Empty when nothing matches; the menu stays open, hidden, so further
+    /// typing or a deletion can bring matches back.
+    items: Vec<MenuItem>,
+    selected: usize,
+}
+
+/// The slash menu's state: the templates on offer for the command being
+/// typed, and which one is highlighted.
 #[derive(Default)]
-pub(crate) struct SlashCommands {
-    /// Whether the cursor was last in a slash command, so each further
-    /// keystroke refines the menu instead of only `/` opening it.
-    active: Cell<bool>,
-    /// The cursor offset the menu was last asked about.
-    requested_at: Cell<Option<usize>>,
-    /// The `/` offset of a command whose menu was closed with Escape, which
-    /// stays closed until a `/` is typed again.
-    dismissed: Cell<Option<usize>>,
-    offered: RefCell<Vec<Offered>>,
-    /// Whether the next accepted template completes its command instead.
-    completing: Cell<bool>,
+pub(crate) struct SlashMenu {
+    open: Option<OpenMenu>,
 }
 
-impl SlashCommands {
-    /// What to do after an edit, when the edit inserted one of the offered
-    /// templates and left the cursor at its end.
-    pub(crate) fn take_insertion(&self, text: &Rope, cursor: usize) -> Option<Insertion> {
-        let mut offered = self.offered.borrow_mut();
-        let insertion = offered.iter().find_map(|offered| {
-            let end = offered.start + offered.text.len();
-            (end == cursor && text.slice(offered.start..end) == offered.text.as_str()).then(|| {
-                if self.completing.get() {
-                    Insertion::Complete {
-                        range: offered.start..end,
-                        command: offered.command.clone(),
-                    }
-                } else {
-                    Insertion::Select(
-                        offered.start + offered.selection.start
-                            ..offered.start + offered.selection.end,
-                    )
-                }
-            })
-        })?;
-        offered.clear();
-        self.active.set(false);
-        self.completing.set(false);
-        Some(insertion)
-    }
-
-    /// Make the template accepted next complete its command instead, when
-    /// the menu has templates on offer. Returns whether it does.
-    pub(crate) fn complete_next(&self) -> bool {
-        let offered = !self.offered.borrow().is_empty();
-        self.completing.set(offered);
-        offered
-    }
-
-    /// Whether an edit the menu did not see, such as a deletion, left the
-    /// cursor in a slash command, so the menu should be asked again.
-    pub(crate) fn needs_refresh(&self, cursor: usize) -> bool {
-        self.active.get() && self.requested_at.get() != Some(cursor)
-    }
-
-    /// Keep the menu closed after Escape until a new `/` is typed.
-    pub(crate) fn dismiss(&self) {
-        let mut offered = self.offered.borrow_mut();
-        if let Some(offer) = offered.first() {
-            self.dismissed.set(Some(offer.start));
-            offered.clear();
-            self.active.set(false);
-        }
-        self.completing.set(false);
-    }
-
-    /// The menu items for the slash command ending at `offset`, or `None`
-    /// when the cursor is not in one.
-    fn items_at(&self, text: &Rope, offset: usize) -> Option<Vec<CompletionItem>> {
-        let point = text.offset_to_point(offset);
-        let line_start = text.line_start_offset(point.row);
-        let line = text.slice(line_start..offset).to_string();
-        let invocation = invocation(&line, line_start)?;
-        let line_end = text.line_end_offset(point.row);
-        if self.dismissed.get() == Some(invocation.start)
-            || text
-                .slice(offset..line_end)
-                .chars()
-                .any(|ch| !ch.is_whitespace())
-            || in_code_block(text, point.row)
-        {
-            return None;
-        }
-        let after_text = point.row > 0
-            && text
-                .slice_line(point.row - 1)
-                .chars()
-                .any(|ch| !ch.is_whitespace());
-        let typed = text.slice(invocation.start..offset).to_string();
-        let end = text.offset_to_position(offset);
-
-        let mut offered = Vec::new();
-        let items = matching(invocation.query)
-            .into_iter()
-            .map(
-                |Match {
-                     command,
-                     label,
-                     template,
-                 }| {
-                    let documentation = preview(command, &template);
-                    let (start, prefix) = if template.blank_line_before && after_text {
-                        (line_start, format!("\n{}", invocation.indent))
-                    } else {
-                        (invocation.start, String::new())
-                    };
-                    let indent = format!("\n{}", invocation.indent);
-                    let new_text = format!("{prefix}{}", template.text.replace('\n', &indent));
-                    // The text from `start` up to the `/` stays as it was.
-                    let kept = text.slice(start..invocation.start).to_string();
-                    let command = format!("{kept}{}", command_line(command, &template));
-                    let selection = indented(&template.text, template.selection, invocation.indent);
-                    offered.push(Offered {
-                        start,
-                        text: new_text.clone(),
-                        selection: selection.start + prefix.len()..selection.end + prefix.len(),
-                        command,
-                    });
-                    CompletionItem {
-                        label,
-                        detail: Some(template.detail),
-                        kind: Some(CompletionItemKind::SNIPPET),
-                        documentation: Some(documentation),
-                        // Highlights what was typed, the `/` included.
-                        filter_text: Some(typed.clone()),
-                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                            range: lsp_types::Range::new(text.offset_to_position(start), end),
-                            new_text,
-                        })),
-                        ..Default::default()
-                    }
-                },
-            )
-            .collect();
-        *self.offered.borrow_mut() = offered;
-        Some(items)
-    }
-}
-
-impl CompletionProvider for SlashCommands {
-    fn completions(
-        &self,
+impl SlashMenu {
+    /// Follow an edit or a cursor move in `editor`. An edit that leaves a
+    /// lone `/` before the cursor opens the menu; while it is open, each
+    /// edit or move refines it, and leaving the command closes it. Returns
+    /// whether the menu changed.
+    pub(crate) fn update(
+        &mut self,
+        editor: EntityId,
         text: &Rope,
-        offset: usize,
-        _: CompletionContext,
-        _: &mut Window,
-        _: &mut App,
-    ) -> Task<Result<CompletionResponse>> {
-        self.requested_at.set(Some(offset));
-        self.completing.set(false);
-        let items = self.items_at(text, offset);
-        self.active.set(items.is_some());
-        if items.is_none() {
-            self.offered.borrow_mut().clear();
+        cursor: usize,
+        edited: bool,
+    ) -> bool {
+        let was_open = self.open.is_some();
+        let open_here = self.open.as_ref().is_some_and(|menu| menu.editor == editor);
+        // Closed, only a `/` just typed can open it, so most keystrokes and
+        // cursor moves skip reading the line. `/` is ASCII, so its byte is a
+        // whole character.
+        let slash_before = cursor > 0 && text.get_byte(cursor - 1) == Some(b'/');
+        if !open_here && !(edited && slash_before) {
+            return self.open.take().is_some();
         }
-        Task::ready(Ok(CompletionResponse::Array(items.unwrap_or_default())))
+        self.open = match items_at(text, cursor) {
+            Some((start, fresh, items)) if open_here || (edited && fresh) => Some(OpenMenu {
+                editor,
+                start,
+                items,
+                selected: 0,
+            }),
+            _ => None,
+        };
+        was_open || self.open.is_some()
     }
 
-    fn is_completion_trigger(&self, _: usize, new_text: &str, _: &mut App) -> bool {
-        if new_text == "/" {
-            self.dismissed.set(None);
-            return true;
-        }
-        self.active.get() && new_text.chars().count() == 1 && !new_text.contains('\n')
+    /// Close the menu. Returns whether it was open.
+    pub(crate) fn close(&mut self) -> bool {
+        self.open.take().is_some()
     }
+
+    /// The menu shown over `editor`: where the command's `/` is, the items,
+    /// and which one is highlighted. `None` when it is closed or has nothing
+    /// to offer.
+    pub(crate) fn shown(&self, editor: EntityId) -> Option<(usize, &[MenuItem], usize)> {
+        self.open
+            .as_ref()
+            .filter(|menu| menu.editor == editor && !menu.items.is_empty())
+            .map(|menu| (menu.start, menu.items.as_slice(), menu.selected))
+    }
+
+    /// Highlight the item `delta` rows away, wrapping around the ends.
+    pub(crate) fn move_selection(&mut self, delta: isize) {
+        if let Some(menu) = self.open.as_mut().filter(|menu| !menu.items.is_empty()) {
+            let len = menu.items.len() as isize;
+            menu.selected = (menu.selected as isize + delta).rem_euclid(len) as usize;
+        }
+    }
+
+    pub(crate) fn select(&mut self, ix: usize) {
+        if let Some(menu) = self.open.as_mut().filter(|menu| ix < menu.items.len()) {
+            menu.selected = ix;
+        }
+    }
+
+    /// The edit accepting the highlighted item makes. Enter inserts its
+    /// template and closes the menu; Tab, with `complete`, writes out its
+    /// command and keeps the menu open for an argument.
+    pub(crate) fn accept(&mut self, complete: bool) -> Option<Edit> {
+        let menu = self.open.as_ref()?;
+        let item = menu.items.get(menu.selected)?;
+        let edit = if complete {
+            Edit {
+                range: item.range.clone(),
+                text: item.command.clone(),
+                selection: None,
+            }
+        } else {
+            let start = item.range.start;
+            Edit {
+                range: item.range.clone(),
+                text: item.text.clone(),
+                selection: Some(start + item.selection.start..start + item.selection.end),
+            }
+        };
+        if !complete {
+            self.open = None;
+        }
+        Some(edit)
+    }
+}
+
+/// The menu items for the slash command ending at `cursor`, with where its
+/// `/` is and whether nothing follows the `/` yet, or `None` when the cursor
+/// is not in a slash command.
+fn items_at(text: &Rope, cursor: usize) -> Option<(usize, bool, Vec<MenuItem>)> {
+    let point = text.offset_to_point(cursor);
+    let line_start = text.line_start_offset(point.row);
+    let line = text.slice(line_start..cursor).to_string();
+    let invocation = invocation(&line, line_start)?;
+    let line_end = text.line_end_offset(point.row);
+    if text
+        .slice(cursor..line_end)
+        .chars()
+        .any(|ch| !ch.is_whitespace())
+        || in_code_block(text, point.row)
+    {
+        return None;
+    }
+    let after_text = point.row > 0
+        && text
+            .slice_line(point.row - 1)
+            .chars()
+            .any(|ch| !ch.is_whitespace());
+    let typed = text.slice(invocation.start..cursor).to_string();
+
+    let items = matching(invocation.query)
+        .into_iter()
+        .map(
+            |Match {
+                 command,
+                 label,
+                 template,
+             }| {
+                let (start, prefix) = if template.blank_line_before && after_text {
+                    (line_start, format!("\n{}", invocation.indent))
+                } else {
+                    (invocation.start, String::new())
+                };
+                let indent = format!("\n{}", invocation.indent);
+                let new_text = format!("{prefix}{}", template.text.replace('\n', &indent));
+                // The text from `start` up to the `/` stays as it was.
+                let kept = text.slice(start..invocation.start).to_string();
+                let selection = indented(
+                    &template.text,
+                    template.selection.clone(),
+                    invocation.indent,
+                );
+                let matched = label
+                    .char_indices()
+                    .zip(typed.chars())
+                    .take_while(|((_, a), b)| a == b)
+                    .last()
+                    .map_or(0, |((ix, ch), _)| ix + ch.len_utf8());
+                MenuItem {
+                    matched,
+                    detail: template.detail.clone(),
+                    preview: preview(&template),
+                    hint: template
+                        .argument
+                        .is_none()
+                        .then(|| command.hint())
+                        .flatten(),
+                    range: start..cursor,
+                    text: new_text,
+                    selection: selection.start + prefix.len()..selection.end + prefix.len(),
+                    command: format!("{kept}{}", command_line(command, &template)),
+                    label,
+                }
+            },
+        )
+        .collect();
+    Some((invocation.start, invocation.query.is_empty(), items))
 }
 
 /// `selection` in `text`, moved past the indentation added to each line
@@ -585,19 +592,15 @@ mod tests {
 
     #[test]
     fn preview_cuts_long_templates_and_hints_at_arguments() {
-        let Documentation::MarkupContent(content) =
-            preview(Command::Table, &Command::Table.template("").unwrap())
-        else {
-            unreachable!()
-        };
-        assert!(content.value.ends_with("`/table 4x5`, columns x rows"));
-        let Documentation::MarkupContent(content) =
-            preview(Command::Bullet, &Command::Bullet.template("20").unwrap())
-        else {
-            unreachable!()
-        };
-        assert_eq!(content.value.matches("- ").count(), PREVIEW_LINES);
-        assert!(content.value.contains('…') && !content.value.contains("Add a count"));
+        let preview = preview(&Command::Bullet.template("20").unwrap());
+        assert_eq!(preview.matches("- ").count(), PREVIEW_LINES);
+        assert!(preview.ends_with('…'));
+        let rope = Rope::from("/table");
+        let (_, _, items) = items_at(&rope, rope.len()).unwrap();
+        assert_eq!(items[0].hint, Command::Table.hint());
+        let rope = Rope::from("/table 4");
+        let (_, _, items) = items_at(&rope, rope.len()).unwrap();
+        assert_eq!(items[0].hint, None);
     }
 
     #[test]
@@ -630,21 +633,89 @@ mod tests {
         assert_eq!(line("link "), ["/link "]);
     }
 
+    fn editor() -> EntityId {
+        EntityId::from(1u64)
+    }
+
+    /// A menu opened by typing `/` at the end of `text`'s first part, then
+    /// refined by typing the rest.
+    fn typed(before: &str, after: &str) -> SlashMenu {
+        let mut menu = SlashMenu::default();
+        let text = Rope::from(before);
+        menu.update(editor(), &text, text.len(), true);
+        let text = Rope::from(format!("{before}{after}").as_str());
+        menu.update(editor(), &text, text.len(), true);
+        menu
+    }
+
     #[test]
-    fn tab_replaces_the_template_with_its_command() {
-        let commands = SlashCommands::default();
-        let typed = Rope::from("  /ta");
-        let items = commands.items_at(&typed, typed.len()).unwrap();
-        let Some(CompletionTextEdit::Edit(edit)) = &items[0].text_edit else {
-            unreachable!()
-        };
-        let text = Rope::from(format!("  {}", edit.new_text).as_str());
-        assert!(commands.complete_next());
+    fn a_typed_slash_opens_the_menu_and_leaving_closes_it() {
+        let mut menu = SlashMenu::default();
+        let text = Rope::from("/");
+        // A cursor move onto a lone `/` does not open it; typing one does.
+        assert!(!menu.update(editor(), &text, 1, false));
+        assert!(menu.update(editor(), &text, 1, true));
+        assert_eq!(menu.shown(editor()).unwrap().1.len(), Command::ALL.len());
+
+        let text = Rope::from("/x");
+        menu.update(editor(), &text, 2, true);
+        assert!(menu.shown(editor()).is_none(), "no match hides the menu");
+        let text = Rope::from("/t");
+        menu.update(editor(), &text, 2, true);
         assert_eq!(
-            commands.take_insertion(&text, text.len()),
-            Some(Insertion::Complete {
-                range: 2..text.len(),
-                command: "/table ".into(),
+            menu.shown(editor()).unwrap().1.len(),
+            2,
+            "and it comes back"
+        );
+
+        let text = Rope::from("/t b c");
+        menu.update(editor(), &text, 6, true);
+        assert!(menu.shown(editor()).is_none());
+        menu.update(editor(), &Rope::from("/t"), 2, true);
+        assert!(menu.shown(editor()).is_none(), "closed until a new `/`");
+    }
+
+    #[test]
+    fn selection_wraps_around() {
+        let mut menu = typed("/", "t");
+        menu.move_selection(-1);
+        assert_eq!(menu.shown(editor()).unwrap().2, 1);
+        menu.move_selection(1);
+        assert_eq!(menu.shown(editor()).unwrap().2, 0);
+    }
+
+    #[test]
+    fn enter_inserts_the_template_and_tab_writes_out_the_command() {
+        let mut menu = typed("  /", "li");
+        assert_eq!(
+            menu.accept(true),
+            Some(Edit {
+                range: 2..5,
+                text: "/link ".into(),
+                selection: None,
+            })
+        );
+        assert!(menu.shown(editor()).is_some(), "Tab keeps the menu open");
+        assert_eq!(
+            menu.accept(false),
+            Some(Edit {
+                range: 2..5,
+                text: "[text](url)".into(),
+                selection: Some(3..7),
+            })
+        );
+        assert!(menu.shown(editor()).is_none());
+    }
+
+    #[test]
+    fn images_after_text_start_a_paragraph() {
+        let mut menu = typed("prose\n/", "image");
+        assert_eq!(
+            menu.accept(false),
+            Some(Edit {
+                range: 6..12,
+                text: "\n![alt text](path)".into(),
+                selection: Some(9..17),
             })
         );
     }

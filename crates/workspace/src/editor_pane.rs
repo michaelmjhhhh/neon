@@ -8,12 +8,15 @@ use gpui_kit::component::input::{
 use gpui_kit::{
     AppContext as _, Bounds, Context, ElementInputHandler, Entity, EntityInputHandler,
     Focusable as _, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point,
-    Render, SharedString, Styled as _, TextRun, UTF16Selection, Window, canvas, div, point,
+    Render, SharedString, Styled as _, Subscription, TextRun, UTF16Selection, Window, canvas, div,
+    point,
 };
 
 use crate::find_bar::FindBar;
 use crate::list_guides;
 use crate::scroll_anchor::ScrollAnchor;
+use crate::slash_commands::SlashMenu;
+use crate::slash_menu;
 use crate::typography::Typography;
 
 /// The source editor as its own view, so the workspace can cache it: a
@@ -27,6 +30,7 @@ pub(crate) struct EditorPane {
     editor: Entity<EditorState>,
     typography: Entity<Typography>,
     find_bar: Entity<FindBar>,
+    slash_menu: Entity<SlashMenu>,
     readonly: bool,
     /// The editor's text as of its last layout.
     laid_out_text: Rc<RefCell<Rope>>,
@@ -34,24 +38,29 @@ pub(crate) struct EditorPane {
     laid_out_size: Rc<Cell<f32>>,
     /// The line to keep in place while a typography change takes effect.
     scroll_anchor: Rc<Cell<Option<ScrollAnchor>>>,
+    _slash_menu_changed: Subscription,
 }
 
 impl EditorPane {
     pub(crate) fn new(
         editor: Entity<EditorState>,
         typography: Entity<Typography>,
+        slash_menu: Entity<SlashMenu>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let find_bar = cx.new(|cx| FindBar::new(editor.clone(), window, cx));
+        let slash_menu_changed = cx.observe(&slash_menu, |_, _, cx| cx.notify());
         Self {
             editor,
             typography,
             find_bar,
+            slash_menu,
             readonly: false,
             laid_out_text: Rc::default(),
             laid_out_size: Rc::default(),
             scroll_anchor: Rc::default(),
+            _slash_menu_changed: slash_menu_changed,
         }
     }
 
@@ -141,7 +150,7 @@ impl EditorPane {
 }
 
 impl Render for EditorPane {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let typography = self.typography.read(cx);
         let pane = cx.entity();
         let editor = self.editor.clone();
@@ -150,6 +159,13 @@ impl Render for EditorPane {
         let laid_out_size = self.laid_out_size.clone();
         let scroll_anchor = self.scroll_anchor.clone();
         let size = typography.editor_size(cx);
+        let slash_menu = slash_menu::render(
+            &self.slash_menu,
+            &self.editor,
+            typography.editor_font(cx),
+            window.rem_size() * (size / 16.),
+            cx,
+        );
         div()
             .size_full()
             .relative()
@@ -202,6 +218,7 @@ impl Render for EditorPane {
                 .size_full(),
             )
             .child(self.find_bar.clone())
+            .children(slash_menu)
     }
 }
 

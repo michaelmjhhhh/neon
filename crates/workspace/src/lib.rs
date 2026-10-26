@@ -20,6 +20,7 @@ mod session_file;
 mod settings;
 mod settings_file;
 mod slash_commands;
+mod slash_menu;
 mod theme;
 mod typography;
 mod word_count;

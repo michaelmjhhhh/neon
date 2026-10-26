@@ -29,6 +29,10 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Fixed
+
+- The slash command menu follows the editor's font size instead of staying at a small fixed size, fits its descriptions and previews, and no longer shows a clipped "markdown" label in the preview.
+
 ## [0.12.0] - 2026-10-25
 
 ### Added
