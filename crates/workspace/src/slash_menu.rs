@@ -82,13 +82,15 @@ pub(crate) fn render(
                         };
                         window.dispatch_action(Box::new(enter), cx);
                     })
-                    .child(StyledText::new(item.label.clone()).with_highlights([(
-                        0..item.matched,
-                        HighlightStyle {
-                            color: Some(theme.blue),
-                            ..Default::default()
-                        },
-                    )]))
+                    .child(StyledText::new(item.label.clone()).with_highlights(
+                        (item.matched > 0).then(|| {
+                            let style = HighlightStyle {
+                                color: Some(theme.blue),
+                                ..Default::default()
+                            };
+                            (0..item.matched, style)
+                        }),
+                    ))
                     .child(
                         div()
                             .min_w_0()
@@ -290,12 +292,15 @@ impl Element for CaretPopup {
         );
         let x = left.min(viewport.width - margin - size.width).max(margin);
         // Under the caret's line, or over it when there is no room below.
+        // Kept in the window even when the line scrolls out of view, since
+        // the menu still takes Enter and the arrow keys.
         let below = bottom + gap;
         let y = if below + size.height + margin <= viewport.height {
             below
         } else {
-            (top - gap - size.height).max(margin)
+            top - gap - size.height
         };
+        let y = y.min(viewport.height - margin - size.height).max(margin);
         content.prepaint_at(point(x, y), window, cx);
         self.content = Some(content);
     }

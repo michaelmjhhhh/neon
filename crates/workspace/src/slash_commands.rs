@@ -376,6 +376,13 @@ impl SlashMenu {
     ) -> bool {
         let was_open = self.open.is_some();
         let open_here = self.open.as_ref().is_some_and(|menu| menu.editor == editor);
+        // Closed, only a `/` just typed can open it, so most keystrokes and
+        // cursor moves skip reading the line. `/` is ASCII, so its byte is a
+        // whole character.
+        let slash_before = cursor > 0 && text.get_byte(cursor - 1) == Some(b'/');
+        if !open_here && !(edited && slash_before) {
+            return self.open.take().is_some();
+        }
         self.open = match items_at(text, cursor) {
             Some((start, fresh, items)) if open_here || (edited && fresh) => Some(OpenMenu {
                 editor,
