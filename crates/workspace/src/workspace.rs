@@ -17,8 +17,8 @@ use gpui_kit::component::empty::{
     Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
 };
 use gpui_kit::component::input::{
-    self, EditorState, Enter, Escape, Indent, IndentInline, Input, InputEvent, InputState, Outdent,
-    OutdentInline, RopeExt as _,
+    self, EditorState, Enter, Escape, Indent, IndentInline, Input, InputEvent, InputState,
+    MoveDown, MoveUp, Outdent, OutdentInline, RopeExt as _,
 };
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
@@ -48,7 +48,7 @@ use crate::list_continuation;
 use crate::present_now::{self, NativeView};
 use crate::scroll_metrics::ScrollMetrics;
 use crate::settings::{LineNumbersChanged, SettingsView};
-use crate::slash_commands::{Insertion, SlashCommands};
+use crate::slash_commands::SlashMenu;
 use crate::theme::{self, Appearance};
 use crate::word_count::WordCount;
 use crate::zen::{Zen, ZenView};
@@ -240,8 +240,8 @@ pub struct Workspace {
     typography: Entity<Typography>,
     scroll_metrics: Entity<ScrollMetrics>,
     word_count: Entity<WordCount>,
-    /// The `/` template menu, kept to place the cursor in what it inserts.
-    slash_commands: Rc<SlashCommands>,
+    /// The `/` template menu, shared by every tab's editor pane.
+    slash_menu: Entity<SlashMenu>,
     layout: LayoutMode,
     /// While set, the window shows the document alone, as source or
     /// preview; see [`crate::zen`].
@@ -265,10 +265,10 @@ fn gutter_digits(lines: usize) -> usize {
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let slash_commands = Rc::new(SlashCommands::default());
+        let slash_menu = cx.new(|_| SlashMenu::default());
         let line_numbers = crate::settings_file::saved(cx).line_numbers;
         let typography = cx.new(|cx| Typography::new(window, cx));
-        let tab = DocumentTab::new(0, line_numbers, &slash_commands, &typography, window, cx);
+        let tab = DocumentTab::new(0, line_numbers, &slash_menu, &typography, window, cx);
         let scroll_metrics =
             cx.new(|cx| ScrollMetrics::new(tab.editor.clone(), tab.preview.clone(), window, cx));
         let word_count = cx.new(|_| WordCount::default());
@@ -373,7 +373,7 @@ impl Workspace {
             typography,
             scroll_metrics,
             word_count,
-            slash_commands,
+            slash_menu,
             layout: LayoutMode::default(),
             zen: None,
             focus_handle: cx.focus_handle(),
@@ -601,23 +601,7 @@ impl Workspace {
             return;
         }
         let cursor = editor.read(cx).cursor();
-        match self.slash_commands.take_insertion(&source, cursor) {
-            Some(Insertion::Select(selection)) => {
-                editor.update(cx, |editor, cx| editor.set_selected_range(selection, cx));
-            }
-            Some(Insertion::Complete { range, command }) => {
-                editor.update(cx, |editor, cx| {
-                    editor.set_selected_range(range, cx);
-                    editor.replace(command, window, cx);
-                    editor.show_completions(window, cx);
-                });
-            }
-            None if self.slash_commands.needs_refresh(cursor) => {
-                // A deletion closes the menu without asking for a new one.
-                editor.update(cx, |editor, cx| editor.show_completions(window, cx));
-            }
-            None => {}
-        }
+        self.update_slash_menu(editor, &source, cursor, true, cx);
         // The Editor layout's column widens with the gutter when the line
         // count gains a digit, as at line 1000. Other layouts do not
         // measure the column, so typing there never redraws this view.
@@ -662,6 +646,8 @@ impl Workspace {
             return;
         }
         self.tab_mut().revealed_cursor = Some(cursor);
+        let text = editor.read(cx).text().clone();
+        self.update_slash_menu(&editor, &text, cursor, false, cx);
         self.zen_follow_cursor(cx);
         self.glide_zen_caret(window, cx);
         self.draw_soon(window, cx);
@@ -673,6 +659,63 @@ impl Workspace {
         // No notify: the status bar reads the cursor during this view's
         // render, so the editor's own notification already redraws it.
         // Notifying here would also invalidate the cached sidebar.
+    }
+
+    /// Follow an edit, with `edited`, or a cursor move in the active editor
+    /// in the slash menu.
+    fn update_slash_menu(
+        &mut self,
+        editor: &Entity<EditorState>,
+        text: &input::Rope,
+        cursor: usize,
+        edited: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let editor = editor.entity_id();
+        self.slash_menu.update(cx, |menu, cx| {
+            if menu.update(editor, text, cursor, edited) {
+                cx.notify();
+            }
+        });
+    }
+
+    pub(super) fn close_slash_menu(&mut self, cx: &mut Context<Self>) {
+        self.slash_menu.update(cx, |menu, cx| {
+            if menu.close() {
+                cx.notify();
+            }
+        });
+    }
+
+    /// Whether the slash menu shows over the focused editor, so the keys
+    /// that drive it go to the menu instead of the editor.
+    fn slash_menu_shown(&self, window: &Window, cx: &gpui_kit::App) -> bool {
+        let editor = &self.tab().editor;
+        editor.read(cx).focus_handle(cx).is_focused(window)
+            && self.slash_menu.read(cx).shown(editor.entity_id()).is_some()
+    }
+
+    /// Accept the slash menu's highlighted item: insert its template, or
+    /// with `complete`, write out its command so an argument can be typed.
+    fn accept_slash_command(
+        &mut self,
+        complete: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(edit) = self.slash_menu.update(cx, |menu, cx| {
+            cx.notify();
+            menu.accept(complete)
+        }) else {
+            return;
+        };
+        self.tab().editor.update(cx, |editor, cx| {
+            editor.set_selected_range(edit.range, cx);
+            editor.replace(edit.text, window, cx);
+            if let Some(selection) = edit.selection {
+                editor.set_selected_range(selection, cx);
+            }
+        });
     }
 
     /// Draw and present an edit or cursor move as soon as the input event
@@ -1546,7 +1589,7 @@ impl Workspace {
         let editor = self.tab().editor.read(cx);
         if self.is_loading()
             || !editor.focus_handle(cx).is_focused(window)
-            || editor.completion_menu_state().open
+            || self.slash_menu_shown(window, cx)
         {
             return;
         }
@@ -1572,7 +1615,7 @@ impl Workspace {
         let selection = editor.selected_range();
         !self.is_loading()
             && editor.focus_handle(cx).is_focused(window)
-            && !editor.completion_menu_state().open
+            && !self.slash_menu_shown(window, cx)
             && selection.is_empty()
             && list_continuation::is_list_item(editor.text(), selection.start)
     }
@@ -2878,21 +2921,36 @@ impl Render for Workspace {
             .id("workspace")
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus_handle)
-            .capture_action(cx.listener(|this, _: &Escape, _, _| {
-                this.slash_commands.dismiss();
+            .capture_action(cx.listener(|this, _: &Escape, window, cx| {
+                if this.slash_menu_shown(window, cx) {
+                    cx.stop_propagation();
+                    this.close_slash_menu(cx);
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &MoveUp, window, cx| {
+                if this.slash_menu_shown(window, cx) {
+                    cx.stop_propagation();
+                    this.slash_menu.update(cx, |menu, cx| {
+                        menu.move_selection(-1);
+                        cx.notify();
+                    });
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &MoveDown, window, cx| {
+                if this.slash_menu_shown(window, cx) {
+                    cx.stop_propagation();
+                    this.slash_menu.update(cx, |menu, cx| {
+                        menu.move_selection(1);
+                        cx.notify();
+                    });
+                }
             }))
             .capture_action(cx.listener(|this, _: &IndentInline, window, cx| {
-                // Tab accepts the highlighted template like Enter, through the
-                // menu, then writes out its command in place of the template.
-                if this.tab().editor.read(cx).completion_menu_state().open
-                    && this.slash_commands.complete_next()
-                {
+                // Tab writes out the highlighted command, ready for an
+                // argument, instead of inserting its template.
+                if this.slash_menu_shown(window, cx) {
                     cx.stop_propagation();
-                    let enter = Enter {
-                        secondary: false,
-                        shift: false,
-                    };
-                    window.dispatch_action(Box::new(enter), cx);
+                    this.accept_slash_command(true, window, cx);
                 } else if this.on_list_item(window, cx) {
                     cx.stop_propagation();
                     window.dispatch_action(Box::new(Indent), cx);
@@ -2905,7 +2963,13 @@ impl Render for Workspace {
                 }
             }))
             .capture_action(cx.listener(|this, enter: &Enter, window, cx| {
-                if !enter.shift && !enter.secondary {
+                if enter.shift || enter.secondary {
+                    return;
+                }
+                if this.slash_menu_shown(window, cx) {
+                    cx.stop_propagation();
+                    this.accept_slash_command(false, window, cx);
+                } else {
                     this.continue_list(window, cx);
                 }
             }))

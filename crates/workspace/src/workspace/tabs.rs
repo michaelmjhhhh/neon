@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::rc::Rc;
 
 use gpui_kit::base::{Tab, Tabs};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -23,7 +22,7 @@ use super::{CloseTab, NewTab, Workspace, file_name, home_dir, split_extension};
 use crate::KEY_CONTEXT;
 use crate::document_file::DocumentFile;
 use crate::editor_pane::EditorPane;
-use crate::slash_commands::SlashCommands;
+use crate::slash_commands::SlashMenu;
 use crate::typography::Typography;
 use crate::zen::ZenFocus;
 
@@ -39,14 +38,14 @@ pub(super) struct DocumentTab {
     pub(super) revealed_cursor: Option<usize>,
     /// Made the first time this tab shows in Zen.
     pub(super) zen_focus: Option<ZenFocus>,
-    _subscriptions: [Subscription; 4],
+    _subscriptions: [Subscription; 5],
 }
 
 impl DocumentTab {
     pub(super) fn new(
         id: u64,
         line_numbers: bool,
-        slash_commands: &Rc<SlashCommands>,
+        slash_menu: &Entity<SlashMenu>,
         typography: &Entity<Typography>,
         window: &mut Window,
         cx: &mut Context<Workspace>,
@@ -61,15 +60,21 @@ impl DocumentTab {
                 .searchable(false)
                 .placeholder("Start writing, or open a Markdown file…");
             editor.set_highlighter_factory(crate::highlighter::factory(), cx);
-            editor.lsp_mut().completion_provider = Some(slash_commands.clone());
             editor
         });
         let preview = cx.new(MarkdownPreview::new);
         let state = typography.read(cx);
         let (font, scale) = (state.preview_font(cx), state.preview_size(cx) / 16.);
         preview.update(cx, |preview, cx| preview.set_typography(font, scale, cx));
-        let editor_pane =
-            cx.new(|cx| EditorPane::new(editor.clone(), typography.clone(), window, cx));
+        let editor_pane = cx.new(|cx| {
+            EditorPane::new(
+                editor.clone(),
+                typography.clone(),
+                slash_menu.clone(),
+                window,
+                cx,
+            )
+        });
         // A click in the other pane's editor or preview focuses that pane.
         let editor_focus = editor.read(cx).focus_handle(cx);
         let preview_focus = preview.read(cx).focus_handle(cx);
@@ -81,6 +86,9 @@ impl DocumentTab {
             }),
             cx.on_focus_in(&preview_focus, window, move |this, window, cx| {
                 this.on_pane_focused(id, window, cx)
+            }),
+            cx.on_blur(&editor_focus, window, |this, _, cx| {
+                this.close_slash_menu(cx)
             }),
         ];
         Self {
@@ -141,7 +149,7 @@ impl Workspace {
         let tab = DocumentTab::new(
             self.next_tab_id,
             self.line_numbers,
-            &self.slash_commands,
+            &self.slash_menu,
             &self.typography,
             window,
             cx,
@@ -220,7 +228,7 @@ impl Workspace {
 
     /// Point the window's shared views at the active tab.
     pub(super) fn show_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.slash_commands.dismiss();
+        self.close_slash_menu(cx);
         let tab = self.tab();
         let (id, editor, preview) = (tab.id, tab.editor.clone(), tab.preview.clone());
         if let Some(ix) = self.split_index_of(id)
