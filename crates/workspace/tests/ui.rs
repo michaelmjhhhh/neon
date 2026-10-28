@@ -1,3 +1,5 @@
+use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
 
 use gpui_kit::component::WindowExt as _;
@@ -143,4 +145,67 @@ async fn new_file_asks_before_discarding_edits(cx: &mut TestAppContext) {
     .await;
     assert_eq!(editor_text(&workspace, cx), "Draft");
     cx.read(|cx| assert!(workspace.read(cx).document().is_dirty()));
+}
+
+fn git(dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .current_dir(dir)
+        .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+        .args(args)
+        .output()
+        .expect("run git");
+    assert!(output.status.success(), "git {args:?} failed");
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[gpui_kit::test]
+async fn push_shortcut_reads_the_status_again(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let remote = dir.path().join("remote.git");
+    let work = dir.path().join("work");
+    git(
+        dir.path(),
+        &[
+            "init",
+            "--quiet",
+            "--bare",
+            "-b",
+            "main",
+            remote.to_str().unwrap(),
+        ],
+    );
+    git(
+        dir.path(),
+        &[
+            "clone",
+            "--quiet",
+            remote.to_str().unwrap(),
+            work.to_str().unwrap(),
+        ],
+    );
+    std::fs::write(work.join("notes.md"), "# Notes\n").unwrap();
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "--quiet", "-m", "One"]);
+    git(&work, &["push", "--quiet", "-u", "origin", "main"]);
+
+    let (handle, workspace) = open_workspace(cx);
+    cx.update_window(handle, |_, window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.open_path(work.clone(), window, cx)
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    focus_content(handle, &workspace, cx);
+
+    // A commit made in Terminal, which the window's status has not seen.
+    std::fs::write(work.join("notes.md"), "# Notes\n\nMore.\n").unwrap();
+    git(&work, &["commit", "--quiet", "-am", "Two"]);
+    assert!(git(&work, &["status", "-sb"]).contains("ahead 1"));
+
+    cx.update_window(handle, |_, window, cx| window.press("secondary-p", cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    assert!(!git(&work, &["status", "-sb"]).contains("ahead"));
 }
