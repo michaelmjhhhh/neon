@@ -1869,7 +1869,11 @@ impl Workspace {
         if self.is_loading() || !editor.focus_handle(cx).is_focused(window) {
             return;
         }
-        let edit = inline_format::toggle_in_rope(editor.text(), editor.selected_range(), style);
+        let Some(edit) =
+            inline_format::toggle_in_rope(editor.text(), editor.selected_range(), style)
+        else {
+            return;
+        };
         self.tab().editor.update(cx, |editor, cx| {
             editor.set_selected_range(edit.range, cx);
             editor.replace(edit.text, window, cx);

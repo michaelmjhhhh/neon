@@ -15,7 +15,7 @@ use crate::inline::{InlineBuilder, InlineStyle, InlineText, literal_prefix};
 /// a Markdown editor: tables, task lists, strikethrough, footnotes, YAML
 /// front matter, and Obsidian's wikilinks. Callouts and highlights are read
 /// on top of what the parser reports.
-pub(crate) const PARSER_OPTIONS: Options = Options::ENABLE_TABLES
+pub const PARSER_OPTIONS: Options = Options::ENABLE_TABLES
     .union(Options::ENABLE_FOOTNOTES)
     .union(Options::ENABLE_STRIKETHROUGH)
     .union(Options::ENABLE_TASKLISTS)
@@ -733,7 +733,7 @@ fn callout_or_quote(mut children: Vec<BlockKind>) -> BlockKind {
 
 /// The kind of a callout whose first line is `line`, lowercased, and where
 /// its title starts: `[!Tip]- Title` is a `tip` titled from offset 8.
-pub(crate) fn callout_header(line: &str) -> Option<(Arc<str>, usize)> {
+pub fn callout_header(line: &str) -> Option<(Arc<str>, usize)> {
     let kind_end = line.strip_prefix("[!")?.find(']')? + 2;
     let kind = &line[2..kind_end];
     if kind.is_empty()

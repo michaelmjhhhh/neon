@@ -14,7 +14,8 @@ mod word_count;
 
 pub use document::{
     Block, BlockId, BlockKind, Callout, CalloutTone, CodeBlock, ColumnAlignment, DocumentStats,
-    Heading, Image, ListItem, MarkdownDocument, MarkdownList, Property, Table,
+    Heading, Image, ListItem, MarkdownDocument, MarkdownList, PARSER_OPTIONS, Property, Table,
+    callout_header,
 };
 pub use events::{MarkdownEvent, events};
 pub use inline::{InlineLink, InlineRun, InlineStyle, InlineText};
