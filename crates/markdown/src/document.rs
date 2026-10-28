@@ -15,7 +15,7 @@ use crate::inline::{InlineBuilder, InlineStyle, InlineText, literal_prefix};
 /// a Markdown editor: tables, task lists, strikethrough, footnotes, YAML
 /// front matter, and Obsidian's wikilinks. Callouts and highlights are read
 /// on top of what the parser reports.
-pub(crate) const PARSER_OPTIONS: Options = Options::ENABLE_TABLES
+pub const PARSER_OPTIONS: Options = Options::ENABLE_TABLES
     .union(Options::ENABLE_FOOTNOTES)
     .union(Options::ENABLE_STRIKETHROUGH)
     .union(Options::ENABLE_TASKLISTS)

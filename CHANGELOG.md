@@ -36,6 +36,7 @@ Groups, in this order:
 
 ### Fixed
 
+- ⌘B and ⌘I work like a word processor and agree with the preview: they remove bold or italic from text that has it, including part of a bold phrase, style partly styled text as a whole, style the word at the cursor instead of typing an empty `****`, style each list item, heading or paragraph of a selection separately, trim spaces at the selection ends, and leave code, HTML, front matter and link targets alone.
 - The slash command menu follows the editor's font size instead of staying at a small fixed size, fits its descriptions and previews, and no longer shows a clipped "markdown" label in the preview.
 
 ## [0.12.0] - 2026-10-25
