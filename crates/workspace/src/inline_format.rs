@@ -10,15 +10,15 @@
 //!   typed away from a word;
 //! - each paragraph, heading, list item or table cell of a selection is
 //!   styled on its own, since markers cannot span blocks;
-//! - code, HTML, front matter and link targets are never touched, and an
-//!   edit whose markers would not render is not made.
+//! - code, HTML, front matter, callout kinds and link targets are never
+//!   touched, and an edit whose markers would not render is not made.
 
 use std::ops::Range;
 
 use gpui_kit::component::input::{Rope, RopeExt as _};
-use pulldown_cmark::{Event, LinkType, Parser, Tag, TagEnd};
+use pulldown_cmark::{BrokenLink, CowStr, Event, LinkType, Parser, Tag, TagEnd};
 
-use crate::slash_commands::step_fence;
+use crate::slash_commands::{for_each_line_above, step_fence};
 
 /// An inline style that Markdown marks with asterisks.
 #[derive(Clone, Copy)]
@@ -61,48 +61,20 @@ pub(crate) struct Edit {
 /// with only a cursor `mi|lk` becomes `**mi|lk**`.
 pub(crate) fn toggle(text: &str, selection: Range<usize>, style: Style) -> Option<Edit> {
     let parsed = Parsed::new(text, style);
-    if parsed.is_literal(selection.start) || parsed.is_literal(selection.end) {
-        return None;
-    }
-    let (ops, kept, added) = if selection.is_empty() {
-        parsed.cursor_ops(text, selection.start, style)?
-    } else {
-        parsed.selection_ops(text, selection, style)?
-    };
-
-    let range = ops.iter().map(Op::start).min()?..ops.iter().map(Op::end).max()?;
-    let marker = style.marker();
-    let mut replaced = String::new();
-    let mut at = range.start;
-    for op in &ops {
-        replaced.push_str(&text[at..op.start()]);
-        at = op.end();
-        if let Op::Open(_) | Op::Close(_) = op {
-            replaced.push_str(marker);
-        }
-    }
-    replaced.push_str(&text[at..range.end]);
-
-    let map = |offset: usize| map_offset(&ops, offset, marker.len());
-    // Markers that do not render, as in `a**(b)**`, would only add clutter.
-    if !added.is_empty() {
-        let result = format!("{}{replaced}{}", &text[..range.start], &text[range.end..]);
-        let spans = Parsed::new(&result, style).spans;
-        let renders = added.iter().all(|segment| {
-            let segment = map(segment.start)..map(segment.end);
-            spans
-                .iter()
-                .any(|span| span.start <= segment.start && segment.end <= span.end)
-        });
-        if !renders {
+    if selection.is_empty() {
+        if parsed.is_literal(selection.start) {
             return None;
         }
+        let plan = parsed.cursor_plan(text, selection.start, style)?;
+        return plan.apply(text, style);
     }
-
-    Some(Edit {
-        range,
-        text: replaced,
-        selection: map(kept.start)..map(kept.end),
+    // CommonMark only opens a span next to punctuation when a space or
+    // punctuation comes before it, so `我喜欢**“牛奶”**` stays plain. Styling
+    // inside the punctuation instead, `我喜欢“**牛奶**”`, does render.
+    [false, true].into_iter().find_map(|inside_punctuation| {
+        parsed
+            .selection_plan(text, selection.clone(), style, inside_punctuation)?
+            .apply(text, style)
     })
 }
 
@@ -128,25 +100,11 @@ pub(crate) fn toggle_in_rope(text: &Rope, selection: Range<usize>, style: Style)
 
 /// The first row of the top-level block holding `row`: the last unindented
 /// line after a blank line, outside code fences and front matter. Indented
-/// lines are skipped because, read alone, they could parse as code.
-///
-/// Fences can only be told apart from the top, so this reads every line
-/// above `row`, from the rope's chunks rather than line by line: slicing out
-/// each line of a 10 MB document costs about 180 ms.
+/// lines are skipped because, read alone, they could parse as code. Fences
+/// can only be told apart from the top, so this reads every line above.
 fn block_start(text: &Rope, row: usize) -> usize {
     let mut scan = BlockScan::default();
-    let mut line = String::new();
-    let mut ix = 0;
-    for chunk in text.slice(..text.line_start_offset(row)).chunks() {
-        for piece in chunk.split_inclusive('\n') {
-            line.push_str(piece);
-            if piece.ends_with('\n') {
-                scan.line(ix, &line);
-                line.clear();
-                ix += 1;
-            }
-        }
-    }
+    for_each_line_above(text, row, |ix, line| scan.line(ix, line));
     scan.line(row, &text.slice_line(row).to_string());
     scan.start
 }
@@ -156,8 +114,8 @@ struct BlockScan {
     start: usize,
     fence: Option<(char, usize)>,
     front_matter: bool,
-    /// Whether the previous line was blank, or there was none.
-    in_text: bool,
+    /// Whether the previous line had text; not at the first line.
+    after_text: bool,
 }
 
 impl BlockScan {
@@ -168,13 +126,13 @@ impl BlockScan {
         } else if self.front_matter {
             self.front_matter = !matches!(trimmed, "---" | "...");
         } else if self.fence.is_none()
-            && !self.in_text
+            && !self.after_text
             && line.chars().next().is_some_and(|ch| !ch.is_whitespace())
         {
             self.start = ix;
         }
         step_fence(&mut self.fence, line.chars());
-        self.in_text = !trimmed.is_empty();
+        self.after_text = !trimmed.is_empty();
     }
 }
 
@@ -210,6 +168,67 @@ impl Op {
             Op::Open(at) | Op::Close(at) => *at,
         }
     }
+
+    /// The order to apply ops in: by position, and at one position, close
+    /// one span, open the next, then remove the markers after them.
+    fn key(&self) -> (usize, u8) {
+        let rank = match self {
+            Op::Close(_) => 0,
+            Op::Open(_) => 1,
+            Op::Remove(_) => 2,
+        };
+        (self.start(), rank)
+    }
+}
+
+/// The ops of an edit, the range to select once they are applied, and the
+/// ranges that gain the style.
+struct Plan {
+    ops: Vec<Op>,
+    kept: Range<usize>,
+    added: Vec<Range<usize>>,
+}
+
+impl Plan {
+    fn apply(mut self, text: &str, style: Style) -> Option<Edit> {
+        self.ops.sort_by_key(Op::key);
+        let range = self.ops.first()?.start()..self.ops.iter().map(Op::end).max()?;
+        let marker = style.marker();
+        let mut replaced = String::with_capacity(range.len() + 4 * marker.len());
+        let mut at = range.start;
+        for op in &self.ops {
+            // Overlapping ops would garble the text; make no edit instead.
+            if op.start() < at {
+                return None;
+            }
+            replaced.push_str(&text[at..op.start()]);
+            at = op.end();
+            if let Op::Open(_) | Op::Close(_) = op {
+                replaced.push_str(marker);
+            }
+        }
+        replaced.push_str(&text[at..range.end]);
+
+        let map = |offset: usize| map_offset(&self.ops, offset, marker.len());
+        // Markers that do not render, as in `a**(b)**`, would only add clutter.
+        if !self.added.is_empty() {
+            let result = format!("{}{replaced}{}", &text[..range.start], &text[range.end..]);
+            let spans = Parsed::new(&result, style).spans;
+            let renders = self.added.iter().all(|segment| {
+                let segment = map(segment.start)..map(segment.end);
+                spans.iter().any(|span| contains(span, &segment))
+            });
+            if !renders {
+                return None;
+            }
+        }
+
+        Some(Edit {
+            range,
+            text: replaced,
+            selection: map(self.kept.start)..map(self.kept.end),
+        })
+    }
 }
 
 /// Where `offset` lands after `ops`. A cursor at an opening marker moves
@@ -229,35 +248,60 @@ fn map_offset(ops: &[Op], offset: usize, marker_len: usize) -> usize {
     mapped
 }
 
-/// The operations of an edit, the range to select once they are applied,
-/// and the ranges that gain the style.
-type Plan = (Vec<Op>, Range<usize>, Vec<Range<usize>>);
+fn contains(outer: &Range<usize>, inner: &Range<usize>) -> bool {
+    outer.start <= inner.start && inner.end <= outer.end
+}
 
 /// What the parser reports about one style in a run of whole blocks.
 #[derive(Default)]
 struct Parsed {
     /// Spans with the style, markers included.
     spans: Vec<Range<usize>>,
-    /// Ranges whose inside is not prose: code, HTML, front matter, and link
-    /// targets.
+    /// Every inline element, as a styled span, link or code span, markers
+    /// included: a new span must hold each one whole or not at all.
+    atoms: Vec<Range<usize>>,
+    /// Ranges whose inside is not prose: code, HTML, front matter, callout
+    /// kinds and link targets.
     literal: Vec<Range<usize>>,
     /// The inline content of each paragraph, heading, list item and table
     /// cell.
     leaves: Vec<Range<usize>>,
 }
 
+/// A block the parser has opened and not yet closed.
+struct OpenBlock {
+    /// Whether it holds inline content directly, as a paragraph does.
+    leaf: bool,
+    /// Its inline content so far.
+    content: Option<Range<usize>>,
+    /// Where its content may start: after a callout's `[!kind]`.
+    floor: usize,
+}
+
 impl Parsed {
     fn new(text: &str, style: Style) -> Self {
         let mut parsed = Self::default();
-        // The open blocks, each with its inline content so far when it holds
-        // inline content directly.
-        let mut blocks: Vec<(bool, Option<Range<usize>>)> = Vec::new();
-        // The open links and images, with the range of their text so far.
+        let mut blocks: Vec<OpenBlock> = Vec::new();
+        // The open links and images: their range, whether all of it is a
+        // target, and the range of their text so far.
         let mut links: Vec<(Range<usize>, bool, Option<Range<usize>>)> = Vec::new();
+        // Whether the next block opens a block quote, where a callout's
+        // `[!kind]` would be.
+        let mut quote_opened = false;
 
-        for (event, range) in Parser::new_ext(text, markdown::PARSER_OPTIONS).into_offset_iter() {
+        // Reference definitions usually sit at the end of the document, out
+        // of these blocks; read every reference as a link so `[text][ref]`
+        // keeps its label.
+        let mut any_reference = |_: BrokenLink| Some((CowStr::Borrowed(""), CowStr::Borrowed("")));
+        let parser = Parser::new_with_broken_link_callback(
+            text,
+            markdown::PARSER_OPTIONS,
+            Some(&mut any_reference),
+        );
+        for (event, range) in parser.into_offset_iter() {
             let inline = match &event {
                 Event::Start(tag) if is_inline(tag) => {
+                    parsed.atoms.push(range.clone());
                     if style.is_tag(tag) {
                         parsed.spans.push(range.clone());
                     }
@@ -269,7 +313,7 @@ impl Parsed {
                                     | LinkType::Email
                                     | LinkType::WikiLink { has_pothole: false }
                             );
-                        // Extend the outer link before this one opens.
+                        // Extend the outer link and block before this one opens.
                         extend(links.last_mut().map(|link| &mut link.2), &range);
                         extend(leaf(&mut blocks), &range);
                         links.push((range, whole, None));
@@ -284,7 +328,20 @@ impl Parsed {
                     ) {
                         parsed.literal.push(range.clone());
                     }
-                    blocks.push((is_leaf(tag), None));
+                    let mut floor = range.start;
+                    if quote_opened && matches!(tag, Tag::Paragraph) {
+                        let line = text[range.clone()].lines().next().unwrap_or_default();
+                        if let Some((_, title)) = markdown::callout_header(line) {
+                            floor += title;
+                            parsed.literal.push(range.start..floor);
+                        }
+                    }
+                    quote_opened = matches!(tag, Tag::BlockQuote(None));
+                    blocks.push(OpenBlock {
+                        leaf: is_leaf(tag),
+                        content: None,
+                        floor,
+                    });
                     false
                 }
                 Event::End(TagEnd::Link | TagEnd::Image) => {
@@ -301,22 +358,31 @@ impl Parsed {
                 }
                 Event::End(end) if is_inline_end(end) => false,
                 Event::End(_) => {
-                    if let Some((true, Some(content))) = blocks.pop() {
-                        parsed.leaves.push(content);
+                    if let Some(block) = blocks.pop()
+                        && block.leaf
+                        && let Some(content) = block.content
+                        && content.start.max(block.floor) < content.end
+                    {
+                        parsed
+                            .leaves
+                            .push(content.start.max(block.floor)..content.end);
                     }
                     false
                 }
                 Event::Code(_) | Event::InlineMath(_) | Event::InlineHtml(_) => {
+                    parsed.atoms.push(range.clone());
                     parsed.literal.push(range.clone());
                     true
                 }
-                Event::Text(_)
-                | Event::FootnoteReference(_)
-                | Event::SoftBreak
-                | Event::HardBreak => true,
+                Event::FootnoteReference(_) => {
+                    parsed.atoms.push(range.clone());
+                    true
+                }
+                Event::Text(_) | Event::SoftBreak | Event::HardBreak => true,
                 _ => false,
             };
             if inline {
+                quote_opened = false;
                 extend(links.last_mut().map(|link| &mut link.2), &range);
                 extend(leaf(&mut blocks), &range);
             }
@@ -335,91 +401,132 @@ impl Parsed {
     fn span_around(&self, range: &Range<usize>) -> Option<&Range<usize>> {
         self.spans
             .iter()
-            .filter(|span| span.start <= range.start && range.end <= span.end)
+            .filter(|span| contains(span, range))
             .min_by_key(|span| span.len())
     }
 
-    fn cursor_ops(&self, text: &str, cursor: usize, style: Style) -> Option<Plan> {
+    fn cursor_plan(&self, text: &str, cursor: usize, style: Style) -> Option<Plan> {
         if let Some(span) = self.span_around(&(cursor..cursor)) {
-            return Some((unwrap(span, style), cursor..cursor, Vec::new()));
+            return Some(Plan {
+                ops: unwrap(span, style),
+                kept: cursor..cursor,
+                added: Vec::new(),
+            });
         }
         let word = word_at(text, cursor)?;
-        if !self
-            .leaves
-            .iter()
-            .any(|leaf| leaf.start <= word.start && word.end <= leaf.end)
-        {
+        if !self.leaves.iter().any(|leaf| contains(leaf, &word)) {
             return None;
         }
-        Some((self.wrap(word.clone(), style), cursor..cursor, vec![word]))
+        Some(Plan {
+            ops: self.wrap(word.clone(), style),
+            kept: cursor..cursor,
+            added: vec![word],
+        })
     }
 
-    fn selection_ops(&self, text: &str, selection: Range<usize>, style: Style) -> Option<Plan> {
-        let segments: Vec<Range<usize>> = self
+    /// The plan for a selection, split into the content of each block it
+    /// touches, without spaces at either end, and with `inside_punctuation`
+    /// without punctuation either.
+    fn selection_plan(
+        &self,
+        text: &str,
+        selection: Range<usize>,
+        style: Style,
+        inside_punctuation: bool,
+    ) -> Option<Plan> {
+        let trim = |ch: char| {
+            ch.is_whitespace() || (inside_punctuation && !ch.is_alphanumeric() && ch != '_')
+        };
+        let mut segments: Vec<Range<usize>> = self
             .leaves
             .iter()
             .filter_map(|leaf| {
                 let start = leaf.start.max(selection.start);
                 let end = leaf.end.min(selection.end);
                 let inner = text.get(start..end)?;
-                let start = start + (inner.len() - inner.trim_start().len());
-                let end = end - (inner.len() - inner.trim_end().len());
+                let start = start + (inner.len() - inner.trim_start_matches(trim).len());
+                let end = end - (inner.len() - inner.trim_end_matches(trim).len());
                 (start < end).then_some(start..end)
             })
             .collect();
+        // A list item closes after the items nested in it, so leaves are not
+        // in document order.
+        segments.sort_by_key(|segment| segment.start);
         let kept = segments.first()?.start..segments.last()?.end;
 
+        // Whether text has the style is judged by its words alone, without
+        // markers or punctuation at its ends: after `*x*` gains bold,
+        // `***x***` reads as italic around bold, and a selection from the
+        // line start takes in the `*`.
+        let styled = |segment: &Range<usize>| {
+            let inner = &text[segment.clone()];
+            let core = inner.trim_start_matches(|ch: char| !ch.is_alphanumeric());
+            let start = segment.start + inner.len() - core.len();
+            let end = start
+                + core
+                    .trim_end_matches(|ch: char| !ch.is_alphanumeric())
+                    .len();
+            let core = if start < end {
+                start..end
+            } else {
+                segment.clone()
+            };
+            self.span_around(&core)
+        };
         let mut ops = Vec::new();
         let mut added = Vec::new();
-        if segments
-            .iter()
-            .all(|segment| self.span_around(segment).is_some())
-        {
+        if segments.iter().all(|segment| styled(segment).is_some()) {
             for segment in &segments {
-                ops.extend(unwrap(self.span_around(segment)?, style));
+                ops.extend(unwrap(styled(segment)?, style));
             }
         } else {
             for segment in segments {
-                if self.span_around(&segment).is_none() {
+                if styled(&segment).is_none() {
                     ops.extend(self.wrap(segment.clone(), style));
                     added.push(segment);
                 }
             }
         }
-        ops.sort_by_key(|op| (op.start(), matches!(op, Op::Close(_))));
-        Some((ops, kept, added))
+        Some(Plan { ops, kept, added })
     }
 
-    /// The operations that give `range` the style as one span: grow it over
-    /// spans it cuts into, and drop the markers of spans inside it, so
-    /// `bu[y **mi]lk**` becomes `bu**y milk**`, not nested markers.
+    /// The ops that give `range` the style as one span: grow it over inline
+    /// elements it cuts into, and drop the markers of spans inside it, so
+    /// `bu[y **mi]lk**` becomes `bu**y milk**`, not nested markers, and
+    /// `[see [the] docs](url)` keeps its link whole. A range that reaches into
+    /// code or a link target takes the whole code span or link.
     fn wrap(&self, mut range: Range<usize>, style: Style) -> Vec<Op> {
+        let overlaps = |a: &Range<usize>, b: &Range<usize>| a.start < b.end && b.start < a.end;
         loop {
             let grown = self
-                .spans
+                .atoms
                 .iter()
-                .filter(|span| span.start < range.end && range.start < span.end)
-                .fold(range.clone(), |grown, span| {
-                    grown.start.min(span.start)..grown.end.max(span.end)
+                .filter(|atom| {
+                    overlaps(atom, &range)
+                        && (!contains(atom, &range)
+                            || self.literal.iter().any(|literal| {
+                                contains(atom, literal) && overlaps(literal, &range)
+                            }))
+                })
+                .fold(range.clone(), |grown, atom| {
+                    grown.start.min(atom.start)..grown.end.max(atom.end)
                 });
             if grown == range {
                 break;
             }
             range = grown;
         }
-        let mut ops = vec![Op::Open(range.start)];
+        let mut ops = vec![Op::Open(range.start), Op::Close(range.end)];
         for span in &self.spans {
-            if range.start <= span.start && span.end <= range.end {
+            if contains(&range, span) {
                 ops.extend(unwrap(span, style));
             }
         }
-        ops.push(Op::Close(range.end));
-        ops.sort_by_key(|op| (op.start(), matches!(op, Op::Close(_))));
         ops
     }
 }
 
-/// The operations that remove the markers of `span`.
+/// The ops that remove the markers of `span`.
 fn unwrap(span: &Range<usize>, style: Style) -> Vec<Op> {
     let len = style.marker().len();
     vec![
@@ -430,11 +537,11 @@ fn unwrap(span: &Range<usize>, style: Style) -> Vec<Op> {
 
 /// The inline content of the innermost open block, when it holds inline
 /// content directly.
-fn leaf(blocks: &mut [(bool, Option<Range<usize>>)]) -> Option<&mut Option<Range<usize>>> {
-    match blocks.last_mut() {
-        Some((true, content)) => Some(content),
-        _ => None,
-    }
+fn leaf(blocks: &mut [OpenBlock]) -> Option<&mut Option<Range<usize>>> {
+    blocks
+        .last_mut()
+        .filter(|block| block.leaf)
+        .map(|block| &mut block.content)
 }
 
 fn extend(content: Option<&mut Option<Range<usize>>>, range: &Range<usize>) {
@@ -485,19 +592,35 @@ fn is_leaf(tag: &Tag) -> bool {
     )
 }
 
-/// The word the cursor sits in or touches at either end.
+/// The word the cursor sits in or touches at either end. An apostrophe
+/// between letters joins a word, as in `don't`.
 fn word_at(text: &str, cursor: usize) -> Option<Range<usize>> {
-    let is_word = |c: char| c.is_alphanumeric() || c == '_';
-    let start = text[..cursor]
-        .char_indices()
-        .rev()
-        .take_while(|&(_, c)| is_word(c))
-        .last()
-        .map_or(cursor, |(i, _)| i);
-    let end = text[cursor..]
-        .char_indices()
-        .find(|&(_, c)| !is_word(c))
-        .map_or(text.len(), |(i, _)| cursor + i);
+    let joins = |before: Option<char>, ch: char, after: Option<char>| {
+        ch.is_alphanumeric()
+            || ch == '_'
+            || (matches!(ch, '\'' | '’')
+                && before.is_some_and(char::is_alphanumeric)
+                && after.is_some_and(char::is_alphanumeric))
+    };
+    let mut start = cursor;
+    let mut back = text[..cursor].char_indices().rev().peekable();
+    while let Some((ix, ch)) = back.next() {
+        let before = back.peek().map(|&(_, ch)| ch);
+        if !joins(before, ch, text[ix + ch.len_utf8()..].chars().next()) {
+            break;
+        }
+        start = ix;
+    }
+    let mut end = cursor;
+    let mut before = text[..cursor].chars().next_back();
+    let mut ahead = text[cursor..].char_indices().peekable();
+    while let Some((ix, ch)) = ahead.next() {
+        if !joins(before, ch, ahead.peek().map(|&(_, ch)| ch)) {
+            break;
+        }
+        end = cursor + ix + ch.len_utf8();
+        before = Some(ch);
+    }
     (start < end).then_some(start..end)
 }
 
@@ -652,10 +775,6 @@ mod tests {
             "run `l{}s` now"
         );
         assert_eq!(
-            toggle_marked("run `l{s` n}ow", Style::Bold),
-            "run `l{s` n}ow"
-        );
-        assert_eq!(
             toggle_marked("```\nbuy mi{}lk\n```", Style::Bold),
             "```\nbuy mi{}lk\n```"
         );
@@ -675,6 +794,10 @@ mod tests {
         assert_eq!(
             toggle_marked("---\ntitle: mi{}lk\n---", Style::Bold),
             "---\ntitle: mi{}lk\n---"
+        );
+        assert_eq!(
+            toggle_marked("{```\nbuy milk\n```}", Style::Bold),
+            "{```\nbuy milk\n```}"
         );
     }
 
@@ -711,9 +834,104 @@ mod tests {
         );
     }
 
+    /// Press the key on the selection, then again on the new selection.
+    fn toggle_twice(text: &str, style: Style) -> String {
+        let once = toggle_marked(text, style);
+        toggle_marked(&once, style)
+    }
+
+    #[test]
+    fn a_second_press_undoes_the_first() {
+        assert_eq!(toggle_twice("{*x* and y}", Style::Bold), "{*x* and y}");
+        assert_eq!(toggle_twice("{a (b)}", Style::Bold), "{a (b)}");
+        assert_eq!(
+            toggle_twice("{one\n# - two}", Style::Bold),
+            "{one\n# - two}"
+        );
+    }
+
+    #[test]
+    fn a_nested_list_keeps_the_selection_in_order() {
+        assert_eq!(
+            toggle_marked("{- a\n  - b}", Style::Bold),
+            "- **{a**\n  - **b}**"
+        );
+    }
+
+    #[test]
+    fn a_selection_from_a_link_target_takes_the_whole_link() {
+        assert_eq!(
+            toggle_marked("see [l](u{) n}ow", Style::Bold),
+            "see **[l](u{) n}**ow"
+        );
+    }
+
     #[test]
     fn does_not_add_markers_that_would_not_render() {
-        assert_eq!(toggle_marked("a{(b)}", Style::Bold), "a{(b)}");
+        assert_eq!(toggle_marked("x {**} y", Style::Bold), "x {**} y");
+    }
+
+    #[test]
+    fn styles_inside_punctuation_when_outside_would_not_render() {
+        assert_eq!(toggle_marked("a{(b)}", Style::Bold), "a(**{b}**)");
+        assert_eq!(
+            toggle_marked("我喜欢{“牛奶”}", Style::Bold),
+            "我喜欢“**{牛奶}**”"
+        );
+        assert_eq!(
+            toggle_marked("say {\"hi\"} now", Style::Bold),
+            "say **{\"hi\"}** now"
+        );
+    }
+
+    #[test]
+    fn keeps_inline_elements_whole() {
+        assert_eq!(
+            toggle_marked("{buy [mi}lk](u)", Style::Bold),
+            "**{buy [mi}lk](u)**"
+        );
+        assert_eq!(
+            toggle_marked("{buy *mi}lk*", Style::Bold),
+            "**{buy *mi}lk***"
+        );
+        assert_eq!(
+            toggle_marked("*two {wor}ds*", Style::Bold),
+            "*two **{wor}**ds*"
+        );
+        assert_eq!(
+            toggle_marked("run `l{s` n}ow", Style::Bold),
+            "run **`l{s` n}**ow"
+        );
+    }
+
+    #[test]
+    fn leaves_reference_labels_and_callout_kinds_alone() {
+        assert_eq!(toggle_marked("[text][re{}f]", Style::Bold), "[text][re{}f]");
+        assert_eq!(
+            toggle_marked("[te{}xt][ref]", Style::Bold),
+            "[**te{}xt**][ref]"
+        );
+        assert_eq!(
+            toggle_marked("> [!t{}ip] Title", Style::Bold),
+            "> [!t{}ip] Title"
+        );
+        assert_eq!(
+            toggle_marked("> [!tip] Ti{}tle", Style::Bold),
+            "> [!tip] **Ti{}tle**"
+        );
+        assert_eq!(
+            toggle_marked("{> [!tip]- Title}", Style::Bold),
+            "> [!tip]- **{Title}**"
+        );
+    }
+
+    #[test]
+    fn an_apostrophe_joins_a_word() {
+        assert_eq!(
+            toggle_marked("do{}n't stop", Style::Bold),
+            "**do{}n't** stop"
+        );
+        assert_eq!(toggle_marked("'mi{}lk'", Style::Bold), "'**mi{}lk**'");
     }
 
     #[test]

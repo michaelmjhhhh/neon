@@ -733,7 +733,7 @@ fn callout_or_quote(mut children: Vec<BlockKind>) -> BlockKind {
 
 /// The kind of a callout whose first line is `line`, lowercased, and where
 /// its title starts: `[!Tip]- Title` is a `tip` titled from offset 8.
-pub(crate) fn callout_header(line: &str) -> Option<(Arc<str>, usize)> {
+pub fn callout_header(line: &str) -> Option<(Arc<str>, usize)> {
     let kind_end = line.strip_prefix("[!")?.find(']')? + 2;
     let kind = &line[2..kind_end];
     if kind.is_empty()
