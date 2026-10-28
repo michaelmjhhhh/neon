@@ -2410,9 +2410,11 @@ impl Workspace {
                                                                         .ok();
                                                                 }
                                                             })
+                                                            // Small sets the row's text
+                                                            // size; XSmall sets a smaller one.
                                                             .child(
                                                                 Input::new(&input)
-                                                                    .xsmall()
+                                                                    .small()
                                                                     .aria_label("Name"),
                                                             )
                                                             .into_any_element(),
