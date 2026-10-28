@@ -1,5 +1,6 @@
-//! Settings that outlast the app: the appearance, each pane's typography and
-//! the editor's line numbers, kept as JSON in the user's settings directory.
+//! Settings that outlast the app: the appearance, each pane's typography, the
+//! editor's line numbers and the layout new windows open in, kept as JSON in
+//! the user's settings directory.
 
 use std::path::{Path, PathBuf};
 
@@ -8,6 +9,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::theme::{self, Appearance};
+use crate::workspace::LayoutMode;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -18,6 +20,8 @@ pub(crate) struct Settings {
     /// Whether new windows show line numbers beside the editor. Off by
     /// default: prose reads better without a gutter, as in Typora.
     pub(crate) line_numbers: bool,
+    /// The layout new windows open in: Editor, Split or Preview.
+    pub(crate) default_layout: LayoutMode,
 }
 
 /// A pane's chosen font and size; `None` keeps the default, so a default
@@ -127,6 +131,7 @@ mod tests {
             },
             preview: PaneTypography::default(),
             line_numbers: true,
+            default_layout: LayoutMode::Preview,
         };
         write(&path, &settings).unwrap();
         assert_eq!(read::<Settings>(&path), settings);
@@ -143,5 +148,9 @@ mod tests {
         let settings: Settings = read(&path);
         assert_eq!(settings.preview.size, Some(20));
         assert!(!settings.line_numbers);
+        assert_eq!(settings.default_layout, LayoutMode::Split);
+        std::fs::write(&path, r#"{"default_layout": "editor"}"#).unwrap();
+        let settings: Settings = read(&path);
+        assert_eq!(settings.default_layout, LayoutMode::Editor);
     }
 }
