@@ -200,6 +200,17 @@ pub(super) fn rename_entry(source: &Path, name: &str) -> io::Result<PathBuf> {
     Ok(target)
 }
 
+/// Whether `name`, beside `path`, names an entry other than `path` itself.
+/// A change of case or of Unicode normalization alone finds `path` itself
+/// on macOS's default volumes, so it is not taken; on a case-sensitive
+/// volume it may be.
+pub(super) fn is_taken(path: &Path, name: &str) -> bool {
+    let Ok(target) = fs::symlink_metadata(path.with_file_name(name)) else {
+        return false;
+    };
+    fs::symlink_metadata(path).map_or(true, |source| !same_entry(&source, &target))
+}
+
 #[cfg(unix)]
 fn same_entry(a: &fs::Metadata, b: &fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt as _;
@@ -647,6 +658,19 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, ["Plan.md"]);
+    }
+
+    #[test]
+    fn a_name_is_taken_only_by_another_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        fs::write(root.join("a.md"), b"").unwrap();
+        fs::write(root.join("b.md"), b"").unwrap();
+        let a = root.join("a.md");
+
+        assert!(is_taken(&a, "b.md"));
+        assert!(!is_taken(&a, "a.md"));
+        assert!(!is_taken(&a, "c.md"));
     }
 
     #[test]

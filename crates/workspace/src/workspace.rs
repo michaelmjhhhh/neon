@@ -6,7 +6,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::folder::{
-    copy_entry, find_note, is_markdown, name_error, rename_entry, renamed_path, scan_folder,
+    copy_entry, find_note, is_markdown, is_taken, name_error, rename_entry, renamed_path,
+    scan_folder,
 };
 use crate::session_file::Session;
 use crate::typography::Typography;
@@ -235,6 +236,10 @@ pub struct Workspace {
     renaming: Option<Renaming>,
     /// Set while a rename runs on disk, so no save lands at the old path.
     rename_task: Option<Task<()>>,
+    /// A row just renamed, by its old id, and the name it shows until the
+    /// folder is read again: the old name would show meanwhile, for as long
+    /// as reading a large folder takes.
+    renamed_label: Option<(SharedString, SharedString)>,
     /// Set while a file row is pressed. The tree selects a row as it is
     /// pressed, but a press may start a drag to a pane, so the file opens
     /// on the click instead.
@@ -386,6 +391,7 @@ impl Workspace {
             copied_entry: None,
             renaming: None,
             rename_task: None,
+            renamed_label: None,
             tree_press: Rc::default(),
             dragging_file: Cell::new(false),
             folder_file_counts: Rc::default(),
@@ -1264,6 +1270,25 @@ impl Workspace {
                             }
                             unlisted
                         });
+                        // A row renamed or removed on disk is gone from the
+                        // new list: its stand-in name is done with, and a
+                        // field editing it would edit nothing on screen.
+                        let tree = this.tree.read(cx);
+                        let listed = |id: &SharedString| tree.index_of(id).is_some();
+                        let label_done = this
+                            .renamed_label
+                            .as_ref()
+                            .is_some_and(|(id, _)| !listed(id));
+                        let editing_gone = this
+                            .renaming
+                            .as_ref()
+                            .is_some_and(|renaming| !listed(&renaming.id));
+                        if label_done {
+                            this.renamed_label = None;
+                        }
+                        if editing_gone {
+                            this.end_rename(window, cx);
+                        }
                         // A copied folder of only images is filtered out.
                         if let Some(id) = unlisted {
                             window.push_notification(
@@ -1644,7 +1669,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.is_busy() {
+        let id = SharedString::from(path.to_string_lossy().into_owned());
+        // A menu opened before a rename of the folder around it names a row
+        // that is gone.
+        if self.is_busy() || self.tree.read(cx).index_of(&id).is_none() {
             return;
         }
         // A name being edited in another row is kept, as a click away would.
@@ -1670,7 +1698,7 @@ impl Workspace {
             input.select_all(window, cx);
         });
         self.renaming = Some(Renaming {
-            id: SharedString::from(path.to_string_lossy().into_owned()),
+            id,
             path,
             is_dir,
             extension,
@@ -1709,6 +1737,12 @@ impl Workspace {
         let Some(renaming) = self.end_rename(window, cx) else {
             return;
         };
+        let label = if renaming.is_dir || !is_markdown(Path::new(&name)) {
+            name.clone()
+        } else {
+            split_extension(&name).0
+        };
+        self.renamed_label = Some((renaming.id, label.into()));
         let from = renaming.path;
         let rename = cx.background_spawn({
             let from = from.clone();
@@ -1720,14 +1754,17 @@ impl Workspace {
                 this.rename_task = None;
                 match result {
                     Ok(to) => this.follow_rename(&from, to, window, cx),
-                    Err(error) => window.push_notification(
-                        Notification::error(format!(
-                            "Couldn’t rename “{}”. {}",
-                            file_name(&from),
-                            sentence(&error.to_string())
-                        )),
-                        cx,
-                    ),
+                    Err(error) => {
+                        this.renamed_label = None;
+                        window.push_notification(
+                            Notification::error(format!(
+                                "Couldn’t rename “{}”. {}",
+                                file_name(&from),
+                                sentence(&error.to_string())
+                            )),
+                            cx,
+                        );
+                    }
                 }
                 cx.notify();
             })
@@ -2131,6 +2168,7 @@ impl Workspace {
                 .renaming
                 .as_ref()
                 .map(|renaming| (renaming.id.clone(), renaming.input.clone()));
+            let renamed_label = self.renamed_label.clone();
             div()
                 .id("folder-tree")
                 .flex_1()
@@ -2199,6 +2237,10 @@ impl Workspace {
                                 &label[..ix]
                             }
                             _ => label,
+                        };
+                        let stem = match &renamed_label {
+                            Some((id, label)) if *id == item.id => label.as_ref(),
+                            _ => stem,
                         };
                         // One slot per ancestor, each with a hairline under that
                         // ancestor's chevron, so a nested row reads as a branch.
@@ -3386,16 +3428,13 @@ fn name_problem(directory: &Path, name: &str) -> Option<SharedString> {
 }
 
 /// Why `path` cannot be renamed to `name`, if it cannot, so Enter can
-/// leave the field open to fix it. A change of case alone is let through:
-/// on a case-insensitive volume the new name finds the entry itself, and
-/// the rename checks again, by identity, before it runs.
+/// leave the field open to fix it. The rename checks again before it runs,
+/// in case the name was taken in between.
 fn rename_problem(path: &Path, name: &str, is_dir: bool) -> Option<SharedString> {
     if let Some(error) = name_error(name, is_dir) {
         return Some(error.into());
     }
-    let case_only = name.to_lowercase() == file_name(path).to_lowercase();
-    (!case_only && path.with_file_name(name).symlink_metadata().is_ok())
-        .then(|| format!("“{name}” already exists here.").into())
+    is_taken(path, name).then(|| format!("“{name}” already exists here.").into())
 }
 
 /// `notes.md` as `notes` and `.md`, so the extension can recede. A name
