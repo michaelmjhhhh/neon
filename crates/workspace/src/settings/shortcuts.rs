@@ -15,9 +15,9 @@ use markdown_preview::{
 use crate::workspace::{
     CloseSettings, CloseTab, CloseWindow, CopyEntry, CopyEntryPath, ExitZen, FocusLeftPane,
     FocusRightPane, NewFile, NewFolder, NewTab, NextTab, Open, OpenFolder, OpenSettings,
-    PasteEntry, PreviousTab, Push, Quit, ResetZoom, RevealEntry, Save, SaveAs, ShowChanges,
-    ShowEditor, ShowFiles, ShowPreview, ShowSplit, SplitLeft, SplitRight, ToggleBold, ToggleItalic,
-    ToggleLineNumbers, ToggleSidebar, ToggleZen, ZoomIn, ZoomOut,
+    PasteEntry, PreviousTab, Push, Quit, RenameEntry, ResetZoom, RevealEntry, Save, SaveAs,
+    ShowChanges, ShowEditor, ShowFiles, ShowPreview, ShowSplit, SplitLeft, SplitRight, ToggleBold,
+    ToggleItalic, ToggleLineNumbers, ToggleSidebar, ToggleZen, ZoomIn, ZoomOut,
 };
 
 pub(super) struct Group {
@@ -134,6 +134,7 @@ fn rows(cx: &App) -> [(&'static str, Option<&'static str>, Vec<Row>); 8] {
             vec![
                 ("Copy", a(&[&CopyEntry])),
                 ("Paste", a(&[&PasteEntry])),
+                ("Rename", a(&[&RenameEntry])),
                 ("Copy path", a(&[&CopyEntryPath])),
                 ("Reveal in Finder", a(&[&RevealEntry])),
             ],

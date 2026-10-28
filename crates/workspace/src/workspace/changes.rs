@@ -536,8 +536,13 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn show_files(&mut self, _: &ShowFiles, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_sidebar_view(SidebarView::Files, cx);
+    pub(super) fn show_files(
+        &mut self,
+        _: &ShowFiles,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_sidebar_view(SidebarView::Files, window, cx);
     }
 
     pub(super) fn show_changes(
@@ -547,7 +552,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.require_repository("changes", window, cx) {
-            self.set_sidebar_view(SidebarView::Changes, cx);
+            self.set_sidebar_view(SidebarView::Changes, window, cx);
         }
     }
 
@@ -558,7 +563,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.require_repository("history", window, cx) {
-            self.set_sidebar_view(SidebarView::History, cx);
+            self.set_sidebar_view(SidebarView::History, window, cx);
         }
     }
 
@@ -578,9 +583,14 @@ impl Workspace {
         false
     }
 
-    fn set_sidebar_view(&mut self, view: SidebarView, cx: &mut Context<Self>) {
+    fn set_sidebar_view(&mut self, view: SidebarView, window: &mut Window, cx: &mut Context<Self>) {
         if view != SidebarView::Files && !self.has_repository() {
             return;
+        }
+        // The other views do not show the name being edited, and a click on
+        // the switch leaves the field focused; rename as a click away would.
+        if view != SidebarView::Files {
+            self.commit_rename(false, window, cx);
         }
         let shown = self.sidebar_visible && self.sidebar_view == view;
         self.sidebar_visible = true;
@@ -766,9 +776,9 @@ impl Workspace {
                 .child(tab(AssetIcon::GitCompare.into(), "Changes", &ShowChanges))
                 .child(tab(AssetIcon::GitGraph.into(), "History", &ShowHistory))
                 .selected_index(selected)
-                .on_click(cx.listener(|this, ix: &usize, _, cx| {
+                .on_click(cx.listener(|this, ix: &usize, window, cx| {
                     if let Some(view) = VIEWS.get(*ix) {
-                        this.set_sidebar_view(*view, cx);
+                        this.set_sidebar_view(*view, window, cx);
                     }
                 })),
         )

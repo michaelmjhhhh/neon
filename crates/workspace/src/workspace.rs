@@ -5,7 +5,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::folder::{copy_entry, find_note, folder_name_error, is_markdown, scan_folder};
+use crate::folder::{
+    copy_entry, find_note, is_markdown, is_taken, name_error, rename_entry, renamed_path,
+    scan_folder,
+};
 use crate::session_file::Session;
 use crate::typography::Typography;
 use export::ExportFormat;
@@ -86,6 +89,7 @@ gpui_kit::actions!(
         CopyEntry,
         PasteEntry,
         DuplicateEntry,
+        RenameEntry,
         CopyEntryPath,
         RevealEntry,
         Open,
@@ -180,6 +184,32 @@ impl LayoutMode {
     }
 }
 
+/// A sidebar entry whose name is being edited in its row, as in Finder.
+struct Renaming {
+    path: PathBuf,
+    /// The entry's tree id, to find its row.
+    id: SharedString,
+    is_dir: bool,
+    /// A Markdown file's extension. The row shows the name without it, so
+    /// the field does too, and it is put back unless typed.
+    extension: Option<String>,
+    input: Entity<InputState>,
+    _subscription: Subscription,
+}
+
+impl Renaming {
+    /// The full name the field asks for.
+    fn new_name(&self, cx: &gpui_kit::App) -> String {
+        let typed = self.input.read(cx).value().trim().to_string();
+        match &self.extension {
+            Some(extension) if !typed.is_empty() && !is_markdown(Path::new(&typed)) => {
+                typed + extension
+            }
+            _ => typed,
+        }
+    }
+}
+
 /// One document window: owns its open files, each in a tab with its own
 /// editor and preview, and the folder beside them.
 pub struct Workspace {
@@ -202,6 +232,14 @@ pub struct Workspace {
     /// The file or folder the sidebar last copied, pasted by path when
     /// pasted: what is there then, not a snapshot.
     copied_entry: Option<PathBuf>,
+    /// The sidebar entry whose name is being edited in its row.
+    renaming: Option<Renaming>,
+    /// Set while a rename runs on disk, so no save lands at the old path.
+    rename_task: Option<Task<()>>,
+    /// A row just renamed, by its old id, and the name it shows until the
+    /// folder is read again: the old name would show meanwhile, for as long
+    /// as reading a large folder takes.
+    renamed_label: Option<(SharedString, SharedString)>,
     /// Set while a file row is pressed. The tree selects a row as it is
     /// pressed, but a press may start a drag to a pane, so the file opens
     /// on the click instead.
@@ -351,6 +389,9 @@ impl Workspace {
             folder_empty: true,
             expanded_folders: HashSet::new(),
             copied_entry: None,
+            renaming: None,
+            rename_task: None,
+            renamed_label: None,
             tree_press: Rc::default(),
             dragging_file: Cell::new(false),
             folder_file_counts: Rc::default(),
@@ -1067,7 +1108,7 @@ impl Workspace {
     }
 
     fn is_busy(&self) -> bool {
-        self.load_task.is_some() || self.save_task.is_some()
+        self.load_task.is_some() || self.save_task.is_some() || self.rename_task.is_some()
     }
 
     /// Follow a link to another note, as in Obsidian. The note beside the
@@ -1229,6 +1270,25 @@ impl Workspace {
                             }
                             unlisted
                         });
+                        // A row renamed or removed on disk is gone from the
+                        // new list: its stand-in name is done with, and a
+                        // field editing it would edit nothing on screen.
+                        let tree = this.tree.read(cx);
+                        let listed = |id: &SharedString| tree.index_of(id).is_some();
+                        let label_done = this
+                            .renamed_label
+                            .as_ref()
+                            .is_some_and(|(id, _)| !listed(id));
+                        let editing_gone = this
+                            .renaming
+                            .as_ref()
+                            .is_some_and(|renaming| !listed(&renaming.id));
+                        if label_done {
+                            this.renamed_label = None;
+                        }
+                        if editing_gone {
+                            this.end_rename(window, cx);
+                        }
                         // A copied folder of only images is filtered out.
                         if let Some(id) = unlisted {
                             window.push_notification(
@@ -1583,6 +1643,180 @@ impl Workspace {
         }
     }
 
+    fn rename_selected_entry(
+        &mut self,
+        _: &RenameEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let selected = self
+            .tree
+            .read(cx)
+            .selected_entry()
+            .filter(|entry| !entry.is_disabled())
+            .map(|entry| (PathBuf::from(entry.item().id.as_ref()), entry.is_folder()));
+        if let Some((path, is_dir)) = selected {
+            self.start_rename(path, is_dir, window, cx);
+        }
+    }
+
+    /// Edit the name of `path` in its sidebar row. Enter or a click
+    /// elsewhere renames it; Escape keeps the old name.
+    fn start_rename(
+        &mut self,
+        path: PathBuf,
+        is_dir: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = SharedString::from(path.to_string_lossy().into_owned());
+        // A menu opened before a rename of the folder around it names a row
+        // that is gone.
+        if self.is_busy() || self.tree.read(cx).index_of(&id).is_none() {
+            return;
+        }
+        // A name being edited in another row is kept, as a click away would.
+        self.commit_rename(false, window, cx);
+        let name = file_name(&path);
+        let (stem, extension) = if is_dir || !is_markdown(&path) {
+            (name, None)
+        } else {
+            split_extension(&name)
+        };
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(stem));
+        let subscription = cx.subscribe_in(
+            &input,
+            window,
+            |this, _, event: &InputEvent, window, cx| match event {
+                InputEvent::PressEnter { .. } => this.commit_rename(true, window, cx),
+                InputEvent::Blur => this.commit_rename(false, window, cx),
+                _ => {}
+            },
+        );
+        input.update(cx, |input, cx| {
+            input.focus(window, cx);
+            input.select_all(window, cx);
+        });
+        self.renaming = Some(Renaming {
+            id,
+            path,
+            is_dir,
+            extension,
+            input,
+            _subscription: subscription,
+        });
+        cx.notify();
+    }
+
+    /// Rename the entry being edited to the name in its field, on a
+    /// background thread. A name that cannot be used is reported; after
+    /// Enter, `keep_editing`, the field stays so it can be fixed, and after a
+    /// click away the old name stays.
+    fn commit_rename(&mut self, keep_editing: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(renaming) = self.renaming.as_ref() else {
+            return;
+        };
+        let name = renaming.new_name(cx);
+        // An emptied field takes nothing back, as in Finder.
+        if name.is_empty() || name == file_name(&renaming.path) {
+            self.end_rename(window, cx);
+            return;
+        }
+        let problem = if self.is_busy() {
+            Some("A file is still being opened or saved. Try again in a moment.".into())
+        } else {
+            rename_problem(&renaming.path, &name, renaming.is_dir)
+        };
+        if let Some(problem) = problem {
+            window.push_notification(Notification::warning(problem), cx);
+            if !keep_editing {
+                self.end_rename(window, cx);
+            }
+            return;
+        }
+        let Some(renaming) = self.end_rename(window, cx) else {
+            return;
+        };
+        let label = if renaming.is_dir || !is_markdown(Path::new(&name)) {
+            name.clone()
+        } else {
+            split_extension(&name).0
+        };
+        self.renamed_label = Some((renaming.id, label.into()));
+        let from = renaming.path;
+        let rename = cx.background_spawn({
+            let from = from.clone();
+            async move { rename_entry(&from, &name) }
+        });
+        self.rename_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = rename.await;
+            this.update_in(cx, |this, window, cx| {
+                this.rename_task = None;
+                match result {
+                    Ok(to) => this.follow_rename(&from, to, window, cx),
+                    Err(error) => {
+                        this.renamed_label = None;
+                        window.push_notification(
+                            Notification::error(format!(
+                                "Couldn’t rename “{}”. {}",
+                                file_name(&from),
+                                sentence(&error.to_string())
+                            )),
+                            cx,
+                        );
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Stop editing a name and return what was being edited. The tree gets
+    /// focus back if the field had it, so the arrows work again; after a
+    /// click away, focus stays where it went.
+    fn end_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<Renaming> {
+        let renaming = self.renaming.take()?;
+        if renaming.input.read(cx).focus_handle(cx).is_focused(window) {
+            self.tree.update(cx, |tree, cx| tree.focus(window, cx));
+        }
+        cx.notify();
+        Some(renaming)
+    }
+
+    /// Point everything that named the renamed entry, or anything inside
+    /// it, at its new path: open tabs keep their edits and save there.
+    fn follow_rename(
+        &mut self,
+        from: &Path,
+        to: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let moved = |path: &Path| renamed_path(path, from, &to);
+        for tab in &mut self.tabs {
+            if let Some(path) = tab.document.path().and_then(moved) {
+                let base_dir = path.parent().map(Arc::from);
+                tab.document.moved_to(path);
+                tab.preview
+                    .update(cx, |preview, cx| preview.set_base_dir(base_dir, cx));
+            }
+        }
+        let id = |path: &Path| SharedString::from(path.to_string_lossy().into_owned());
+        self.expanded_folders = std::mem::take(&mut self.expanded_folders)
+            .into_iter()
+            .map(|folder| moved(Path::new(folder.as_ref())).map_or(folder, |path| id(&path)))
+            .collect();
+        if let Some(path) = self.copied_entry.as_deref().and_then(moved) {
+            self.copied_entry = Some(path);
+        }
+        self.remember_session(cx);
+        self.update_window_title(window);
+        if let Some(folder) = self.folder.clone() {
+            self.load_folder(folder, false, Some(id(&to)), window, cx);
+        }
+    }
+
     /// Start the next list item when Enter ends one in the editor, in place of
     /// the editor's plain newline.
     fn continue_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1930,6 +2164,11 @@ impl Workspace {
             let tree = self.tree.clone();
             let workspace = cx.weak_entity();
             let row_workspace = workspace.clone();
+            let renaming = self
+                .renaming
+                .as_ref()
+                .map(|renaming| (renaming.id.clone(), renaming.input.clone()));
+            let renamed_label = self.renamed_label.clone();
             div()
                 .id("folder-tree")
                 .flex_1()
@@ -1967,6 +2206,11 @@ impl Workspace {
                         let item = entry.item();
                         let rem = window.rem_size();
                         let is_active = active.as_deref() == Some(item.id.as_ref());
+                        // The field that edits this row's name, while it does.
+                        let editing = renaming
+                            .as_ref()
+                            .filter(|(id, _)| *id == item.id)
+                            .map(|(_, input)| input.clone());
                         // Only folders carry a mark, their chevron; as in
                         // Obsidian, names alone read faster than a column of
                         // identical icons.
@@ -1993,6 +2237,10 @@ impl Workspace {
                                 &label[..ix]
                             }
                             _ => label,
+                        };
+                        let stem = match &renamed_label {
+                            Some((id, label)) if *id == item.id => label.as_ref(),
+                            _ => stem,
                         };
                         // One slot per ancestor, each with a hairline under that
                         // ancestor's chevron, so a nested row reads as a branch.
@@ -2066,7 +2314,7 @@ impl Workspace {
                                 }
                             })
                             .on_mouse_down(gpui_kit::MouseButton::Right, focus_tree)
-                            .when(is_file, |this| {
+                            .when(is_file && editing.is_none(), |this| {
                                 this.on_click(open_file).on_drag(dragged, {
                                     let workspace = row_workspace.clone();
                                     move |file, press_offset, _, cx| {
@@ -2138,12 +2386,44 @@ impl Workspace {
                                                     .when(entry.is_disabled(), |row| {
                                                         row.text_color(muted)
                                                     })
-                                                    .child(
-                                                        div()
+                                                    .child(match editing {
+                                                        Some(input) => div()
+                                                            .flex_1()
+                                                            .min_w_0()
+                                                            // Presses in the field are its
+                                                            // own: the row would open the
+                                                            // file, fold the folder or show
+                                                            // its menu.
+                                                            .on_any_mouse_down(|_, _, cx| {
+                                                                cx.stop_propagation()
+                                                            })
+                                                            .on_action({
+                                                                let workspace =
+                                                                    row_workspace.clone();
+                                                                move |_: &Escape, window, cx| {
+                                                                    workspace
+                                                                        .update(cx, |this, cx| {
+                                                                            this.end_rename(
+                                                                                window, cx,
+                                                                            );
+                                                                        })
+                                                                        .ok();
+                                                                }
+                                                            })
+                                                            // Small sets the row's text
+                                                            // size; XSmall sets a smaller one.
+                                                            .child(
+                                                                Input::new(&input)
+                                                                    .small()
+                                                                    .aria_label("Name"),
+                                                            )
+                                                            .into_any_element(),
+                                                        None => div()
                                                             .min_w_0()
                                                             .truncate()
-                                                            .child(stem.to_string()),
-                                                    ),
+                                                            .child(stem.to_string())
+                                                            .into_any_element(),
+                                                    }),
                                             )
                                             .children(count.map(|count| {
                                                 div()
@@ -2158,6 +2438,7 @@ impl Workspace {
                     .context_menu(move |_, entry, menu, _, _| {
                         let path = PathBuf::from(entry.item().id.as_ref());
                         let directory = entry_directory(entry);
+                        let is_dir = entry.is_folder();
                         menu.item(entry_menu_item("Copy", CopyEntry, &workspace, {
                             let path = path.clone();
                             move |this, _, cx| this.set_copied_entry(path.clone(), cx)
@@ -2176,6 +2457,12 @@ impl Workspace {
                         .item(entry_menu_item("Duplicate", DuplicateEntry, &workspace, {
                             let path = path.clone();
                             move |this, window, cx| this.duplicate(path.clone(), window, cx)
+                        }))
+                        .item(entry_menu_item("Rename", RenameEntry, &workspace, {
+                            let path = path.clone();
+                            move |this, window, cx| {
+                                this.start_rename(path.clone(), is_dir, window, cx)
+                            }
                         }))
                         .separator()
                         .item(entry_menu_item("Copy Path", CopyEntryPath, &workspace, {
@@ -2992,6 +3279,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::duplicate_selected_entry))
             .on_action(cx.listener(Self::copy_selected_entry_path))
             .on_action(cx.listener(Self::reveal_selected_entry))
+            .on_action(cx.listener(Self::rename_selected_entry))
             .on_action(cx.listener(Self::open))
             .on_action(cx.listener(Self::open_linked_file))
             .on_action(cx.listener(Self::open_folder))
@@ -3132,13 +3420,23 @@ fn sidebar_empty_state(icon: IconName, title: &'static str, description: &'stati
 /// Why `name` cannot name a new folder in `directory`, if it cannot. The
 /// dialog says so in place, rather than failing after it closes.
 fn name_problem(directory: &Path, name: &str) -> Option<SharedString> {
-    if let Some(error) = folder_name_error(name) {
+    if let Some(error) = name_error(name, true) {
         return Some(error.into());
     }
     directory
         .join(name)
         .exists()
         .then(|| format!("“{name}” already exists here.").into())
+}
+
+/// Why `path` cannot be renamed to `name`, if it cannot, so Enter can
+/// leave the field open to fix it. The rename checks again before it runs,
+/// in case the name was taken in between.
+fn rename_problem(path: &Path, name: &str, is_dir: bool) -> Option<SharedString> {
+    if let Some(error) = name_error(name, is_dir) {
+        return Some(error.into());
+    }
+    is_taken(path, name).then(|| format!("“{name}” already exists here.").into())
 }
 
 /// `notes.md` as `notes` and `.md`, so the extension can recede. A name
