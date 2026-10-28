@@ -152,17 +152,76 @@ pub(super) fn find_note(folder: &Path, link: &Path) -> Option<PathBuf> {
         .min_by_key(|path| path.components().count())
 }
 
-/// Why `name` cannot name a new folder, if it cannot.
-pub(super) fn folder_name_error(name: &str) -> Option<&'static str> {
+/// Why `name` cannot name a file or folder the sidebar lists, if it cannot.
+pub(super) fn name_error(name: &str, is_dir: bool) -> Option<&'static str> {
     if name.is_empty() {
-        Some("Enter a name for the folder.")
+        Some(if is_dir {
+            "Enter a name for the folder."
+        } else {
+            "Enter a name for the file."
+        })
     } else if name == "." || name == ".." || name.contains(['/', '\\', '\0']) {
-        Some("Folder names can’t contain “/” or be “.” or “..”.")
+        Some("Names can’t contain “/” or be “.” or “..”.")
     } else if name.starts_with('.') {
-        Some("Names starting with “.” are hidden, so the folder wouldn’t appear.")
+        Some(if is_dir {
+            "Names starting with “.” are hidden, so the folder wouldn’t appear."
+        } else {
+            "Names starting with “.” are hidden, so the file wouldn’t appear."
+        })
     } else {
         None
     }
+}
+
+/// Rename `source` to `name` in the folder it is in and return the new
+/// path. An entry that already has the name is never replaced. A change of
+/// case alone, `plan.md` to `Plan.md`, finds the entry itself under the new
+/// name on a case-insensitive volume, and goes ahead.
+pub(super) fn rename_entry(source: &Path, name: &str) -> io::Result<PathBuf> {
+    let source_metadata = fs::symlink_metadata(source).map_err(|error| match error.kind() {
+        io::ErrorKind::NotFound => io::Error::new(error.kind(), "it no longer exists"),
+        _ => error,
+    })?;
+    let directory = source
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "it has no folder"))?;
+    let target = directory.join(name);
+    match fs::symlink_metadata(&target) {
+        Ok(existing) if !same_entry(&source_metadata, &existing) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("“{name}” already exists here"),
+            ));
+        }
+        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+        _ => {}
+    }
+    fs::rename(source, &target)?;
+    Ok(target)
+}
+
+#[cfg(unix)]
+fn same_entry(a: &fs::Metadata, b: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+#[cfg(not(unix))]
+fn same_entry(_: &fs::Metadata, _: &fs::Metadata) -> bool {
+    false
+}
+
+/// `path` with its leading `from` swapped for `to`: where something at
+/// `path` is once `from` is renamed to `to`. `None` if `path` is not `from`
+/// or inside it.
+pub(super) fn renamed_path(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
+    let rest = path.strip_prefix(from).ok()?;
+    // `to.join("")` would add a trailing separator.
+    Some(if rest.as_os_str().is_empty() {
+        to.to_path_buf()
+    } else {
+        to.join(rest)
+    })
 }
 
 /// Copy `source`, a file or a folder, into `directory` and return the copy's
@@ -527,12 +586,89 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unusable_folder_names() {
-        assert!(folder_name_error("Drafts").is_none());
-        assert!(folder_name_error("草稿").is_none());
-        assert!(folder_name_error("").is_some());
-        assert!(folder_name_error("..").is_some());
-        assert!(folder_name_error("a/b").is_some());
-        assert!(folder_name_error(".git").is_some());
+    fn rejects_unusable_names() {
+        assert!(name_error("Drafts", true).is_none());
+        assert!(name_error("草稿.md", false).is_none());
+        assert!(name_error("", true).is_some());
+        assert!(name_error("..", true).is_some());
+        assert!(name_error("a/b", false).is_some());
+        assert!(name_error(".git", true).is_some());
+        assert!(name_error(".plan.md", false).is_some());
+    }
+
+    #[test]
+    fn renames_files_and_folders_in_place() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        fs::create_dir_all(root.join("notes/daily")).unwrap();
+        fs::write(root.join("notes/daily/a.md"), b"# A").unwrap();
+
+        let file = rename_entry(&root.join("notes/daily/a.md"), "b.md").unwrap();
+        assert_eq!(file, root.join("notes/daily/b.md"));
+        assert_eq!(fs::read(&file).unwrap(), b"# A");
+        assert!(!root.join("notes/daily/a.md").exists());
+
+        let folder = rename_entry(&root.join("notes"), "journal").unwrap();
+        assert_eq!(folder, root.join("journal"));
+        assert!(root.join("journal/daily/b.md").is_file());
+        assert!(!root.join("notes").exists());
+    }
+
+    #[test]
+    fn renames_never_replace_a_taken_name() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        fs::write(root.join("a.md"), b"a").unwrap();
+        fs::write(root.join("b.md"), b"b").unwrap();
+        fs::create_dir(root.join("empty")).unwrap();
+        fs::create_dir(root.join("notes")).unwrap();
+
+        let error = rename_entry(&root.join("a.md"), "b.md").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(root.join("a.md")).unwrap(), b"a");
+        assert_eq!(fs::read(root.join("b.md")).unwrap(), b"b");
+        // A plain rename would replace an empty folder.
+        let error = rename_entry(&root.join("notes"), "empty").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert!(root.join("notes").is_dir());
+    }
+
+    #[test]
+    fn renames_a_change_of_case_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        fs::write(root.join("plan.md"), b"plan").unwrap();
+
+        let renamed = rename_entry(&root.join("plan.md"), "Plan.md").unwrap();
+
+        assert_eq!(renamed, root.join("Plan.md"));
+        let names: Vec<_> = fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["Plan.md"]);
+    }
+
+    #[test]
+    fn reports_a_renamed_entry_that_is_gone() {
+        let root = tempfile::tempdir().unwrap();
+        let error = rename_entry(&root.path().join("gone.md"), "new.md").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(error.to_string(), "it no longer exists");
+    }
+
+    #[test]
+    fn moves_paths_inside_a_renamed_folder() {
+        let (from, to) = (Path::new("/n/notes"), Path::new("/n/journal"));
+        assert_eq!(
+            renamed_path(Path::new("/n/notes"), from, to),
+            Some(PathBuf::from("/n/journal"))
+        );
+        assert_eq!(
+            renamed_path(Path::new("/n/notes/daily/a.md"), from, to),
+            Some(PathBuf::from("/n/journal/daily/a.md"))
+        );
+        // A name that only starts the same is another entry.
+        assert_eq!(renamed_path(Path::new("/n/notes-old/a.md"), from, to), None);
     }
 }

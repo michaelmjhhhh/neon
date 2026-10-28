@@ -114,6 +114,9 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-shift-n", NewFolder, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-c", workspace::CopyEntry, Some(TREE_KEY_CONTEXT)),
         KeyBinding::new("secondary-v", workspace::PasteEntry, Some(TREE_KEY_CONTEXT)),
+        // Return renames, as in Finder. The name field binds Return itself
+        // and wins over this while it is open.
+        KeyBinding::new("enter", workspace::RenameEntry, Some(TREE_KEY_CONTEXT)),
         // As in Zed and VS Code.
         KeyBinding::new(
             "alt-secondary-c",

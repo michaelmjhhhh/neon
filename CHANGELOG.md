@@ -29,6 +29,10 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Added
+
+- Rename a file or folder from its right-click menu in the sidebar, or with Return while the sidebar has focus: the name turns into a field, Return or a click elsewhere renames it and Escape keeps the old name. A file's `.md` stays unless you type another, a taken name is never overwritten, and open tabs follow the file to its new name with their unsaved edits.
+
 ### Fixed
 
 - The slash command menu follows the editor's font size instead of staying at a small fixed size, fits its descriptions and previews, and no longer shows a clipped "markdown" label in the preview.

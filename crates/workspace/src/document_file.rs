@@ -48,6 +48,12 @@ impl DocumentFile {
         self.edit_revision
     }
 
+    /// Follow the file to `path` after it was renamed on disk. Edits not yet
+    /// saved stay, and the next save writes them there.
+    pub fn moved_to(&mut self, path: PathBuf) {
+        self.path = Some(path);
+    }
+
     /// Record that the text as of `revision` was written to `path`.
     pub fn record_save(&mut self, path: PathBuf, revision: u64) {
         self.path = Some(path);
