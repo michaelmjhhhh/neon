@@ -31,6 +31,7 @@ Groups, in this order:
 
 ### Added
 
+- Settings › Editor has a Default view: pick Editor, Split or Preview from miniatures of each layout, and new windows open in it. Split stays the default.
 - Rename a file or folder from its right-click menu in the sidebar, or with Return while the sidebar has focus: the name turns into a field, Return or a click elsewhere renames it and Escape keeps the old name. A file's `.md` stays unless you type another, a taken name is never overwritten, and open tabs follow the file to its new name with their unsaved edits.
 
 ### Fixed

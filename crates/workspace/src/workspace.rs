@@ -43,6 +43,7 @@ use gpui_kit::{
     Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
 };
 use markdown_preview::{MarkdownPreview, OpenLinkedFile};
+use serde::{Deserialize, Serialize};
 
 use crate::KEY_CONTEXT;
 use crate::document_file::DocumentFile;
@@ -144,7 +145,8 @@ const EDITOR_MEASURE_CHARS: f32 = 80.;
 const WINDOW_CONTROLS_END: Pixels = gpui_kit::px(88.);
 
 /// Which panes the window shows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum LayoutMode {
     Editor,
     #[default]
@@ -153,9 +155,9 @@ pub enum LayoutMode {
 }
 
 impl LayoutMode {
-    const ALL: [Self; 3] = [Self::Editor, Self::Split, Self::Preview];
+    pub(crate) const ALL: [Self; 3] = [Self::Editor, Self::Split, Self::Preview];
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Editor => "Editor",
             Self::Split => "Split",
@@ -163,7 +165,7 @@ impl LayoutMode {
         }
     }
 
-    fn icon(self) -> AssetIcon {
+    pub(crate) fn icon(self) -> AssetIcon {
         match self {
             Self::Editor => AssetIcon::PenLine,
             Self::Split => AssetIcon::Columns2,
@@ -304,11 +306,16 @@ fn gutter_digits(lines: usize) -> usize {
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let slash_menu = cx.new(|_| SlashMenu::default());
-        let line_numbers = crate::settings_file::saved(cx).line_numbers;
+        let saved = crate::settings_file::saved(cx);
+        let (line_numbers, layout) = (saved.line_numbers, saved.default_layout);
         let typography = cx.new(|cx| Typography::new(window, cx));
         let tab = DocumentTab::new(0, line_numbers, &slash_menu, &typography, window, cx);
-        let scroll_metrics =
-            cx.new(|cx| ScrollMetrics::new(tab.editor.clone(), tab.preview.clone(), window, cx));
+        let scroll_metrics = cx.new(|cx| {
+            let mut metrics =
+                ScrollMetrics::new(tab.editor.clone(), tab.preview.clone(), window, cx);
+            metrics.set_layout(layout, cx);
+            metrics
+        });
         let word_count = cx.new(|_| WordCount::default());
 
         let tree = cx.new(|cx| TreeState::new(cx));
@@ -415,7 +422,7 @@ impl Workspace {
             scroll_metrics,
             word_count,
             slash_menu,
-            layout: LayoutMode::default(),
+            layout,
             zen: None,
             focus_handle: cx.focus_handle(),
             load_task: None,
@@ -426,6 +433,8 @@ impl Workspace {
             _subscriptions: subscriptions,
         };
         theme::apply_appearance(window, cx);
+        // A window that opens without its preview leaves it idle.
+        workspace.sync_previews(cx);
         workspace.install_close_guard(window, cx);
         workspace.update_window_title(window);
         // Focus can only land on an element that has been rendered.

@@ -25,7 +25,9 @@ use crate::SETTINGS_KEY_CONTEXT;
 use crate::settings_file;
 use crate::theme::{self, Appearance};
 use crate::typography::{Pane, Typography};
-use crate::workspace::{CloseSettings, SHEET_HEADER_REMS, SHEET_INSET_REMS, SIDEBAR_WIDTH_REMS};
+use crate::workspace::{
+    CloseSettings, LayoutMode, SHEET_HEADER_REMS, SHEET_INSET_REMS, SIDEBAR_WIDTH_REMS,
+};
 
 /// The reading column's width: wide enough for a label and a font picker.
 const COLUMN_REMS: f32 = 36.;
@@ -73,6 +75,8 @@ pub(crate) struct SettingsView {
     typography: Entity<Typography>,
     /// The saved setting, not a window's temporary toggle.
     line_numbers: bool,
+    /// The layout new windows open in.
+    default_layout: LayoutMode,
     /// Filters the Shortcuts section by command name.
     shortcut_query: Entity<InputState>,
     shortcuts: Vec<shortcuts::Group>,
@@ -97,10 +101,12 @@ impl SettingsView {
                 }
             }),
         ];
+        let saved = settings_file::saved(cx);
         Self {
             section: Section::Appearance,
             typography,
-            line_numbers: settings_file::saved(cx).line_numbers,
+            line_numbers: saved.line_numbers,
+            default_layout: saved.default_layout,
             shortcut_query,
             shortcuts: shortcuts::all(cx),
             focus_handle: cx.focus_handle(),
@@ -110,9 +116,11 @@ impl SettingsView {
 
     /// Keep picker entities only while their settings section is visible.
     pub(crate) fn set_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
-        // Another window may have changed the saved setting since this opened.
+        // Another window may have changed the saved settings since this opened.
         if open {
-            self.line_numbers = settings_file::saved(cx).line_numbers;
+            let saved = settings_file::saved(cx);
+            self.line_numbers = saved.line_numbers;
+            self.default_layout = saved.default_layout;
         }
         self.typography.update(cx, |typography, cx| {
             if open && self.section == Section::Typography {
@@ -284,7 +292,6 @@ impl SettingsView {
         let current = theme::appearance(cx);
         let light = Palette::from_config(&cx.theme().light_theme, cx);
         let dark = Palette::from_config(&cx.theme().dark_theme, cx);
-        let theme = cx.theme();
         section(
             "Theme",
             Some("System follows the appearance set in macOS."),
@@ -299,56 +306,43 @@ impl SettingsView {
                         Appearance::Light => light.thumbnail(),
                         Appearance::Dark => dark.thumbnail(),
                     };
-                    Button::new(appearance.label())
-                        .ghost()
-                        .flex_1()
-                        .h_auto()
-                        .p_1p5()
-                        .rounded(theme.radius_lg)
-                        .accessibility_label(format!("{} appearance", appearance.label()))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .w_full()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .w_full()
-                                        .h(rems(5.5))
-                                        .rounded(theme.radius)
-                                        .overflow_hidden()
-                                        .map(|this| {
-                                            if selected {
-                                                this.border_2().border_color(theme.primary)
-                                            } else {
-                                                this.border_1().border_color(theme.border)
-                                            }
-                                        })
-                                        .child(thumbnail),
-                                )
-                                .child(
-                                    div()
-                                        .w_full()
-                                        .text_center()
-                                        .text_sm()
-                                        .when(selected, |this| this.font_weight(FontWeight::MEDIUM))
-                                        .when(!selected, |this| {
-                                            this.text_color(theme.muted_foreground)
-                                        })
-                                        .child(appearance.label()),
-                                ),
-                        )
-                        .on_click(move |_, window, cx| {
-                            theme::set_appearance(appearance, window, cx);
-                        })
+                    choice_card(
+                        appearance.label(),
+                        format!("{} appearance", appearance.label()),
+                        selected,
+                        thumbnail,
+                        cx,
+                    )
+                    .on_click(move |_, window, cx| {
+                        theme::set_appearance(appearance, window, cx);
+                    })
                 })),
         )
     }
 
     fn render_editor(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        section(
+        let palette = Palette::current(cx);
+        let default_view = section(
+            "Default view",
+            Some("New windows open in this view. Cmd+1, Cmd+2 and Cmd+3 switch it in a window."),
+            None,
+            div().flex().gap_3().children(LayoutMode::ALL.map(|layout| {
+                choice_card(
+                    layout.label(),
+                    format!("Open in {}", layout.label()),
+                    layout == self.default_layout,
+                    palette.layout_thumbnail(layout),
+                    cx,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.default_layout = layout;
+                    settings_file::update(cx, |settings| settings.default_layout = layout);
+                    cx.notify();
+                }))
+            })),
+        );
+        let line_numbers = section(
             "Line numbers",
             Some("Cmd+Shift+L shows or hides them in the current window until it closes."),
             None,
@@ -375,7 +369,13 @@ impl SettingsView {
                             cx.notify();
                         })),
                 ),
-        )
+        );
+        div()
+            .flex()
+            .flex_col()
+            .gap_8()
+            .child(default_view)
+            .child(line_numbers)
     }
 
     /// A search field, then each group of commands as a card of rows with
@@ -599,6 +599,56 @@ fn section(
         .child(content)
 }
 
+/// A choice drawn as a miniature above its name, as in the Appearance
+/// section; the chosen one is outlined in the accent color.
+fn choice_card(
+    label: &'static str,
+    accessibility_label: String,
+    selected: bool,
+    thumbnail: AnyElement,
+    cx: &App,
+) -> Button {
+    let theme = cx.theme();
+    Button::new(label)
+        .ghost()
+        .flex_1()
+        .h_auto()
+        .p_1p5()
+        .rounded(theme.radius_lg)
+        .accessibility_label(accessibility_label)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .w_full()
+                .gap_2()
+                .child(
+                    div()
+                        .w_full()
+                        .h(rems(5.5))
+                        .rounded(theme.radius)
+                        .overflow_hidden()
+                        .map(|this| {
+                            if selected {
+                                this.border_2().border_color(theme.primary)
+                            } else {
+                                this.border_1().border_color(theme.border)
+                            }
+                        })
+                        .child(thumbnail),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .text_center()
+                        .text_sm()
+                        .when(selected, |this| this.font_weight(FontWeight::MEDIUM))
+                        .when(!selected, |this| this.text_color(theme.muted_foreground))
+                        .child(label),
+                ),
+        )
+}
+
 /// Muted supporting text, colored at render time from the active theme.
 #[derive(IntoElement)]
 struct SectionDescription(&'static str);
@@ -623,6 +673,67 @@ struct Palette {
 }
 
 impl Palette {
+    /// The active theme's colors.
+    fn current(cx: &App) -> Self {
+        let theme = cx.theme();
+        Self {
+            chrome: theme.sidebar,
+            sheet: theme.background,
+            border: theme.border,
+            text: theme.foreground,
+            faint: theme.muted_foreground.opacity(0.5),
+            accent: theme.primary,
+        }
+    }
+
+    /// The document sheet in a layout. Every pane holds the same short
+    /// document: in the source its title is one more grey line, in the
+    /// preview it is a darker heading.
+    fn layout_thumbnail(&self, layout: LayoutMode) -> AnyElement {
+        let line = |width: f32| {
+            div()
+                .h(rems(0.2))
+                .w(relative(width))
+                .rounded_full()
+                .bg(self.faint)
+        };
+        let pane = |title: gpui_kit::Div| {
+            div()
+                .flex()
+                .flex_col()
+                .justify_center()
+                .flex_1()
+                .min_w_0()
+                .gap(rems(0.4))
+                .px(rems(0.75))
+                .child(title)
+                .children([0.95, 0.85, 0.9, 0.6].map(line))
+        };
+        let source = || pane(line(0.5));
+        let preview = || {
+            pane(
+                div()
+                    .h(rems(0.3))
+                    .w(relative(0.55))
+                    .rounded_full()
+                    .bg(self.text.opacity(0.75)),
+            )
+        };
+        div()
+            .flex()
+            .size_full()
+            .bg(self.sheet)
+            .map(|this| match layout {
+                LayoutMode::Editor => this.child(source()),
+                LayoutMode::Preview => this.child(preview()),
+                LayoutMode::Split => this
+                    .child(source())
+                    .child(div().flex_none().w_px().h_full().bg(self.border))
+                    .child(preview()),
+            })
+            .into_any_element()
+    }
+
     /// Read a theme's own colors, falling back to the active theme's for any
     /// the theme leaves out.
     fn from_config(config: &ThemeConfig, cx: &App) -> Self {
