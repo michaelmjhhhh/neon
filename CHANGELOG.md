@@ -36,6 +36,7 @@ Groups, in this order:
 
 ### Fixed
 
+- ⌘P pushes on the first press, including right after a commit in Neon or in Terminal, instead of doing nothing until the window catches up; when there is nothing to push it says so.
 - ⌘B and ⌘I work like a word processor and agree with the preview: they remove bold or italic from text that has it, including part of a bold phrase, style partly styled text as a whole, style the word at the cursor instead of typing an empty `****`, style each list item, heading or paragraph of a selection separately, trim spaces at the selection ends, and leave code, HTML, front matter, callout kinds, link targets and reference labels alone.
 - The slash command menu follows the editor's font size instead of staying at a small fixed size, fits its descriptions and previews, and no longer shows a clipped "markdown" label in the preview.
 

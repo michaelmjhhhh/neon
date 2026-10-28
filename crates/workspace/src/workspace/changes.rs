@@ -99,6 +99,8 @@ pub(super) struct Changes {
     /// status read landing meanwhile may predate them, so it is dropped.
     git_pending: usize,
     operation: Option<Operation>,
+    /// ⌘P pressed while a commit ran; the push follows the commit.
+    push_queued: bool,
     message: Entity<TextareaState>,
     /// Whether the message is blank, so typing redraws the panel only when
     /// that, and with it the Commit button, changes.
@@ -154,6 +156,7 @@ impl Changes {
             git_task: None,
             git_pending: 0,
             operation: None,
+            push_queued: false,
             message,
             message_empty: true,
             selected: None,
@@ -479,6 +482,7 @@ impl Workspace {
             move |repo| repo.commit(&message),
             |this, result, window, cx| {
                 this.changes.operation = None;
+                let push = std::mem::take(&mut this.changes.push_queued);
                 match result {
                     // The committed files leave the list, which shows it worked.
                     Ok(()) => {
@@ -487,6 +491,9 @@ impl Workspace {
                         });
                         // Setting the value emits no change event.
                         this.changes.message_empty = true;
+                        if push {
+                            this.push(&Push, window, cx);
+                        }
                     }
                     Err(error) => window.push_notification(
                         Notification::error(format!(
@@ -502,29 +509,46 @@ impl Workspace {
     }
 
     pub(super) fn push(&mut self, _: &Push, window: &mut Window, cx: &mut Context<Self>) {
-        if self.changes.operation.is_some() {
+        match self.changes.operation {
+            Some(Operation::Pushing) => return,
+            // ⌘P right after ⌘↵ pushes the new commit once it exists.
+            Some(Operation::Committing) => {
+                self.changes.push_queued = true;
+                return;
+            }
+            None => {}
+        }
+        if !self.has_repository() {
             return;
         }
-        let Some(status) = self.changes.status.clone().filter(Status::can_push) else {
-            return;
-        };
         self.changes.operation = Some(Operation::Pushing);
         self.run_git(
             window,
             cx,
-            move |repo| {
+            |repo| {
+                // The status shown may predate a commit made a moment ago,
+                // here or in Terminal, so read it again.
+                let status = repo.status()?;
+                if !status.can_push() {
+                    return Ok(None);
+                }
                 let branch = status.branch().unwrap_or("The branch").to_string();
-                repo.push(&status).map(|remote| (branch, remote))
+                repo.push(&status).map(|remote| Some((branch, remote)))
             },
             |this, result, window, cx| {
                 this.changes.operation = None;
                 match result {
                     // Nothing in the window changes but a count, so say so.
-                    Ok((branch, remote)) => {
+                    Ok(Some((branch, remote))) => {
                         window.push_notification(
                             Notification::success(format!("Pushed {branch} to {remote}.")),
                             cx,
                         );
+                    }
+                    // ⌘P works without the Push button, so say why nothing
+                    // happened.
+                    Ok(None) => {
+                        window.push_notification(Notification::info("Nothing to push."), cx);
                     }
                     Err(error) => window.push_notification(
                         Notification::error(format!("Couldn’t push. {}", push_problem(&error))),
