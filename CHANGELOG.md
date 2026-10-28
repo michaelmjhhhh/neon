@@ -29,6 +29,8 @@ Groups, in this order:
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-28
+
 ### Added
 
 - Settings › Editor has a Default view: pick Editor, Split or Preview from miniatures of each layout, and new windows open in it. Split stays the default.
