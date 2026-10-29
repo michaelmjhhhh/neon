@@ -29,9 +29,15 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Changed
+
+- Settings writes shortcuts as ⌘1 and ⇧⌘L, as the menus and the Shortcuts section do, instead of Cmd+1 and Cmd+Shift+L.
+
 ### Fixed
 
 - The sidebar shows the Files, Changes and History switch as soon as Neon finds the folder is a Git repository, and ⌃⇧G or View › Changes and History switch the sidebar at once instead of leaving it on the file list.
+- Front matter properties in a narrow preview, such as beside another document, keep short values on one line instead of wrapping them word by word.
+- An empty document's placeholder reads "Start writing…" and fits a narrow pane instead of being cut off mid-sentence.
 
 ## [0.13.1] - 2026-10-29
 

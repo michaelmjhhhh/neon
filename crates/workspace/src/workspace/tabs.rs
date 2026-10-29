@@ -58,7 +58,8 @@ impl DocumentTab {
                 .indent_guides(false)
                 // The find bar over the editor replaces the built-in panel.
                 .searchable(false)
-                .placeholder("Start writing, or open a Markdown file…");
+                // Short enough to fit an editor beside another pane.
+                .placeholder("Start writing…");
             editor.set_highlighter_factory(crate::highlighter::factory(), cx);
             editor
         });

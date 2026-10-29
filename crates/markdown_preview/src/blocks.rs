@@ -503,9 +503,12 @@ impl<'a> BlockRenderer<'a> {
                 .flex_row()
                 .gap_4()
                 .child(
+                    // A narrow pane gives the key less room, so short
+                    // values still fit on one line beside it.
                     div()
                         .flex_none()
-                        .w(rems(7.))
+                        .w(relative(0.3))
+                        .max_w(rems(7.))
                         .truncate()
                         .text_color(palette.muted_foreground)
                         .child(SharedString::from(property.key().clone())),
