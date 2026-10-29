@@ -39,6 +39,7 @@ Groups, in this order:
 - Front matter properties in a narrow preview, such as beside another document, keep short values on one line instead of wrapping them word by word.
 - An empty document's placeholder reads "Start writing…" and fits a narrow pane instead of being cut off mid-sentence.
 - A diff in Changes or History meets the sheet's header and footer with one hairline instead of a doubled one.
+- A folder with no Markdown files offers one New File… button that fits the sidebar, instead of two buttons running to its edges; New Folder stays in the sidebar's header.
 
 ## [0.13.1] - 2026-10-29
 

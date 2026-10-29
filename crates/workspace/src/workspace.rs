@@ -2197,30 +2197,18 @@ impl Workspace {
                 "No Markdown files",
                 "Files ending in .md in this folder appear here.",
             )
+            // One next step: two buttons do not fit the sidebar's width,
+            // and New Folder sits in the header just above.
             .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(
-                        Button::new("new-file-empty")
-                            .small()
-                            .outline()
-                            .icon(AssetIcon::FilePlus)
-                            .label("New File…")
-                            .disabled(self.is_busy())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.new_file(&NewFile, window, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new("new-folder-empty")
-                            .small()
-                            .outline()
-                            .icon(AssetIcon::FolderPlus)
-                            .label("New Folder…")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.new_folder(&NewFolder, window, cx)
-                            })),
+                Button::new("new-file-empty")
+                    .small()
+                    .outline()
+                    .icon(AssetIcon::FilePlus)
+                    .label("New File…")
+                    .tooltip_with_action("New File…", &NewFile, Some(KEY_CONTEXT))
+                    .disabled(self.is_busy())
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.new_file(&NewFile, window, cx)),
                     ),
             )
             .into_any_element()
