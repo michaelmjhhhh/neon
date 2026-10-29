@@ -2764,7 +2764,7 @@ impl Workspace {
         // leads the trailing controls, so it appears without moving them.
         let save_button = is_dirty.then(|| {
             Button::new("save-file")
-                .xsmall()
+                .small()
                 .outline()
                 .label(save_label)
                 .tooltip_with_action(save_label, &Save, Some(KEY_CONTEXT))
