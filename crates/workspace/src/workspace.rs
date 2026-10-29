@@ -38,9 +38,10 @@ use gpui_kit::component::{ActiveTheme as _, TitleBar, WindowExt as _};
 use gpui_kit::component::{Disableable as _, IconName, Sizable as _};
 use gpui_kit::{
     Anchor, AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable, FontFeatures,
-    FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions,
-    Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, StyleRefinement,
-    Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
+    FontWeight, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
+    ParentElement as _, PathPromptOptions, Pixels, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, StyleRefinement, Styled as _, Subscription, Task, Window, div,
+    prelude::FluentBuilder as _,
 };
 use markdown_preview::{MarkdownPreview, OpenLinkedFile};
 use serde::{Deserialize, Serialize};
@@ -282,11 +283,11 @@ pub struct Workspace {
     word_count: Entity<WordCount>,
     /// The `/` template menu, shared by every tab's editor pane.
     slash_menu: Entity<SlashMenu>,
-    /// Whether a mouse button is down in the window, and a slash template
-    /// placeholder clicked into meanwhile, selected once the button is up.
-    /// Selected sooner, the editor's drag selection would replace it.
+    /// Whether the left mouse button is down in the window, and a slash
+    /// template placeholder clicked into meanwhile, selected once the button
+    /// is up. Selected sooner, the editor's drag selection would replace it.
     mouse_down: bool,
-    clicked_placeholder: Option<std::ops::Range<usize>>,
+    clicked_placeholder: Option<(Entity<EditorState>, std::ops::Range<usize>)>,
     layout: LayoutMode,
     /// While set, the window shows the document alone, as source or
     /// preview; see [`crate::zen`].
@@ -754,7 +755,9 @@ impl Workspace {
         if self.mouse_down {
             // A drag within the press moves the cursor on without
             // entering a placeholder; keep the one it started in.
-            self.clicked_placeholder = placeholder.or(self.clicked_placeholder.take());
+            if let Some(range) = placeholder {
+                self.clicked_placeholder = Some((editor.clone(), range));
+            }
         } else if let Some(range) = placeholder {
             editor.update(cx, |editor, cx| editor.set_selected_range(range, cx));
         }
@@ -764,10 +767,10 @@ impl Workspace {
     /// selection beyond it.
     fn on_mouse_up(&mut self, cx: &mut Context<Self>) {
         self.mouse_down = false;
-        let Some(range) = self.clicked_placeholder.take() else {
+        let Some((editor, range)) = self.clicked_placeholder.take() else {
             return;
         };
-        self.tab().editor.update(cx, |editor, cx| {
+        editor.update(cx, |editor, cx| {
             let selected = editor.selected_range();
             if range.start <= selected.start && selected.end <= range.end {
                 editor.set_selected_range(range, cx);
@@ -3272,11 +3275,14 @@ impl Render for Workspace {
             .id("workspace")
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus_handle)
-            .capture_any_mouse_down(cx.listener(|this, _, _, _| {
-                this.mouse_down = true;
+            .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, _| {
+                this.mouse_down = event.button == MouseButton::Left;
                 this.clicked_placeholder = None;
             }))
             .capture_any_mouse_up(cx.listener(|this, _, _, cx| this.on_mouse_up(cx)))
+            // A release outside the window or into a native menu never
+            // arrives; a key press means the press is over.
+            .capture_key_down(cx.listener(|this, _, _, _| this.mouse_down = false))
             .capture_action(cx.listener(|this, _: &Escape, window, cx| {
                 if this.slash_menu_shown(window, cx) {
                     cx.stop_propagation();
