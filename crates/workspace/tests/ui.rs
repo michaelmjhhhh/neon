@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -6,7 +6,7 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::test::{TestAppContextExt as _, TestWindowExt as _};
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Bounds, Entity, TestAppContext, WindowBounds, WindowOptions,
-    px, size,
+    point, px, size,
 };
 use markdown::BlockKind;
 use workspace::{LayoutMode, Workspace};
@@ -158,13 +158,12 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
-#[gpui_kit::test]
-async fn push_shortcut_reads_the_status_again(cx: &mut TestAppContext) {
-    let dir = tempfile::tempdir().unwrap();
-    let remote = dir.path().join("remote.git");
-    let work = dir.path().join("work");
+/// A clone of an empty remote with one pushed commit, open in a window.
+fn open_pushed_repository(dir: &Path, cx: &mut TestAppContext) -> (PathBuf, AnyWindowHandle) {
+    let remote = dir.join("remote.git");
+    let work = dir.join("work");
     git(
-        dir.path(),
+        dir,
         &[
             "init",
             "--quiet",
@@ -175,7 +174,7 @@ async fn push_shortcut_reads_the_status_again(cx: &mut TestAppContext) {
         ],
     );
     git(
-        dir.path(),
+        dir,
         &[
             "clone",
             "--quiet",
@@ -183,6 +182,9 @@ async fn push_shortcut_reads_the_status_again(cx: &mut TestAppContext) {
             work.to_str().unwrap(),
         ],
     );
+    // Commits made by the window need an author too.
+    git(&work, &["config", "user.name", "Test"]);
+    git(&work, &["config", "user.email", "test@example.com"]);
     std::fs::write(work.join("notes.md"), "# Notes\n").unwrap();
     git(&work, &["add", "."]);
     git(&work, &["commit", "--quiet", "-m", "One"]);
@@ -197,6 +199,13 @@ async fn push_shortcut_reads_the_status_again(cx: &mut TestAppContext) {
     .unwrap();
     cx.run_until_parked();
     focus_content(handle, &workspace, cx);
+    (work, handle)
+}
+
+#[gpui_kit::test]
+async fn push_shortcut_reads_the_status_again(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (work, handle) = open_pushed_repository(dir.path(), cx);
 
     // A commit made in Terminal, which the window's status has not seen.
     std::fs::write(work.join("notes.md"), "# Notes\n\nMore.\n").unwrap();
@@ -205,6 +214,44 @@ async fn push_shortcut_reads_the_status_again(cx: &mut TestAppContext) {
 
     cx.update_window(handle, |_, window, cx| window.press("secondary-p", cx))
         .unwrap();
+    cx.run_until_parked();
+
+    assert!(!git(&work, &["status", "-sb"]).contains("ahead"));
+}
+
+#[gpui_kit::test]
+async fn push_shortcut_works_after_committing_every_change(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (work, handle) = open_pushed_repository(dir.path(), cx);
+    std::fs::write(work.join("notes.md"), "# Notes\n\nMore.\n").unwrap();
+    git(&work, &["add", "."]);
+
+    cx.update_window(handle, |_, window, cx| window.press("ctrl-shift-g", cx))
+        .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        // The message box sits just above the Commit button. A drag that
+        // does not move is a click at a point rather than on an element.
+        let button = window.find("commit").bounds().origin;
+        let message = point(button.x - px(40.), button.y - px(16.));
+        window.drag(message, message, cx);
+        window.input("Two", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| window.press("secondary-enter", cx))
+        .unwrap();
+    cx.run_until_parked();
+    // The commit took every change, so the message box left the panel
+    // with the focus in it.
+    assert!(git(&work, &["status", "-sb"]).contains("ahead 1"));
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("secondary-p", cx);
+    })
+    .unwrap();
     cx.run_until_parked();
 
     assert!(!git(&work, &["status", "-sb"]).contains("ahead"));

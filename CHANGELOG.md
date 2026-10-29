@@ -29,6 +29,10 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Fixed
+
+- ⌘P and the other shortcuts keep working after a commit that takes every change. The commit message box left the panel with the focus still in it, so keys reached no part of the window until a click.
+
 ## [0.13.0] - 2026-10-28
 
 ### Added
