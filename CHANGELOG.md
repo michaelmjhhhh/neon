@@ -38,6 +38,7 @@ Groups, in this order:
 - The sidebar shows the Files, Changes and History switch as soon as Neon finds the folder is a Git repository, and ⌃⇧G or View › Changes and History switch the sidebar at once instead of leaving it on the file list.
 - Front matter properties in a narrow preview, such as beside another document, keep short values on one line instead of wrapping them word by word.
 - An empty document's placeholder reads "Start writing…" and fits a narrow pane instead of being cut off mid-sentence.
+- A diff in Changes or History meets the sheet's header and footer with one hairline instead of a doubled one.
 
 ## [0.13.1] - 2026-10-29
 
