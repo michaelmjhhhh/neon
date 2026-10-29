@@ -29,6 +29,10 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Fixed
+
+- ⌘P and other shortcuts work right after committing every change, instead of doing nothing until you click in the window.
+
 ## [0.13.0] - 2026-10-28
 
 ### Added

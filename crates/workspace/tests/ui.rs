@@ -1,12 +1,13 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Once;
 use std::time::Duration;
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::test::{TestAppContextExt as _, TestWindowExt as _};
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Bounds, Entity, TestAppContext, WindowBounds, WindowOptions,
-    px, size,
+    point, px, size,
 };
 use markdown::BlockKind;
 use workspace::{LayoutMode, Workspace};
@@ -147,10 +148,28 @@ async fn new_file_asks_before_discarding_edits(cx: &mut TestAppContext) {
     cx.read(|cx| assert!(workspace.read(cx).document().is_dirty()));
 }
 
+/// Keep Git, here and in the window, off the machine's own configuration:
+/// a signing key, hooks or credential helpers there would run in tests.
+fn isolate_git() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: the values never change, and std serializes environment
+        // access with its own reads and the processes it spawns.
+        unsafe {
+            std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+            std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+            std::env::set_var("GIT_AUTHOR_NAME", "Test");
+            std::env::set_var("GIT_AUTHOR_EMAIL", "test@example.com");
+            std::env::set_var("GIT_COMMITTER_NAME", "Test");
+            std::env::set_var("GIT_COMMITTER_EMAIL", "test@example.com");
+        }
+    });
+}
+
 fn git(dir: &Path, args: &[&str]) -> String {
+    isolate_git();
     let output = Command::new("git")
         .current_dir(dir)
-        .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
         .args(args)
         .output()
         .expect("run git");
@@ -158,13 +177,12 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
-#[gpui_kit::test]
-async fn push_shortcut_reads_the_status_again(cx: &mut TestAppContext) {
-    let dir = tempfile::tempdir().unwrap();
-    let remote = dir.path().join("remote.git");
-    let work = dir.path().join("work");
+/// A clone of an empty remote with one pushed commit, open in a window.
+fn open_pushed_repository(dir: &Path, cx: &mut TestAppContext) -> (PathBuf, AnyWindowHandle) {
+    let remote = dir.join("remote.git");
+    let work = dir.join("work");
     git(
-        dir.path(),
+        dir,
         &[
             "init",
             "--quiet",
@@ -175,7 +193,7 @@ async fn push_shortcut_reads_the_status_again(cx: &mut TestAppContext) {
         ],
     );
     git(
-        dir.path(),
+        dir,
         &[
             "clone",
             "--quiet",
@@ -197,6 +215,13 @@ async fn push_shortcut_reads_the_status_again(cx: &mut TestAppContext) {
     .unwrap();
     cx.run_until_parked();
     focus_content(handle, &workspace, cx);
+    (work, handle)
+}
+
+#[gpui_kit::test]
+async fn push_shortcut_reads_the_status_again(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (work, handle) = open_pushed_repository(dir.path(), cx);
 
     // A commit made in Terminal, which the window's status has not seen.
     std::fs::write(work.join("notes.md"), "# Notes\n\nMore.\n").unwrap();
@@ -205,6 +230,52 @@ async fn push_shortcut_reads_the_status_again(cx: &mut TestAppContext) {
 
     cx.update_window(handle, |_, window, cx| window.press("secondary-p", cx))
         .unwrap();
+    cx.run_until_parked();
+
+    assert!(!git(&work, &["status", "-sb"]).contains("ahead"));
+}
+
+#[gpui_kit::test]
+async fn push_shortcut_works_after_committing_every_change(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (work, handle) = open_pushed_repository(dir.path(), cx);
+    std::fs::write(work.join("notes.md"), "# Notes\n\nMore.\n").unwrap();
+    git(&work, &["add", "."]);
+
+    cx.update_window(handle, |_, window, cx| window.press("ctrl-shift-g", cx))
+        .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        // The message box spans the panel just above the Commit button. A
+        // drag that does not move is a click at a point, not an element.
+        let button = window.find("commit").bounds();
+        let message = point(button.center().x, button.top() - px(12.));
+        window.drag(message, message, cx);
+        window.input("Two", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| window.press("secondary-enter", cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(
+        git(&work, &["status", "-sb"]).contains("ahead 1"),
+        "the message box did not commit"
+    );
+    // The commit took every change, so the message box left the panel
+    // with the focus in it.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("commit").is_none());
+    })
+    .unwrap();
+
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("secondary-p", cx);
+    })
+    .unwrap();
     cx.run_until_parked();
 
     assert!(!git(&work, &["status", "-sb"]).contains("ahead"));

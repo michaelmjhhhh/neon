@@ -381,6 +381,20 @@ impl Workspace {
                     this.refresh_changes(cx);
                 }
             }),
+            // A focused element that leaves the window, such as the commit
+            // message once every change is committed, keeps the focus. Keys
+            // then reach no view, so no shortcut works until a click. The
+            // nearest focusable element around it takes the focus instead,
+            // or the window. A dialog puts the focus back itself.
+            cx.on_focus_lost(window, |this, window, cx| {
+                if window.has_active_dialog(cx) {
+                    return;
+                }
+                let target = window
+                    .focus_lost_restore_target(cx)
+                    .unwrap_or_else(|| this.focus_handle.clone());
+                window.focus(&target, cx);
+            }),
         ];
 
         let workspace = Self {
