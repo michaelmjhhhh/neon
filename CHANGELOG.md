@@ -29,6 +29,8 @@ Groups, in this order:
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-10-29
+
 ### Fixed
 
 - Slash command templates treat their filler words as placeholders: clicking or moving the cursor into `text` or `url` in `/link`, `alt text` or `path` in `/image`, or a `/table` column name selects it, so typing replaces it instead of having to delete it first.
