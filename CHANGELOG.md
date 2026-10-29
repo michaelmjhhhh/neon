@@ -32,6 +32,7 @@ Groups, in this order:
 ### Changed
 
 - Settings writes shortcuts as ⌘1 and ⇧⌘L, as the menus and the Shortcuts section do, instead of Cmd+1 and Cmd+Shift+L.
+- Find's Replace All button and the sidebar's tooltips use the same capitalization as the controls beside them.
 
 ### Fixed
 

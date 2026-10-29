@@ -2182,7 +2182,7 @@ impl Workspace {
                     .outline()
                     .icon(IconName::FolderOpen)
                     .label("Open Folder…")
-                    .tooltip_with_action("Open Folder…", &OpenFolder, Some(KEY_CONTEXT))
+                    .tooltip_with_action("Open folder…", &OpenFolder, Some(KEY_CONTEXT))
                     .disabled(!can_open_folder)
                     .on_click(
                         cx.listener(|this, _, window, cx| {
@@ -2205,7 +2205,7 @@ impl Workspace {
                     .outline()
                     .icon(AssetIcon::FilePlus)
                     .label("New File…")
-                    .tooltip_with_action("New File…", &NewFile, Some(KEY_CONTEXT))
+                    .tooltip_with_action("New file…", &NewFile, Some(KEY_CONTEXT))
                     .disabled(self.is_busy())
                     .on_click(
                         cx.listener(|this, _, window, cx| this.new_file(&NewFile, window, cx)),

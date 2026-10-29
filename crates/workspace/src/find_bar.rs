@@ -357,7 +357,7 @@ impl Render for FindBar {
                                 .xsmall()
                                 .outline()
                                 .flex_1()
-                                .label("Replace all")
+                                .label("Replace All")
                                 .disabled(!has_matches)
                                 .on_click(
                                     cx.listener(|this, _, window, cx| this.replace_all(window, cx)),
