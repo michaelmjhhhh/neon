@@ -31,6 +31,7 @@ Groups, in this order:
 
 ### Fixed
 
+- Slash command templates treat their filler words as placeholders: clicking or moving the cursor into `text` or `url` in `/link`, `alt text` or `path` in `/image`, or a `/table` column name selects it, so typing replaces it instead of having to delete it first.
 - ⌘P and other shortcuts work right after committing every change, instead of doing nothing until you click in the window.
 
 ## [0.13.0] - 2026-10-28
