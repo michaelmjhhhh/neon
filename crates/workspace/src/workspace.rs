@@ -333,6 +333,12 @@ impl Workspace {
             |_| WorkspaceSidebar { workspace }
         });
         let subscriptions = vec![
+            // A cached view redraws when it or a view inside it notifies,
+            // not when the workspace it reads does; without this, a change
+            // only the workspace saw, such as the folder turning out to be
+            // a repository, would not reach the sidebar until the tree's
+            // next hover.
+            cx.observe_self(|this, cx| this.sidebar.update(cx, |_, cx| cx.notify())),
             cx.subscribe(&tree, |this, _, event, _| match event {
                 TreeEvent::Expanded(id) => {
                     this.expanded_folders.insert(id.clone());

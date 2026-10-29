@@ -29,6 +29,10 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Fixed
+
+- The sidebar shows the Files, Changes and History switch as soon as Neon finds the folder is a Git repository, and ⌃⇧G or View › Changes and History switch the sidebar at once instead of leaving it on the file list.
+
 ## [0.13.1] - 2026-10-29
 
 ### Fixed
