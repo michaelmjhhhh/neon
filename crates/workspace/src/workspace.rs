@@ -282,6 +282,11 @@ pub struct Workspace {
     word_count: Entity<WordCount>,
     /// The `/` template menu, shared by every tab's editor pane.
     slash_menu: Entity<SlashMenu>,
+    /// Whether a mouse button is down in the window, and a slash template
+    /// placeholder clicked into meanwhile, selected once the button is up.
+    /// Selected sooner, the editor's drag selection would replace it.
+    mouse_down: bool,
+    clicked_placeholder: Option<std::ops::Range<usize>>,
     layout: LayoutMode,
     /// While set, the window shows the document alone, as source or
     /// preview; see [`crate::zen`].
@@ -436,6 +441,8 @@ impl Workspace {
             scroll_metrics,
             word_count,
             slash_menu,
+            mouse_down: false,
+            clicked_placeholder: None,
             layout,
             zen: None,
             focus_handle: cx.focus_handle(),
@@ -726,7 +733,8 @@ impl Workspace {
     }
 
     /// Follow an edit, with `edited`, or a cursor move in the active editor
-    /// in the slash menu.
+    /// in the slash menu, and select a template's placeholder the cursor
+    /// moves onto.
     fn update_slash_menu(
         &mut self,
         editor: &Entity<EditorState>,
@@ -735,10 +743,34 @@ impl Workspace {
         edited: bool,
         cx: &mut Context<Self>,
     ) {
-        let editor = editor.entity_id();
-        self.slash_menu.update(cx, |menu, cx| {
-            if menu.update(editor, text, cursor, edited) {
+        let selection = editor.read(cx).selected_range();
+        let id = editor.entity_id();
+        let placeholder = self.slash_menu.update(cx, |menu, cx| {
+            if menu.update(id, text, cursor, edited) {
                 cx.notify();
+            }
+            menu.touch_placeholder(id, text, cursor, selection, self.mouse_down)
+        });
+        if self.mouse_down {
+            // A drag within the press moves the cursor on without
+            // entering a placeholder; keep the one it started in.
+            self.clicked_placeholder = placeholder.or(self.clicked_placeholder.take());
+        } else if let Some(range) = placeholder {
+            editor.update(cx, |editor, cx| editor.set_selected_range(range, cx));
+        }
+    }
+
+    /// Select the placeholder clicked into, unless the press dragged out a
+    /// selection beyond it.
+    fn on_mouse_up(&mut self, cx: &mut Context<Self>) {
+        self.mouse_down = false;
+        let Some(range) = self.clicked_placeholder.take() else {
+            return;
+        };
+        self.tab().editor.update(cx, |editor, cx| {
+            let selected = editor.selected_range();
+            if range.start <= selected.start && selected.end <= range.end {
+                editor.set_selected_range(range, cx);
             }
         });
     }
@@ -773,12 +805,17 @@ impl Workspace {
         }) else {
             return;
         };
-        self.tab().editor.update(cx, |editor, cx| {
+        let editor = self.tab().editor.clone();
+        let (text, cursor) = editor.update(cx, |editor, cx| {
             editor.set_selected_range(edit.range, cx);
             editor.replace(edit.text, window, cx);
             if let Some(selection) = edit.selection {
                 editor.set_selected_range(selection, cx);
             }
+            (editor.text().clone(), editor.cursor())
+        });
+        self.slash_menu.update(cx, |menu, _| {
+            menu.track_placeholders(editor.entity_id(), &text, cursor, edit.placeholders)
         });
     }
 
@@ -3235,6 +3272,11 @@ impl Render for Workspace {
             .id("workspace")
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus_handle)
+            .capture_any_mouse_down(cx.listener(|this, _, _, _| {
+                this.mouse_down = true;
+                this.clicked_placeholder = None;
+            }))
+            .capture_any_mouse_up(cx.listener(|this, _, _, cx| this.on_mouse_up(cx)))
             .capture_action(cx.listener(|this, _: &Escape, window, cx| {
                 if this.slash_menu_shown(window, cx) {
                     cx.stop_propagation();

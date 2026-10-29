@@ -3,6 +3,11 @@
 //! of the command. Tab instead completes the command's name, so an argument
 //! can be typed before the template is inserted.
 //!
+//! Words a template leaves to fill in, such as `text` and `url` in
+//! `[text](url)`, are placeholders: the first is selected on insert, and
+//! moving the cursor into any of them selects it, so typing replaces it
+//! instead of adding to it. A placeholder is plain text once edited.
+//!
 //! This module holds the menu's state; [`crate::slash_menu`] draws it.
 
 use std::ops::Range;
@@ -73,13 +78,13 @@ impl Command {
             Command::Todo => list(argument, "Task list", |_| "- [ ] ".into()),
             Command::Code => code(argument),
             Command::Link if argument.is_empty() => {
-                Some(Template::selecting("Link", "[text](url)", "text"))
+                Some(Template::fields("Link", "[text](url)", &["text", "url"]))
             }
             Command::Image if argument.is_empty() => Some(Template {
                 // An image right under text joins its paragraph and is not
                 // shown as an image of its own.
                 blank_line_before: true,
-                ..Template::selecting("Image", "![alt text](path)", "alt text")
+                ..Template::fields("Image", "![alt text](path)", &["alt text", "path"])
             }),
             Command::Link | Command::Image => None,
             Command::Table => table(argument),
@@ -96,6 +101,8 @@ struct Template {
     detail: String,
     text: String,
     selection: Range<usize>,
+    /// Words to fill in after the selected one.
+    placeholders: Vec<Range<usize>>,
     /// Whether the template needs a blank line above it to stand alone.
     blank_line_before: bool,
 }
@@ -107,13 +114,24 @@ impl Template {
             detail,
             text,
             selection,
+            placeholders: Vec::new(),
             blank_line_before: false,
         }
     }
 
-    fn selecting(detail: &str, text: &str, selected: &str) -> Self {
-        let start = text.find(selected).unwrap_or(0);
-        Self::new(detail.into(), text.into(), start..start + selected.len())
+    /// A template with words to fill in, found in `text` in order: the
+    /// first is selected, the rest are placeholders.
+    fn fields(detail: &str, text: &str, fields: &[&str]) -> Self {
+        let mut from = 0;
+        let mut ranges = fields.iter().map(|field| {
+            let start = from + text[from..].find(field).unwrap_or(0);
+            from = start + field.len();
+            start..from
+        });
+        let selection = ranges.next().unwrap_or(0..0);
+        let mut template = Self::new(detail.into(), text.into(), selection);
+        template.placeholders = ranges.collect();
+        template
     }
 }
 
@@ -185,12 +203,13 @@ fn table(argument: &str) -> Option<Template> {
         let cells: Vec<String> = (0..columns).map(cell).collect();
         format!("| {} |", cells.join(" | "))
     };
-    let mut lines = vec![
-        row(&|ix| format!("Column {}", ix + 1)),
-        row(&|_| "---".into()),
-    ];
+    let headers: Vec<String> = (0..columns)
+        .map(|ix| format!("Column {}", ix + 1))
+        .collect();
+    let mut lines = vec![row(&|ix| headers[ix].clone()), row(&|_| "---".into())];
     lines.extend((0..rows).map(|_| row(&|_| " ".into())));
-    let mut template = Template::selecting("", &lines.join("\n"), "Column 1");
+    let headers: Vec<&str> = headers.iter().map(String::as_str).collect();
+    let mut template = Template::fields("", &lines.join("\n"), &headers);
     template.detail = format!("Table, {columns} columns x {rows} rows");
     template.argument = (!argument.is_empty()).then(|| format!("{columns}x{rows}"));
     Some(template)
@@ -349,6 +368,8 @@ pub(crate) struct MenuItem {
     text: String,
     /// The range of the inserted template to select.
     selection: Range<usize>,
+    /// The ranges of the inserted template's placeholders.
+    placeholders: Vec<Range<usize>>,
     /// What replaces `range` when the item is accepted with Tab: the command
     /// written out, such as `/table `, ready for an argument.
     command: String,
@@ -361,6 +382,9 @@ pub(crate) struct Edit {
     pub(crate) text: String,
     /// The range to select afterwards; `None` leaves the cursor after `text`.
     pub(crate) selection: Option<Range<usize>>,
+    /// The placeholders left in `text` once it is inserted, the selected
+    /// one included.
+    pub(crate) placeholders: Vec<Range<usize>>,
 }
 
 /// The menu open over an editor.
@@ -374,11 +398,25 @@ struct OpenMenu {
     selected: usize,
 }
 
+/// Placeholders left by an inserted template that have not been edited.
+struct Placeholders {
+    editor: EntityId,
+    /// Each placeholder's range and its text. An edit that changes the text
+    /// drops it.
+    ranges: Vec<(Range<usize>, String)>,
+    /// The text's length and the cursor when last seen, to tell an edit,
+    /// which shifts the ranges after it, from a cursor move.
+    len: usize,
+    cursor: usize,
+}
+
 /// The slash menu's state: the templates on offer for the command being
-/// typed, and which one is highlighted.
+/// typed, which one is highlighted, and the placeholders of the last one
+/// inserted.
 #[derive(Default)]
 pub(crate) struct SlashMenu {
     open: Option<OpenMenu>,
+    placeholders: Option<Placeholders>,
 }
 
 impl SlashMenu {
@@ -454,19 +492,102 @@ impl SlashMenu {
                 range: item.range.clone(),
                 text: item.command.clone(),
                 selection: None,
+                placeholders: Vec::new(),
             }
         } else {
             let start = item.range.start;
+            let shift = |range: &Range<usize>| start + range.start..start + range.end;
+            let selected = (!item.selection.is_empty()).then_some(&item.selection);
             Edit {
                 range: item.range.clone(),
                 text: item.text.clone(),
-                selection: Some(start + item.selection.start..start + item.selection.end),
+                selection: Some(shift(&item.selection)),
+                placeholders: selected
+                    .into_iter()
+                    .chain(&item.placeholders)
+                    .map(shift)
+                    .collect(),
             }
         };
         if !complete {
             self.open = None;
         }
         Some(edit)
+    }
+
+    /// Remember the placeholders an accepted template left in `editor`,
+    /// once its edit has made the text `text` with the cursor at `cursor`.
+    pub(crate) fn track_placeholders(
+        &mut self,
+        editor: EntityId,
+        text: &Rope,
+        cursor: usize,
+        placeholders: Vec<Range<usize>>,
+    ) {
+        let ranges: Vec<_> = placeholders
+            .into_iter()
+            .map(|range| (range.clone(), text.slice(range).to_string()))
+            .collect();
+        self.placeholders = (!ranges.is_empty()).then(|| Placeholders {
+            editor,
+            ranges,
+            len: text.len(),
+            cursor,
+        });
+    }
+
+    /// Follow an edit or a cursor move in `editor` for the placeholders. An
+    /// edit shifts the placeholders after it and drops any it changed; a
+    /// cursor moved into one from outside it, or by a `click` anywhere in
+    /// it, with nothing selected, returns its range to select. A key that
+    /// moves the cursor within it, as Left or Right collapsing the
+    /// selection does, leaves it alone, so the cursor can always get out.
+    pub(crate) fn touch_placeholder(
+        &mut self,
+        editor: EntityId,
+        text: &Rope,
+        cursor: usize,
+        selection: Range<usize>,
+        click: bool,
+    ) -> Option<Range<usize>> {
+        let placeholders = self.placeholders.as_mut()?;
+        if placeholders.editor != editor {
+            self.placeholders = None;
+            return None;
+        }
+        // An edit ends at the cursor, so text from where it ended in the old
+        // text on moves by the change in length.
+        let delta = text.len() as isize - placeholders.len as isize;
+        let edit_end = cursor as isize - delta;
+        for (range, _) in &mut placeholders.ranges {
+            if range.start as isize >= edit_end {
+                range.start = (range.start as isize + delta) as usize;
+                range.end = (range.end as isize + delta) as usize;
+            }
+        }
+        placeholders.ranges.retain(|(range, word)| {
+            range.end <= text.len()
+                && text.is_char_boundary(range.start)
+                && text.is_char_boundary(range.end)
+                && text.slice(range.clone()).chars().eq(word.chars())
+        });
+        let moved = delta == 0 && cursor != placeholders.cursor;
+        let previous = std::mem::replace(&mut placeholders.cursor, cursor);
+        placeholders.len = text.len();
+        let entered = placeholders
+            .ranges
+            .iter()
+            .map(|(range, _)| range.clone())
+            .find(|range| range.contains(&cursor) || range.end == cursor)
+            .filter(|range| {
+                moved
+                    && selection.is_empty()
+                    && (click || !(range.start..=range.end).contains(&previous))
+            });
+        if placeholders.ranges.is_empty() {
+            self.placeholders = None;
+        }
+        entered
     }
 }
 
@@ -511,11 +632,10 @@ fn items_at(text: &Rope, cursor: usize) -> Option<(usize, bool, Vec<MenuItem>)> 
                 let new_text = format!("{prefix}{}", template.text.replace('\n', &indent));
                 // The text from `start` up to the `/` stays as it was.
                 let kept = text.slice(start..invocation.start).to_string();
-                let selection = indented(
-                    &template.text,
-                    template.selection.clone(),
-                    invocation.indent,
-                );
+                let place = |range: &Range<usize>| {
+                    let range = indented(&template.text, range.clone(), invocation.indent);
+                    range.start + prefix.len()..range.end + prefix.len()
+                };
                 let matched = label
                     .char_indices()
                     .zip(typed.chars())
@@ -533,7 +653,8 @@ fn items_at(text: &Rope, cursor: usize) -> Option<(usize, bool, Vec<MenuItem>)> 
                         .flatten(),
                     range: start..cursor,
                     text: new_text,
-                    selection: selection.start + prefix.len()..selection.end + prefix.len(),
+                    selection: place(&template.selection),
+                    placeholders: template.placeholders.iter().map(place).collect(),
                     command: format!("{kept}{}", command_line(command, &template)),
                     label,
                 }
@@ -551,6 +672,8 @@ fn indented(text: &str, selection: Range<usize>, indent: &str) -> Range<usize> {
 }
 
 #[cfg(test)]
+// A placeholder list of one range is meant, not the numbers in it.
+#[allow(clippy::single_range_in_vec_init)]
 mod tests {
     use super::*;
 
@@ -712,6 +835,7 @@ mod tests {
                 range: 2..5,
                 text: "/link ".into(),
                 selection: None,
+                placeholders: vec![],
             })
         );
         assert!(menu.shown(editor()).is_some(), "Tab keeps the menu open");
@@ -721,6 +845,7 @@ mod tests {
                 range: 2..5,
                 text: "[text](url)".into(),
                 selection: Some(3..7),
+                placeholders: vec![3..7, 9..12],
             })
         );
         assert!(menu.shown(editor()).is_none());
@@ -735,7 +860,115 @@ mod tests {
                 range: 6..12,
                 text: "\n![alt text](path)".into(),
                 selection: Some(9..17),
+                placeholders: vec![9..17, 19..23],
             })
+        );
+    }
+
+    #[test]
+    fn table_headers_after_the_first_are_placeholders() {
+        let template = Command::Table.template("3x1").unwrap();
+        let words: Vec<_> = template
+            .placeholders
+            .iter()
+            .map(|range| &template.text[range.clone()])
+            .collect();
+        assert_eq!(words, ["Column 2", "Column 3"]);
+    }
+
+    /// A menu tracking the placeholders of `[text](url)` inserted with
+    /// `text` selected, as accepting `/link` leaves it.
+    fn link_inserted() -> (SlashMenu, Rope) {
+        let mut menu = SlashMenu::default();
+        let text = Rope::from("[text](url)");
+        menu.track_placeholders(editor(), &text, 5, vec![1..5, 7..10]);
+        (menu, text)
+    }
+
+    #[test]
+    fn moving_into_a_placeholder_selects_it() {
+        let (mut menu, text) = link_inserted();
+        // Right collapses the selected `text` to its end and stays put.
+        assert_eq!(
+            menu.touch_placeholder(editor(), &text, 5, 5..5, false),
+            None
+        );
+        assert_eq!(
+            menu.touch_placeholder(editor(), &text, 6, 6..6, false),
+            None
+        );
+        assert_eq!(
+            menu.touch_placeholder(editor(), &text, 7, 7..7, false),
+            Some(7..10)
+        );
+        // Selecting it puts the cursor at its end; Right then leaves it.
+        assert_eq!(
+            menu.touch_placeholder(editor(), &text, 10, 7..10, false),
+            None
+        );
+        assert_eq!(
+            menu.touch_placeholder(editor(), &text, 11, 11..11, false),
+            None
+        );
+        // A click inside selects it even from its edge.
+        assert_eq!(
+            menu.touch_placeholder(editor(), &text, 1, 1..1, false),
+            Some(1..5)
+        );
+        assert_eq!(
+            menu.touch_placeholder(editor(), &text, 3, 3..3, true),
+            Some(1..5)
+        );
+        assert_eq!(
+            menu.touch_placeholder(editor(), &text, 11, 11..11, false),
+            None
+        );
+        // Coming back selects it again, and so does going back to `text`.
+        assert_eq!(
+            menu.touch_placeholder(editor(), &text, 9, 9..9, false),
+            Some(7..10)
+        );
+        assert_eq!(
+            menu.touch_placeholder(editor(), &text, 2, 2..2, false),
+            Some(1..5)
+        );
+    }
+
+    #[test]
+    fn placeholders_follow_edits_before_them() {
+        let (mut menu, _) = link_inserted();
+        // `text` is replaced with `Neon docs`, ending at the cursor.
+        let text = Rope::from("[Neon docs](url)");
+        assert_eq!(
+            menu.touch_placeholder(editor(), &text, 10, 10..10, false),
+            None
+        );
+        assert_eq!(
+            menu.touch_placeholder(editor(), &text, 12, 12..12, false),
+            Some(12..15)
+        );
+        // `Neon docs` is plain text now.
+        assert_eq!(
+            menu.touch_placeholder(editor(), &text, 16, 16..16, false),
+            None
+        );
+        assert_eq!(
+            menu.touch_placeholder(editor(), &text, 3, 3..3, false),
+            None
+        );
+    }
+
+    #[test]
+    fn edits_to_a_placeholder_or_a_selection_onto_it_leave_it() {
+        let (mut menu, _) = link_inserted();
+        let text = Rope::from("[Neon](uxrl)");
+        menu.touch_placeholder(editor(), &text, 9, 9..9, false);
+        assert!(menu.placeholders.is_none(), "an edited placeholder is text");
+
+        let (mut menu, text) = link_inserted();
+        assert_eq!(
+            menu.touch_placeholder(editor(), &text, 8, 3..8, false),
+            None
         );
     }
 
