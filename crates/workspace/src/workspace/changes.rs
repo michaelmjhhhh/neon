@@ -1230,7 +1230,7 @@ impl Workspace {
                     .when(can_edit, |this| {
                         this.child(
                             Button::new("edit-change")
-                                .xsmall()
+                                .small()
                                 .outline()
                                 .label("Edit")
                                 .on_click(
