@@ -117,6 +117,12 @@ pub fn init(cx: &mut App) {
         // Return renames, as in Finder. The name field binds Return itself
         // and wins over this while it is open.
         KeyBinding::new("enter", workspace::RenameEntry, Some(TREE_KEY_CONTEXT)),
+        // As in Finder.
+        KeyBinding::new(
+            "secondary-backspace",
+            workspace::TrashEntry,
+            Some(TREE_KEY_CONTEXT),
+        ),
         // As in Zed and VS Code.
         KeyBinding::new(
             "alt-secondary-c",

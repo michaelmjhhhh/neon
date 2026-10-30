@@ -29,6 +29,10 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Added
+
+- Move a file or folder to the Trash from its right-click menu in the sidebar, or with ⌘⌫ while the sidebar has focus. Neon asks first, says when a folder holds files the sidebar doesn’t list or an open document has unsaved edits, and closes the tabs that showed what was moved.
+
 ### Changed
 
 - Settings writes shortcuts as ⌘1 and ⇧⌘L, as the menus and the Shortcuts section do, instead of Cmd+1 and Cmd+Shift+L.

@@ -178,10 +178,7 @@ pub(super) fn name_error(name: &str, is_dir: bool) -> Option<&'static str> {
 /// case alone, `plan.md` to `Plan.md`, finds the entry itself under the new
 /// name on a case-insensitive volume, and goes ahead.
 pub(super) fn rename_entry(source: &Path, name: &str) -> io::Result<PathBuf> {
-    let source_metadata = fs::symlink_metadata(source).map_err(|error| match error.kind() {
-        io::ErrorKind::NotFound => io::Error::new(error.kind(), "it no longer exists"),
-        _ => error,
-    })?;
+    let source_metadata = existing_entry(source)?;
     let directory = source
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "it has no folder"))?;
@@ -198,6 +195,56 @@ pub(super) fn rename_entry(source: &Path, name: &str) -> io::Result<PathBuf> {
     }
     fs::rename(source, &target)?;
     Ok(target)
+}
+
+/// `path`'s metadata, or an error that reads as a reason if it is gone: a
+/// sidebar row can outlive its entry, deleted or renamed in Finder.
+fn existing_entry(path: &Path) -> io::Result<fs::Metadata> {
+    fs::symlink_metadata(path).map_err(|error| match error.kind() {
+        io::ErrorKind::NotFound => io::Error::new(error.kind(), "it no longer exists"),
+        _ => error,
+    })
+}
+
+/// Move `path`, a file or a folder with everything in it, to the Trash, from
+/// which Finder can restore it. As Finder, VS Code and Zed do on macOS, this
+/// asks `NSFileManager`, which picks a free name in the Trash and needs no
+/// permission to script Finder.
+pub(super) fn trash_entry(path: &Path) -> io::Result<()> {
+    existing_entry(path)?;
+    move_to_trash(path)
+}
+
+#[cfg(target_os = "macos")]
+fn move_to_trash(path: &Path) -> io::Result<()> {
+    use objc2_foundation::{NSFileManager, NSString, NSURL};
+
+    let path = path
+        .to_str()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "its name isn’t valid UTF-8"))?;
+    // Background threads have no pool of their own to release Foundation's
+    // temporary objects into.
+    objc2::rc::autoreleasepool(|_| {
+        let url = NSURL::fileURLWithPath(&NSString::from_str(path));
+        NSFileManager::defaultManager()
+            .trashItemAtURL_resultingItemURL_error(&url, None)
+            .map_err(|error| {
+                // The reason alone, "You don’t have permission.": the
+                // description repeats the name and the failed move.
+                let reason = error
+                    .localizedFailureReason()
+                    .unwrap_or_else(|| error.localizedDescription());
+                io::Error::other(reason.to_string())
+            })
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn move_to_trash(_: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "there is no Trash on this system",
+    ))
 }
 
 /// Whether `name`, beside `path`, names an entry other than `path` itself.
@@ -677,6 +724,16 @@ mod tests {
     fn reports_a_renamed_entry_that_is_gone() {
         let root = tempfile::tempdir().unwrap();
         let error = rename_entry(&root.path().join("gone.md"), "new.md").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(error.to_string(), "it no longer exists");
+    }
+
+    // Only a missing entry is tried: a test that succeeded would fill the
+    // real Trash.
+    #[test]
+    fn reports_a_trashed_entry_that_is_gone() {
+        let root = tempfile::tempdir().unwrap();
+        let error = trash_entry(&root.path().join("gone.md")).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
         assert_eq!(error.to_string(), "it no longer exists");
     }

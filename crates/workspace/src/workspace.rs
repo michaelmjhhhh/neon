@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::folder::{
     copy_entry, find_note, is_markdown, is_taken, name_error, rename_entry, renamed_path,
-    scan_folder,
+    scan_folder, trash_entry,
 };
 use crate::session_file::Session;
 use crate::typography::Typography;
@@ -92,6 +92,7 @@ gpui_kit::actions!(
         PasteEntry,
         DuplicateEntry,
         RenameEntry,
+        TrashEntry,
         CopyEntryPath,
         RevealEntry,
         Open,
@@ -237,8 +238,9 @@ pub struct Workspace {
     copied_entry: Option<PathBuf>,
     /// The sidebar entry whose name is being edited in its row.
     renaming: Option<Renaming>,
-    /// Set while a rename runs on disk, so no save lands at the old path.
-    rename_task: Option<Task<()>>,
+    /// Set while a rename or a move to the Trash runs on disk, so no save
+    /// lands at the old path.
+    entry_task: Option<Task<()>>,
     /// A row just renamed, by its old id, and the name it shows until the
     /// folder is read again: the old name would show meanwhile, for as long
     /// as reading a large folder takes.
@@ -423,7 +425,7 @@ impl Workspace {
             expanded_folders: HashSet::new(),
             copied_entry: None,
             renaming: None,
-            rename_task: None,
+            entry_task: None,
             renamed_label: None,
             tree_press: Rc::default(),
             dragging_file: Cell::new(false),
@@ -1177,7 +1179,7 @@ impl Workspace {
     }
 
     fn is_busy(&self) -> bool {
-        self.load_task.is_some() || self.save_task.is_some() || self.rename_task.is_some()
+        self.load_task.is_some() || self.save_task.is_some() || self.entry_task.is_some()
     }
 
     /// Follow a link to another note, as in Obsidian. The note beside the
@@ -1817,10 +1819,10 @@ impl Workspace {
             let from = from.clone();
             async move { rename_entry(&from, &name) }
         });
-        self.rename_task = Some(cx.spawn_in(window, async move |this, cx| {
+        self.entry_task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = rename.await;
             this.update_in(cx, |this, window, cx| {
-                this.rename_task = None;
+                this.entry_task = None;
                 match result {
                     Ok(to) => this.follow_rename(&from, to, window, cx),
                     Err(error) => {
@@ -1884,6 +1886,148 @@ impl Workspace {
         if let Some(folder) = self.folder.clone() {
             self.load_folder(folder, false, Some(id(&to)), window, cx);
         }
+    }
+
+    fn trash_selected_entry(
+        &mut self,
+        _: &TrashEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let selected = self
+            .tree
+            .read(cx)
+            .selected_entry()
+            .filter(|entry| !entry.is_disabled())
+            .map(|entry| (PathBuf::from(entry.item().id.as_ref()), entry.is_folder()));
+        if let Some((path, is_dir)) = selected {
+            self.confirm_trash(path, is_dir, window, cx);
+        }
+    }
+
+    /// Ask, then move `path` to the Trash. Neon cannot undo the move, so it
+    /// asks first, as VS Code and Obsidian do, and says what goes with it:
+    /// a folder's unlisted files, and edits not yet saved.
+    fn confirm_trash(
+        &mut self,
+        path: PathBuf,
+        is_dir: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let title: SharedString = format!("Move “{}” to the Trash?", file_name(&path)).into();
+        let mut description = if is_dir {
+            "Everything in it goes too, including files the sidebar doesn’t list. You can \
+             restore it from the Trash in Finder."
+        } else {
+            "You can restore it from the Trash in Finder."
+        }
+        .to_string();
+        let edited: Vec<String> = self
+            .tabs
+            .iter()
+            .filter(|tab| tab.document.is_dirty() && shows_entry(tab, &path))
+            .map(|tab| tab.document.display_name())
+            .collect();
+        match edited.as_slice() {
+            [] => {}
+            [name] => description += &format!(" Unsaved edits to “{name}” will be lost."),
+            _ => {
+                description +=
+                    &format!(" Unsaved edits to {} documents will be lost.", edited.len())
+            }
+        }
+        let description = SharedString::from(description);
+        let this = cx.weak_entity();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let this = this.clone();
+            let path = path.clone();
+            alert
+                .title(title.clone())
+                .description(description.clone())
+                .confirm()
+                .ok_text("Move to Trash")
+                .ok_variant(ButtonVariant::Danger)
+                .cancel_text("Cancel")
+                .on_ok(move |_, window, cx| {
+                    this.update(cx, |this, cx| this.trash(path.clone(), window, cx))
+                        .ok();
+                    true
+                })
+        });
+    }
+
+    /// Move `path` to the Trash on a background thread, then close what
+    /// showed it.
+    fn trash(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_busy() {
+            window.push_notification(
+                Notification::warning(
+                    "A file is still being opened or saved. Try again in a moment.",
+                ),
+                cx,
+            );
+            return;
+        }
+        let trash = cx.background_spawn({
+            let path = path.clone();
+            async move { trash_entry(&path) }
+        });
+        self.entry_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = trash.await;
+            this.update_in(cx, |this, window, cx| {
+                this.entry_task = None;
+                match result {
+                    Ok(()) => this.forget_trashed(&path, window, cx),
+                    Err(error) => {
+                        // Gone already, say in Finder: drop its stale row.
+                        if error.kind() == std::io::ErrorKind::NotFound {
+                            this.refresh_folder(&RefreshFolder, window, cx);
+                        }
+                        window.push_notification(
+                            Notification::error(format!(
+                                "Couldn’t move “{}” to the Trash. {}",
+                                file_name(&path),
+                                sentence(&error.to_string())
+                            )),
+                            cx,
+                        );
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    /// Close the tabs that showed the trashed `path` or anything inside it,
+    /// and forget it in the sidebar. A window's last tab is emptied instead.
+    fn forget_trashed(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        let mut closed_any = false;
+        while let Some(ix) = self.tabs.iter().position(|tab| shows_entry(tab, path)) {
+            if self.tabs.len() > 1 {
+                self.remove_tab(ix, window, cx);
+            } else {
+                self.show_document(None, "", window, cx);
+            }
+            closed_any = true;
+        }
+        // Showing another tab focuses its editor; the sidebar the command
+        // came from keeps focus, so the arrows go on from there.
+        if closed_any {
+            self.tree.update(cx, |tree, cx| tree.focus(window, cx));
+        }
+        self.expanded_folders
+            .retain(|folder| !Path::new(folder.as_ref()).starts_with(path));
+        if self
+            .copied_entry
+            .as_deref()
+            .is_some_and(|copied| copied.starts_with(path))
+        {
+            self.copied_entry = None;
+        }
+        self.refresh_folder(&RefreshFolder, window, cx);
     }
 
     /// Start the next list item when Enter ends one in the editor, in place of
@@ -2534,7 +2678,21 @@ impl Workspace {
                             "Reveal in Finder",
                             RevealEntry,
                             &workspace,
-                            move |_, _, cx| cx.reveal_path(&path),
+                            {
+                                let path = path.clone();
+                                move |_, _, cx| cx.reveal_path(&path)
+                            },
+                        ))
+                        // Apart from the rest, as in Finder, so a slip of the
+                        // pointer does not pick it.
+                        .separator()
+                        .item(entry_menu_item(
+                            "Move to Trash",
+                            TrashEntry,
+                            &workspace,
+                            move |this, window, cx| {
+                                this.confirm_trash(path.clone(), is_dir, window, cx)
+                            },
                         ))
                     }),
                 )
@@ -3349,6 +3507,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::copy_selected_entry_path))
             .on_action(cx.listener(Self::reveal_selected_entry))
             .on_action(cx.listener(Self::rename_selected_entry))
+            .on_action(cx.listener(Self::trash_selected_entry))
             .on_action(cx.listener(Self::open))
             .on_action(cx.listener(Self::open_linked_file))
             .on_action(cx.listener(Self::open_folder))
@@ -3528,6 +3687,13 @@ fn entry_directory(entry: &TreeEntry) -> PathBuf {
     } else {
         path.parent().unwrap_or(path).to_path_buf()
     }
+}
+
+/// Whether `tab` shows the file at `path`, or one inside the folder there.
+fn shows_entry(tab: &DocumentTab, path: &Path) -> bool {
+    tab.document
+        .path()
+        .is_some_and(|file| file.starts_with(path))
 }
 
 fn copy_path(path: &Path, cx: &mut gpui_kit::App) {
