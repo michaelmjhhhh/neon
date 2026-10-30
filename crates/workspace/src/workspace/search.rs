@@ -30,8 +30,8 @@ use gpui_kit::{
 };
 
 use super::{
-    NewTab, OpenFolder, SidebarView, Workspace, file_name, format_count, icon_slot, sentence,
-    sidebar_empty_state, split_extension,
+    NewTab, OpenFolder, SidebarView, Workspace, ZenView, file_name, format_count, icon_slot,
+    sentence, sidebar_empty_state, split_extension,
 };
 use crate::KEY_CONTEXT;
 use crate::folder::markdown_files;
@@ -97,8 +97,14 @@ pub(super) struct Search {
     /// Whether matches beyond [`MAX_MATCHES`] were left out.
     truncated: bool,
     task: Option<Task<()>>,
-    /// Typed or toggled since the last search started.
+    /// The list is for another query or other options: typed or toggled
+    /// since, and the new results not in yet.
     stale: bool,
+    /// The search waits for typing to pause.
+    debouncing: bool,
+    /// The folder changed while the view was hidden; it searches again
+    /// once shown.
+    outdated: bool,
     /// Set to stop the search reading in the background once another
     /// replaces it.
     cancelled: Arc<AtomicBool>,
@@ -137,6 +143,8 @@ impl Search {
             truncated: false,
             task: None,
             stale: false,
+            debouncing: false,
+            outdated: false,
             cancelled: Arc::default(),
             pending_step: None,
             collapsed: HashSet::new(),
@@ -251,10 +259,25 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.set_sidebar_view(SidebarView::Search, window, cx);
-        let selection = self.tab().editor.read(cx).selected_text().to_string();
         let query = self.search.query.clone();
-        if !selection.trim().is_empty() && !selection.contains('\n') {
-            query.update(cx, |query, cx| query.set_value(selection, window, cx));
+        // Only a selection on screen: a hidden editor's is left over.
+        let editor_shown = self
+            .zen_view()
+            .map_or(self.layout.shows_editor(), |view| view == ZenView::Editor);
+        let selection = editor_shown
+            .then(|| self.tab().editor.read(cx).selected_text().to_string())
+            .filter(|text| !text.trim().is_empty() && !text.contains('\n'))
+            .map(|text| {
+                if self.search.options.regex {
+                    regex::escape(&text)
+                } else {
+                    text
+                }
+            });
+        if let Some(text) = selection
+            && *query.read(cx).value() != *text
+        {
+            query.update(cx, |query, cx| query.set_value(text, window, cx));
             self.search.stale = true;
             self.run_search(None, window, cx);
         }
@@ -267,9 +290,27 @@ impl Workspace {
     /// Search the folder again, as after a save or a refresh, unless nothing
     /// is being searched for.
     pub(super) fn refresh_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.search.query.read(cx).value().is_empty() {
+        if self.search.query.read(cx).value().is_empty() {
+            return;
+        }
+        // Hidden, the list waits: a save would otherwise read every file
+        // for results nobody sees.
+        if self.search_shown() {
+            self.run_search(None, window, cx);
+        } else {
+            self.search.outdated = true;
+        }
+    }
+
+    /// Search again if the folder changed while the view was hidden.
+    pub(super) fn catch_up_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search.outdated && self.search_shown() {
             self.run_search(None, window, cx);
         }
+    }
+
+    fn search_shown(&self) -> bool {
+        self.sidebar_visible && self.sidebar_view == SidebarView::Search && self.zen.is_none()
     }
 
     /// Run the query, after `delay` if given; a newer run replaces it.
@@ -277,6 +318,8 @@ impl Workspace {
         let search = &mut self.search;
         search.cancelled.store(true, Ordering::Relaxed);
         search.cancelled = Arc::default();
+        search.outdated = false;
+        search.debouncing = delay.is_some();
         let text = search.query.read(cx).value().to_string();
         let query = match Query::new(&text, search.options) {
             Ok(query) => query,
@@ -312,8 +355,9 @@ impl Workspace {
         self.search.task = Some(cx.spawn_in(window, async move |this, cx| {
             if let Some(delay) = delay {
                 cx.background_executor().timer(delay).await;
+                this.update(cx, |this, _| this.search.debouncing = false)
+                    .ok();
             }
-            this.update(cx, |this, _| this.search.stale = false).ok();
             let listing = cx
                 .background_spawn(async move { markdown_files(&folder) })
                 .await;
@@ -326,6 +370,7 @@ impl Workspace {
                             Some(format!("Couldn’t read the folder. {message}").into());
                         this.search.clear_results();
                         this.search.task = None;
+                        this.search.stale = false;
                         cx.notify();
                     })
                     .ok();
@@ -349,19 +394,18 @@ impl Workspace {
                 let landed = this.update_in(cx, |this, window, cx| {
                     this.land_search_results(results, start == 0, &query, window, cx)
                 });
-                let Ok(total) = landed else {
+                let Ok((total, truncated)) = landed else {
                     return;
                 };
                 found = total;
                 start = end;
                 batch = (batch * 2).min(MAX_BATCH);
-                if start >= files.len() || found >= MAX_MATCHES {
+                if start >= files.len() || truncated {
                     break;
                 }
             }
             this.update(cx, |this, cx| {
                 let search = &mut this.search;
-                search.truncated |= found >= MAX_MATCHES && start < files.len();
                 search.task = None;
                 search.pending_step = None;
                 cx.notify();
@@ -375,7 +419,7 @@ impl Workspace {
 impl Workspace {
     /// Add a batch of results, in place of the last search's for the first
     /// batch, and take a step asked for before they came. Returns how many
-    /// matches the list holds now.
+    /// matches the list holds now, and whether it holds all there are.
     fn land_search_results(
         &mut self,
         results: Vec<FileMatches>,
@@ -383,10 +427,11 @@ impl Workspace {
         query: &Query,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> usize {
+    ) -> (usize, bool) {
         let search = &mut self.search;
         if replace {
             search.ran = Some(query.clone());
+            search.stale = false;
         }
         let changed = replace || !results.is_empty();
         search.add_results(results, replace);
@@ -399,15 +444,19 @@ impl Workspace {
         if changed {
             cx.notify();
         }
-        self.search.match_count
+        (self.search.match_count, self.search.truncated)
     }
 
     /// Pick the next match, or the previous one, from the keyboard. Asked
     /// for while the query is still to run, the step waits for its results.
     fn step_search_match(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.search.stale || (self.search.task.is_some() && self.search.match_count == 0) {
-            self.search.pending_step = Some(forward);
-            if self.search.stale {
+        let search = &mut self.search;
+        // The list is for an older query, or still empty: step once the
+        // query's matches arrive. A query still waiting for typing to pause
+        // runs at once.
+        if search.stale || (search.task.is_some() && search.match_count == 0) {
+            search.pending_step = Some(forward);
+            if search.stale && (search.task.is_none() || search.debouncing) {
                 self.run_search(None, window, cx);
             }
             return;
@@ -452,6 +501,11 @@ impl Workspace {
         if self.is_busy() {
             return;
         }
+        // Showing another tab focuses its editor; stepping from the field
+        // keeps the field focused, so the next Return steps again instead
+        // of typing into the document.
+        let field = self.search.query.focus_handle(cx);
+        let from_field = field.is_focused(window);
         self.search.pending_reveal = None;
         if self.tab().document.path() == Some(found.path.as_path()) {
             self.reveal_search_match(&found, window, cx);
@@ -464,6 +518,9 @@ impl Workspace {
                 self.new_tab(&NewTab, window, cx);
             }
             self.open_path(found.path, window, cx);
+        }
+        if from_field {
+            field.focus(window, cx);
         }
     }
 

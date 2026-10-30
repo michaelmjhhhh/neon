@@ -657,6 +657,7 @@ impl Workspace {
         if view == SidebarView::History && !shown {
             self.load_history(cx);
         }
+        self.catch_up_search(window, cx);
         cx.notify();
     }
 

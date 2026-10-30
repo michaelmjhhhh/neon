@@ -605,6 +605,10 @@ impl Workspace {
                         );
                     }
                 }
+                // After the focus is back: a search match picked meanwhile
+                // is selected if this read showed its file, and forgotten
+                // otherwise.
+                this.reveal_pending_search_match(window, cx);
                 cx.notify();
             })
             .ok();
@@ -657,7 +661,6 @@ impl Workspace {
         self.sync_tree_selection(cx);
         self.update_window_title(window);
         self.focus_content(window, cx);
-        self.reveal_pending_search_match(window, cx);
         cx.notify();
     }
 
@@ -2152,6 +2155,7 @@ impl Workspace {
         if !self.sidebar_visible {
             self.focus_content(window, cx);
         }
+        self.catch_up_search(window, cx);
         cx.notify();
     }
 

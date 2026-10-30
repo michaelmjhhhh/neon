@@ -12,7 +12,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use gpui_kit::SharedString;
 use rayon::prelude::*;
@@ -67,8 +68,9 @@ impl Query {
         RegexBuilder::new(&pattern)
             .case_insensitive(!options.match_case)
             // `^` and `$` match at each line, as they do in a line-based
-            // search like ripgrep's.
+            // search like ripgrep's, before `\r\n` as well as `\n`.
             .multi_line(true)
+            .crlf(true)
             .build()
             .map(|regex| {
                 Some(Self {
@@ -82,14 +84,36 @@ impl Query {
     /// The byte ranges of the matches in `text`, in order. Empty matches,
     /// which a regex like `a*` finds between every two characters, are left
     /// out: there is nothing to show of them.
+    ///
+    /// A match that is not a whole word is tried again from its next
+    /// character, not from its end, so one inside it is still found: `a a`
+    /// in `ba a a`, after `a a` at 1 is turned down, is found at 3.
     fn matches<'a>(&'a self, text: &'a str) -> impl Iterator<Item = Range<usize>> + 'a {
-        self.regex
-            .find_iter(text)
-            .map(|found| found.range())
-            .filter(move |range| {
-                !range.is_empty() && (!self.whole_word || is_whole_word(text, range))
-            })
+        let mut at = 0;
+        std::iter::from_fn(move || {
+            while at <= text.len() {
+                let range = self.regex.find_at(text, at)?.range();
+                if range.is_empty() {
+                    at = next_char(text, range.end);
+                } else if self.whole_word && !is_whole_word(text, &range) {
+                    at = next_char(text, range.start);
+                } else {
+                    at = range.end;
+                    return Some(range);
+                }
+            }
+            None
+        })
     }
+}
+
+/// Where the character after the one at `ix` starts; past the end at the
+/// end.
+fn next_char(text: &str, ix: usize) -> usize {
+    text[ix..]
+        .chars()
+        .next()
+        .map_or(text.len() + 1, |c| ix + c.len_utf8())
 }
 
 /// What is wrong with a regex, as one line: the parser's message without
@@ -278,9 +302,14 @@ pub(crate) fn locate(query: &Query, line: &str, column: usize) -> Option<Range<u
 }
 
 /// Search `files` in parallel and keep their order, leaving out files with
-/// no match. Each file gives at most `limit` matches. A file in `unsaved` is
-/// searched as that text, an open document's unsaved edits, not as it is on
-/// disk. Once `cancelled` is set, files not yet started are skipped.
+/// no match. `limit` is how many more matches are wanted. Each file gives at
+/// most one more than that, so a caller that gets more knows there were
+/// more to find. A file in `unsaved` is searched as that text, an open
+/// document's unsaved edits, not as it is on disk.
+///
+/// Files not yet started are skipped once `cancelled` is set, or once the
+/// files before them already hold more than `limit` matches: a common word
+/// stops the search early, and the matches kept are still the first ones.
 pub(crate) fn search_files(
     query: &Query,
     files: &[PathBuf],
@@ -288,22 +317,91 @@ pub(crate) fn search_files(
     limit: usize,
     cancelled: &AtomicBool,
 ) -> Vec<FileMatches> {
+    let found = FoundSoFar::new(limit);
     files
         .par_iter()
-        .filter_map(|path| {
-            if cancelled.load(Ordering::Relaxed) {
+        .enumerate()
+        .filter_map(|(ix, path)| {
+            if cancelled.load(Ordering::Relaxed) || found.is_past_limit() {
                 return None;
             }
+            let per_file = found.room().saturating_add(1);
             let matches = match unsaved.get(path) {
-                Some(text) => search_text(query, text, limit),
-                None => search_text(query, &read_text(path)?, limit),
+                Some(text) => search_text(query, text, per_file),
+                None => read_text(path)
+                    .map_or_else(Vec::new, |text| search_text(query, &text, per_file)),
             };
+            found.record(ix, matches.len());
             (!matches.is_empty()).then(|| FileMatches {
                 path: path.clone(),
                 matches,
             })
         })
         .collect()
+}
+
+/// How many matches the files searched so far hold, counted in file order.
+/// Files finish out of order, so a count joins the total only once every
+/// file before it has: a file can then be skipped only when all those
+/// before it are done, and the matches kept are the first ones.
+struct FoundSoFar {
+    limit: usize,
+    past_limit: AtomicBool,
+    /// The files whose counts joined the total all come before any file
+    /// still to start, so the total is a floor on what precedes it.
+    total: AtomicUsize,
+    counted: Mutex<Counted>,
+}
+
+#[derive(Default)]
+struct Counted {
+    /// The first file whose count has not joined the total.
+    next: usize,
+    total: usize,
+    /// Counts of files that finished before one ahead of them.
+    waiting: HashMap<usize, usize>,
+}
+
+impl FoundSoFar {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            past_limit: AtomicBool::new(false),
+            total: AtomicUsize::new(0),
+            counted: Mutex::default(),
+        }
+    }
+
+    fn is_past_limit(&self) -> bool {
+        self.past_limit.load(Ordering::Relaxed)
+    }
+
+    /// How many matches a file starting now could still add: the limit,
+    /// less what the files before it are known to hold.
+    fn room(&self) -> usize {
+        self.limit
+            .saturating_sub(self.total.load(Ordering::Relaxed))
+    }
+
+    fn record(&self, ix: usize, count: usize) {
+        let mut counted = self
+            .counted
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        counted.waiting.insert(ix, count);
+        loop {
+            let next = counted.next;
+            let Some(count) = counted.waiting.remove(&next) else {
+                break;
+            };
+            counted.total += count;
+            counted.next += 1;
+        }
+        self.total.store(counted.total, Ordering::Relaxed);
+        if counted.total > self.limit {
+            self.past_limit.store(true, Ordering::Relaxed);
+        }
+    }
 }
 
 /// The text of the file at `path`, unless it is too large, binary, or not
@@ -402,8 +500,10 @@ mod tests {
         // A query that ends in punctuation needs no boundary there, but
         // one that starts with a letter does.
         assert_eq!(found(&whole("c++"), "c++x and xc++"), [(0, 0..3)]);
-        // A rejected match does not hide the next one.
+        // A rejected match does not hide the next one, even one that
+        // starts inside it.
         assert_eq!(found(&whole("ab"), "abab ab"), [(0, 5..7)]);
+        assert_eq!(found(&whole("a a"), "ba a a"), [(0, 3..6)]);
     }
 
     #[test]
@@ -413,6 +513,21 @@ mod tests {
         // A line ending in `\r\n` keeps its `\r` out of the preview.
         let matches = search_text(&plain("notes"), text, usize::MAX);
         assert_eq!(matches[0].preview.as_ref(), "# Notes");
+    }
+
+    #[test]
+    fn matches_line_ends_in_crlf_files() {
+        let regex = query(
+            "todo$",
+            SearchOptions {
+                regex: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            found(&regex, "a todo\r\nb todo\r\n"),
+            [(0, 2..6), (1, 2..6)]
+        );
     }
 
     #[test]
@@ -582,6 +697,47 @@ mod tests {
                 ("d.md".to_string(), 1),
             ]
         );
+    }
+
+    #[test]
+    fn stops_once_the_first_files_hold_more_than_the_limit() {
+        let root = tempfile::tempdir().unwrap();
+        for name in ["a", "b", "c", "d", "e", "f", "g", "h"] {
+            fs::write(root.path().join(format!("{name}.md")), "x ".repeat(5)).unwrap();
+        }
+        let files = crate::folder::markdown_files(root.path()).unwrap();
+
+        let results = search_files(
+            &plain("x"),
+            &files,
+            &HashMap::new(),
+            7,
+            &AtomicBool::new(false),
+        );
+
+        // The first files are all there, whole, so the first 7 matches are
+        // the first 7 in the folder, and there are more than 7, so the
+        // caller can tell the list was cut.
+        let counts: Vec<_> = results.iter().map(|file| file.matches.len()).collect();
+        assert_eq!(counts[..2], [5, 5]);
+        assert_eq!(results[0].path, files[0]);
+        assert_eq!(results[1].path, files[1]);
+        assert!(counts.iter().sum::<usize>() > 7);
+    }
+
+    #[test]
+    fn a_file_gives_one_match_past_the_limit_to_show_it_was_cut() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("a.md"), "x".repeat(12)).unwrap();
+        let files = crate::folder::markdown_files(root.path()).unwrap();
+        let results = search_files(
+            &plain("x"),
+            &files,
+            &HashMap::new(),
+            10,
+            &AtomicBool::new(false),
+        );
+        assert_eq!(results[0].matches.len(), 11);
     }
 
     #[test]
