@@ -29,6 +29,8 @@ Groups, in this order:
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-30
+
 ### Added
 
 - Search the open folder's Markdown files with ⌘⇧F or View › Search: matches show in the sidebar by file as you type, with Match Case, Match Whole Word and regular expressions. Return or ↓ opens the next match with it selected, ⇧Return or ↑ the previous one, and the arrows beside the count do the same. Open documents are searched with their unsaved edits, in English and Chinese; Whole Word finds a Chinese word inside a sentence, which has no spaces.
