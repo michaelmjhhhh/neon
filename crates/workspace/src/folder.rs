@@ -112,6 +112,23 @@ fn scan_dir(path: &Path) -> std::io::Result<(Vec<FolderEntry>, bool)> {
     Ok((entries, has_visible))
 }
 
+/// Every Markdown file the sidebar lists for `folder`, in its order:
+/// folders before files, each by name.
+pub(super) fn markdown_files(folder: &Path) -> io::Result<Vec<PathBuf>> {
+    fn walk(entries: Vec<FolderEntry>, files: &mut Vec<PathBuf>) {
+        for entry in entries {
+            if entry.is_dir {
+                walk(entry.children, files);
+            } else {
+                files.push(entry.path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(scan_folder(folder)?, &mut files);
+    Ok(files)
+}
+
 pub(super) fn is_markdown(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
@@ -128,22 +145,12 @@ pub(super) fn find_note(folder: &Path, link: &Path) -> Option<PathBuf> {
             .map(|part| part.as_os_str().to_string_lossy().to_lowercase())
             .collect()
     }
-    fn walk(entries: Vec<FolderEntry>, files: &mut Vec<PathBuf>) {
-        for entry in entries {
-            if entry.is_dir {
-                walk(entry.children, files);
-            } else {
-                files.push(entry.path);
-            }
-        }
-    }
     let wanted = lowercase(link);
     if wanted.is_empty() {
         return None;
     }
-    let mut files = Vec::new();
-    walk(scan_folder(folder).ok()?, &mut files);
-    files
+    markdown_files(folder)
+        .ok()?
         .into_iter()
         .filter(|path| {
             let relative = path.strip_prefix(folder).unwrap_or(path);

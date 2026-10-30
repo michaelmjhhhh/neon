@@ -61,12 +61,15 @@ use crate::zen::{Zen, ZenView};
 mod changes;
 mod history;
 mod panes;
+mod search;
 mod tabs;
 mod zen_mode;
 use changes::{Changes, SidebarView};
 pub use changes::{Commit, Push, ShowChanges, ShowFiles, ShowHistory, StageAll, UnstageAll};
 use history::History;
 use panes::{DraggedFile, PaneSplit, Side};
+use search::Search;
+pub use search::{SelectNextMatch, SelectPreviousMatch, ShowSearch};
 use tabs::DocumentTab;
 
 #[cfg(feature = "memory-bench")]
@@ -261,6 +264,8 @@ pub struct Workspace {
     changes: Changes,
     /// The repository's commits; see [`history`].
     history: History,
+    /// Text found in the folder's files; see [`search`].
+    search: Search,
     /// The sidebar and sheet widths, and the split between editor and
     /// preview. Owned here so they outlive the frames that do not show them:
     /// hiding the sidebar or leaving Split does not reset them.
@@ -329,6 +334,7 @@ impl Workspace {
         let tree = cx.new(|cx| TreeState::new(cx));
         let changes = Changes::new(window, cx);
         let history = History::new(cx);
+        let search = Search::new(window, cx);
         let settings = cx.new(|cx| SettingsView::new(typography.clone(), window, cx));
         let sidebar = cx.new({
             let workspace = cx.weak_entity();
@@ -434,6 +440,7 @@ impl Workspace {
             sidebar_view: SidebarView::default(),
             changes,
             history,
+            search,
             panes: cx.new(|_| ResizableState::default()),
             split: cx.new(|_| ResizableState::default()),
             pane_sizes: cx.new(|_| ResizableState::default()),
@@ -650,6 +657,7 @@ impl Workspace {
         self.sync_tree_selection(cx);
         self.update_window_title(window);
         self.focus_content(window, cx);
+        self.reveal_pending_search_match(window, cx);
         cx.notify();
     }
 
@@ -1314,6 +1322,9 @@ impl Workspace {
                             });
                         this.discover_repository(path.clone(), cx);
                         this.folder = Some(path);
+                        // A save or a refresh reads the folder again, and
+                        // what it holds may have changed.
+                        this.refresh_search(window, cx);
                         this.remember_session(cx);
                         this.sidebar_visible |= reveal;
                         let unlisted = this.tree.update(cx, |tree, cx| {
@@ -2209,8 +2220,9 @@ impl Workspace {
         let switch = self.render_sidebar_switch(cx);
         // Changes and History replace the folder's header and tree.
         let git_view = match self.sidebar_view {
-            _ if !self.has_repository() => None,
             SidebarView::Files => None,
+            SidebarView::Search => Some(self.render_search(window, cx)),
+            _ if !self.has_repository() => None,
             SidebarView::Changes => Some(self.render_changes(window, cx)),
             SidebarView::History => Some(self.render_history(window, cx)),
         };
@@ -2240,7 +2252,7 @@ impl Workspace {
                         .justify_end()
                         .gap_1()
                         .pr_2()
-                        .children(switch)
+                        .child(switch)
                         .child(sidebar_toggle(true, cx)),
                 ),
         );
@@ -3562,6 +3574,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::show_files))
             .on_action(cx.listener(Self::show_changes))
             .on_action(cx.listener(Self::show_history))
+            .on_action(cx.listener(Self::show_search))
             .on_action(cx.listener(Self::stage_all))
             .on_action(cx.listener(Self::unstage_all))
             .on_action(cx.listener(Self::commit))
@@ -3776,7 +3789,7 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 
 /// `12345` as `12,345`.
 /// An error message as a sentence: capitalized, ending in one period.
-fn sentence(message: &str) -> String {
+pub(crate) fn sentence(message: &str) -> String {
     let message = message.trim().trim_end_matches('.');
     let mut chars = message.chars();
     match chars.next() {

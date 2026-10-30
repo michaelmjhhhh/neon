@@ -7,7 +7,7 @@ use gpui_kit::component::input::{
     Copy, Cut, Indent, IndentInline, Outdent, OutdentInline, Paste, Redo, Replace, Search,
     SelectAll, Undo,
 };
-use gpui_kit::{Action, App, AsKeystroke as _, Keystroke};
+use gpui_kit::{Action, App, AsKeystroke as _, KeyBinding, Keystroke};
 use markdown_preview::{
     ScrollDown, ScrollPageDown, ScrollPageUp, ScrollToBottom, ScrollToTop, ScrollUp,
 };
@@ -16,8 +16,9 @@ use crate::workspace::{
     CloseSettings, CloseTab, CloseWindow, CopyEntry, CopyEntryPath, ExitZen, FocusLeftPane,
     FocusRightPane, NewFile, NewFolder, NewTab, NextTab, Open, OpenFolder, OpenSettings,
     PasteEntry, PreviousTab, Push, Quit, RenameEntry, ResetZoom, RevealEntry, Save, SaveAs,
-    ShowChanges, ShowEditor, ShowFiles, ShowPreview, ShowSplit, SplitLeft, SplitRight, ToggleBold,
-    ToggleItalic, ToggleLineNumbers, ToggleSidebar, ToggleZen, TrashEntry, ZoomIn, ZoomOut,
+    SelectNextMatch, SelectPreviousMatch, ShowChanges, ShowEditor, ShowFiles, ShowPreview,
+    ShowSearch, ShowSplit, SplitLeft, SplitRight, ToggleBold, ToggleItalic, ToggleLineNumbers,
+    ToggleSidebar, ToggleZen, TrashEntry, ZoomIn, ZoomOut,
 };
 
 pub(super) struct Group {
@@ -38,7 +39,7 @@ pub(super) struct Shortcut {
 /// actions that do one thing, such as Tab and Cmd-] for Indent.
 type Row = (&'static str, Vec<Box<dyn Action>>);
 
-fn rows(cx: &App) -> [(&'static str, Option<&'static str>, Vec<Row>); 8] {
+fn rows(cx: &App) -> [(&'static str, Option<&'static str>, Vec<Row>); 9] {
     let a = |actions: &[&dyn Action]| actions.iter().map(|action| action.boxed_clone()).collect();
     // GPUI Kit binds these but does not export their types.
     let named = |name: &str| {
@@ -124,8 +125,17 @@ fn rows(cx: &App) -> [(&'static str, Option<&'static str>, Vec<Row>); 8] {
             vec![
                 ("Toggle sidebar", a(&[&ToggleSidebar])),
                 ("Files", a(&[&ShowFiles])),
+                ("Search", a(&[&ShowSearch])),
                 ("Changes", a(&[&ShowChanges])),
                 ("Push", a(&[&Push])),
+            ],
+        ),
+        (
+            "Search",
+            Some("While the search field has focus."),
+            vec![
+                ("Next match", a(&[&SelectNextMatch])),
+                ("Previous match", a(&[&SelectPreviousMatch])),
             ],
         ),
         (
@@ -161,6 +171,7 @@ fn rows(cx: &App) -> [(&'static str, Option<&'static str>, Vec<Row>); 8] {
 pub(super) fn all(cx: &App) -> Vec<Group> {
     let keymap = cx.key_bindings();
     let keymap = keymap.borrow();
+    let bindings: Vec<&KeyBinding> = keymap.bindings().collect();
     rows(cx)
         .into_iter()
         .filter_map(|(title, description, rows)| {
@@ -170,6 +181,9 @@ pub(super) fn all(cx: &App) -> Vec<Group> {
                     let mut keys: Vec<Vec<Keystroke>> = Vec::new();
                     for action in &actions {
                         for binding in keymap.bindings_for_action(action.as_ref()) {
+                            if is_overridden(binding, &bindings) {
+                                continue;
+                            }
                             let key: Vec<_> = binding
                                 .keystrokes()
                                 .iter()
@@ -192,6 +206,23 @@ pub(super) fn all(cx: &App) -> Vec<Group> {
         .collect()
 }
 
+/// Whether a binding made after `binding` gives its keys to another command
+/// in the same context, so they no longer reach this one: ⌘⇧F, which GPUI
+/// Kit binds to Replace and Neon to Search.
+fn is_overridden(binding: &KeyBinding, bindings: &[&KeyBinding]) -> bool {
+    let Some(ix) = bindings
+        .iter()
+        .position(|other| std::ptr::eq(*other, binding))
+    else {
+        return false;
+    };
+    bindings[ix + 1..].iter().any(|later| {
+        later.keystrokes() == binding.keystrokes()
+            && later.predicate() == binding.predicate()
+            && !later.action().partial_eq(binding.action())
+    })
+}
+
 /// The groups whose title or command names contain `query`, ignoring case:
 /// a matching title keeps all its commands.
 pub(super) fn filter<'a>(groups: &'a [Group], query: &str) -> Vec<(&'a Group, Vec<&'a Shortcut>)> {
@@ -208,4 +239,24 @@ pub(super) fn filter<'a>(groups: &'a [Group], query: &str) -> Vec<(&'a Group, Ve
             (!shortcuts.is_empty()).then_some((group, shortcuts))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn leaves_out_keys_a_later_binding_takes_in_the_same_context() {
+        let replace = KeyBinding::new("cmd-shift-f", Replace, Some("Input"));
+        let elsewhere = KeyBinding::new("cmd-shift-f", Replace, Some("Editor"));
+        let search = KeyBinding::new("cmd-shift-f", ShowSearch, Some("Input"));
+        let moved = KeyBinding::new("alt-cmd-f", Replace, Some("Input"));
+        let bindings = [&replace, &elsewhere, &search, &moved];
+
+        assert!(is_overridden(&replace, &bindings));
+        // Another context keeps its keys, and so does the last binding.
+        assert!(!is_overridden(&elsewhere, &bindings));
+        assert!(!is_overridden(&search, &bindings));
+        assert!(!is_overridden(&moved, &bindings));
+    }
 }
