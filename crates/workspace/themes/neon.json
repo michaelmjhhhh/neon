@@ -20,7 +20,7 @@
         "window.border": "#d6d8de",
 
         "muted.background": "#f2f3f5",
-        "muted.foreground": "#6b6e78",
+        "muted.foreground": "#63656f",
         "accent.background": "#e9eaee",
         "accent.foreground": "#1a1b20",
 
@@ -33,13 +33,13 @@
         "secondary.active.background": "#dcdde2",
         "secondary.foreground": "#1a1b20",
 
-        "danger.background": "#d93036",
+        "danger.background": "#c4242a",
         "danger.foreground": "#ffffff",
-        "warning.background": "#b7791f",
+        "warning.background": "#8a5d00",
         "warning.foreground": "#ffffff",
-        "success.background": "#1f8a5b",
+        "success.background": "#1a734c",
         "success.foreground": "#ffffff",
-        "info.background": "#1f6fd1",
+        "info.background": "#1c64bd",
         "info.foreground": "#ffffff",
 
         "chart.1": "#eb4b10",
@@ -85,7 +85,7 @@
 
         "table.background": "#ffffff",
         "table.head.background": "#f6f6f8",
-        "table.head.foreground": "#6b6e78",
+        "table.head.foreground": "#63656f",
         "table.hover.background": "#f2f3f5",
         "table.active.background": "#eb4b1014",
         "table.active.border": "#eb4b1066",
@@ -181,8 +181,8 @@
         "secondary.active.background": "#454a56",
         "secondary.foreground": "#dce0e5",
 
-        "danger.background": "#f2555a",
-        "danger.foreground": "#ffffff",
+        "danger.background": "#f68488",
+        "danger.foreground": "#2a1012",
         "warning.background": "#f0b429",
         "warning.foreground": "#1a1b20",
         "success.background": "#3fb37f",

@@ -333,6 +333,12 @@ impl Workspace {
             |_| WorkspaceSidebar { workspace }
         });
         let subscriptions = vec![
+            // A cached view redraws when it or a view inside it notifies,
+            // not when the workspace it reads does; without this, a change
+            // only the workspace saw, such as the folder turning out to be
+            // a repository, would not reach the sidebar until the tree's
+            // next hover.
+            cx.observe_self(|this, cx| this.sidebar.update(cx, |_, cx| cx.notify())),
             cx.subscribe(&tree, |this, _, event, _| match event {
                 TreeEvent::Expanded(id) => {
                     this.expanded_folders.insert(id.clone());
@@ -2176,7 +2182,7 @@ impl Workspace {
                     .outline()
                     .icon(IconName::FolderOpen)
                     .label("Open Folder…")
-                    .tooltip_with_action("Open Folder…", &OpenFolder, Some(KEY_CONTEXT))
+                    .tooltip_with_action("Open folder…", &OpenFolder, Some(KEY_CONTEXT))
                     .disabled(!can_open_folder)
                     .on_click(
                         cx.listener(|this, _, window, cx| {
@@ -2191,30 +2197,18 @@ impl Workspace {
                 "No Markdown files",
                 "Files ending in .md in this folder appear here.",
             )
+            // One next step: two buttons do not fit the sidebar's width,
+            // and New Folder sits in the header just above.
             .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(
-                        Button::new("new-file-empty")
-                            .small()
-                            .outline()
-                            .icon(AssetIcon::FilePlus)
-                            .label("New File…")
-                            .disabled(self.is_busy())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.new_file(&NewFile, window, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new("new-folder-empty")
-                            .small()
-                            .outline()
-                            .icon(AssetIcon::FolderPlus)
-                            .label("New Folder…")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.new_folder(&NewFolder, window, cx)
-                            })),
+                Button::new("new-file-empty")
+                    .small()
+                    .outline()
+                    .icon(AssetIcon::FilePlus)
+                    .label("New File…")
+                    .tooltip_with_action("New file…", &NewFile, Some(KEY_CONTEXT))
+                    .disabled(self.is_busy())
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.new_file(&NewFile, window, cx)),
                     ),
             )
             .into_any_element()
@@ -2770,7 +2764,7 @@ impl Workspace {
         // leads the trailing controls, so it appears without moving them.
         let save_button = is_dirty.then(|| {
             Button::new("save-file")
-                .xsmall()
+                .small()
                 .outline()
                 .label(save_label)
                 .tooltip_with_action(save_label, &Save, Some(KEY_CONTEXT))

@@ -552,6 +552,8 @@ impl Workspace {
             .change_background(true)
             .hunk_separator(DiffHunkSeparator::LineInfo)
             .change_indicator(DiffChangeIndicator::Signs)
+            // The sheet draws the frame; the diff's own border would double it.
+            .border_0()
             .size_full()
             .into_any_element()
     }

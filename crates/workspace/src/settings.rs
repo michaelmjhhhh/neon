@@ -325,7 +325,7 @@ impl SettingsView {
         let palette = Palette::current(cx);
         let default_view = section(
             "Default view",
-            Some("New windows open in this view. Cmd+1, Cmd+2 and Cmd+3 switch it in a window."),
+            Some("New windows open in this view. ⌘1, ⌘2 and ⌘3 switch it in a window."),
             None,
             div().flex().gap_3().children(LayoutMode::ALL.map(|layout| {
                 choice_card(
@@ -344,7 +344,7 @@ impl SettingsView {
         );
         let line_numbers = section(
             "Line numbers",
-            Some("Cmd+Shift+L shows or hides them in the current window until it closes."),
+            Some("⇧⌘L shows or hides them in the current window until it closes."),
             None,
             div()
                 .flex()

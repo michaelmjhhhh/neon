@@ -29,6 +29,21 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Changed
+
+- Settings writes shortcuts as ⌘1 and ⇧⌘L, as the menus and the Shortcuts section do, instead of Cmd+1 and Cmd+Shift+L.
+- Find's Replace All button and the sidebar's tooltips use the same capitalization as the controls beside them.
+- The Save button in the document header and the Edit button over a change are as tall as the controls beside them.
+- Secondary text and the colors for Git status letters, line counts, callouts and messages are a shade deeper in the light theme, and red is lighter in the dark theme, so small text in them meets the WCAG AA contrast of 4.5:1 on the sidebar.
+
+### Fixed
+
+- The sidebar shows the Files, Changes and History switch as soon as Neon finds the folder is a Git repository, and ⌃⇧G or View › Changes and History switch the sidebar at once instead of leaving it on the file list.
+- Front matter properties in a narrow preview, such as beside another document, keep short values on one line instead of wrapping them word by word.
+- An empty document's placeholder reads "Start writing…" and fits a narrow pane instead of being cut off mid-sentence.
+- A diff in Changes or History meets the sheet's header and footer with one hairline instead of a doubled one.
+- A folder with no Markdown files offers one New File… button that fits the sidebar, instead of two buttons running to its edges; New Folder stays in the sidebar's header.
+
 ## [0.13.1] - 2026-10-29
 
 ### Fixed
