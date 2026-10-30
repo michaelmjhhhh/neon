@@ -1330,7 +1330,7 @@ impl Workspace {
                         this.refresh_search(window, cx);
                         this.remember_session(cx);
                         this.sidebar_visible |= reveal;
-                        let unlisted = this.tree.update(cx, |tree, cx| {
+                        this.tree.update(cx, |tree, cx| {
                             tree.set_items(
                                 entries
                                     .into_iter()
@@ -1346,14 +1346,12 @@ impl Workspace {
                             // which could ask to discard the open document.
                             let entry =
                                 |id: &SharedString| tree.index_of(id).and_then(|ix| tree.entry(ix));
-                            let unlisted = select.clone().filter(|id| entry(id).is_none());
                             let selected = select
                                 .filter(|id| entry(id).is_some_and(TreeEntry::is_folder))
                                 .or(active);
                             if let Some(id) = selected {
                                 tree.set_selected_index(tree.index_of(&id), cx);
                             }
-                            unlisted
                         });
                         // A row renamed or removed on disk is gone from the
                         // new list: its stand-in name is done with, and a
@@ -1373,17 +1371,6 @@ impl Workspace {
                         }
                         if editing_gone {
                             this.end_rename(window, cx);
-                        }
-                        // A copied folder of only images is filtered out.
-                        if let Some(id) = unlisted {
-                            window.push_notification(
-                                Notification::info(format!(
-                                    "“{}” holds no Markdown files, so the sidebar doesn’t \
-                                     list it.",
-                                    file_name(Path::new(id.as_ref()))
-                                )),
-                                cx,
-                            );
                         }
                     }
                     Err(error) => {
@@ -2517,8 +2504,9 @@ impl Workspace {
                                 .pl(rem * 0.5)
                                 .child(div().w(gpui_kit::px(1.)).h_full().bg(guide))
                         });
-                        // An empty folder's "Empty" row cannot be selected; a press
-                        // on it selects the folder, where a new file would go.
+                        // A folder's placeholder row, such as "Empty", cannot be
+                        // selected; a press on it selects the folder, where a new
+                        // file would go.
                         let select_folder = entry.is_disabled().then(|| {
                             let folder = Path::new(item.id.as_ref()).parent().map(|path| {
                                 SharedString::from(path.to_string_lossy().into_owned())
