@@ -40,8 +40,8 @@ use gpui_kit::{
 };
 
 use super::{
-    RefreshFolder, SHEET_HEADER_REMS, Workspace, format_count, sentence, sidebar_empty_state,
-    split_extension,
+    RefreshFolder, SHEET_HEADER_REMS, ShowSearch, Workspace, format_count, sentence,
+    sidebar_empty_state, split_extension,
 };
 use crate::KEY_CONTEXT;
 use crate::change_tree::{ChangeRow, change_rows, paths_inside};
@@ -65,8 +65,16 @@ gpui_kit::actions!(
 pub(super) enum SidebarView {
     #[default]
     Files,
+    Search,
     Changes,
     History,
+}
+
+impl SidebarView {
+    /// Whether the view shows the repository, and so needs one.
+    fn needs_repository(self) -> bool {
+        matches!(self, Self::Changes | Self::History)
+    }
 }
 
 /// A commit or push in flight. Staging has no state of its own: a checkbox
@@ -254,7 +262,7 @@ impl Workspace {
     /// the document.
     pub(super) fn showing_diff(&self) -> bool {
         let picked = match self.sidebar_view {
-            SidebarView::Files => false,
+            SidebarView::Files | SidebarView::Search => false,
             SidebarView::Changes => self.changes.selected.is_some(),
             SidebarView::History => self.history.selected().is_some(),
         };
@@ -283,7 +291,7 @@ impl Workspace {
                 this.changes.repo = repo;
                 if this.changes.repo.is_some() {
                     this.refresh_changes(cx);
-                } else {
+                } else if this.sidebar_view.needs_repository() {
                     this.sidebar_view = SidebarView::Files;
                 }
                 cx.notify();
@@ -607,8 +615,13 @@ impl Workspace {
         false
     }
 
-    fn set_sidebar_view(&mut self, view: SidebarView, window: &mut Window, cx: &mut Context<Self>) {
-        if view != SidebarView::Files && !self.has_repository() {
+    pub(super) fn set_sidebar_view(
+        &mut self,
+        view: SidebarView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if view.needs_repository() && !self.has_repository() {
             return;
         }
         // The other views do not show the name being edited, and a click on
@@ -644,6 +657,7 @@ impl Workspace {
         if view == SidebarView::History && !shown {
             self.load_history(cx);
         }
+        self.catch_up_search(window, cx);
         cx.notify();
     }
 
@@ -767,22 +781,25 @@ impl Workspace {
         }));
     }
 
-    /// The Files, Changes and History switch, at the top of the sidebar,
-    /// for a folder in a repository.
-    pub(super) fn render_sidebar_switch(&self, cx: &mut Context<Self>) -> Option<TabBar> {
-        self.changes.repo.as_ref()?;
-        const VIEWS: [SidebarView; 3] = [
-            SidebarView::Files,
-            SidebarView::Changes,
-            SidebarView::History,
-        ];
-        let selected = VIEWS
+    /// The switch between the sidebar's views. Changes and History join
+    /// Files and Search for a folder in a Git repository.
+    pub(super) fn render_sidebar_switch(&self, cx: &mut Context<Self>) -> TabBar {
+        let mut views = vec![SidebarView::Files, SidebarView::Search];
+        if self.has_repository() {
+            views.extend([SidebarView::Changes, SidebarView::History]);
+        }
+        let selected = views
             .iter()
             .position(|view| *view == self.sidebar_view)
             .unwrap_or_default();
-        let tab = |icon: gpui_kit::component::Icon,
-                   label: &'static str,
-                   action: &'static dyn gpui_kit::Action| {
+        let tab = |view: SidebarView| {
+            let (icon, label, action): (Icon, &'static str, &'static dyn gpui_kit::Action) =
+                match view {
+                    SidebarView::Files => (IconName::Folder.into(), "Files", &ShowFiles),
+                    SidebarView::Search => (IconName::Search.into(), "Search", &ShowSearch),
+                    SidebarView::Changes => (AssetIcon::GitCompare.into(), "Changes", &ShowChanges),
+                    SidebarView::History => (AssetIcon::GitGraph.into(), "History", &ShowHistory),
+                };
             Tab::new()
                 .icon(icon)
                 .aria_label(label)
@@ -792,20 +809,16 @@ impl Workspace {
                         .build(window, cx)
                 })
         };
-        Some(
-            TabBar::new("sidebar-view")
-                .segmented()
-                .small()
-                .child(tab(IconName::Folder.into(), "Files", &ShowFiles))
-                .child(tab(AssetIcon::GitCompare.into(), "Changes", &ShowChanges))
-                .child(tab(AssetIcon::GitGraph.into(), "History", &ShowHistory))
-                .selected_index(selected)
-                .on_click(cx.listener(|this, ix: &usize, window, cx| {
-                    if let Some(view) = VIEWS.get(*ix) {
-                        this.set_sidebar_view(*view, window, cx);
-                    }
-                })),
-        )
+        TabBar::new("sidebar-view")
+            .segmented()
+            .small()
+            .children(views.iter().map(|view| tab(*view)))
+            .selected_index(selected)
+            .on_click(cx.listener(move |this, ix: &usize, window, cx| {
+                if let Some(view) = views.get(*ix) {
+                    this.set_sidebar_view(*view, window, cx);
+                }
+            }))
     }
 
     /// The branch, how far it is from its upstream, and pushing, where the

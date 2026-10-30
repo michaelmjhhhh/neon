@@ -19,6 +19,9 @@ markdown.workspace = true
 pulldown-cmark.workspace = true
 export.workspace = true
 tree-sitter = "0.26"
+# Both already built for GPUI Kit: the folder search's matcher and threads.
+regex = "1"
+rayon = "1"
 anyhow = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -31,10 +31,13 @@ Groups, in this order:
 
 ### Added
 
+- Search the open folder's Markdown files with ⌘⇧F or View › Search: matches show in the sidebar by file as you type, with Match Case, Match Whole Word and regular expressions. Return or ↓ opens the next match with it selected, ⇧Return or ↑ the previous one, and the arrows beside the count do the same. Open documents are searched with their unsaved edits, in English and Chinese; Whole Word finds a Chinese word inside a sentence, which has no spaces.
 - Move a file or folder to the Trash from its right-click menu in the sidebar, or with ⌘⌫ while the sidebar has focus. Neon asks first, says when a folder holds files the sidebar doesn’t list or an open document has unsaved edits, and closes the tabs that showed what was moved. On a volume with no Trash, such as some network shares, it offers to delete the item immediately instead.
 
 ### Changed
 
+- Find and Replace moves to ⌥⌘F, as in TextEdit and Pages, so ⌘⇧F can search the folder as it does in VS Code, Zed and Xcode.
+- The sidebar's view switch shows for every folder, with Files and Search, and adds Changes and History for a folder in a Git repository.
 - Settings writes shortcuts as ⌘1 and ⇧⌘L, as the menus and the Shortcuts section do, instead of Cmd+1 and Cmd+Shift+L.
 - Find's Replace All button and the sidebar's tooltips use the same capitalization as the controls beside them.
 - The Save button in the document header and the Edit button over a change are as tall as the controls beside them.

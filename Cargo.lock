@@ -8561,6 +8561,8 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "pulldown-cmark",
  "raw-window-handle",
+ "rayon",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

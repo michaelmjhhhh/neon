@@ -44,6 +44,7 @@ Neon is built on [GPUI](https://github.com/zed-industries/zed/tree/main/crates/g
 
 - **Tabs**, each with its own edits, undo history and scroll position.
 - **Folder sidebar** for nested Markdown files, with new file and new folder.
+- **Search the folder** from the sidebar, with match case, whole word and regular expressions. Unsaved edits are searched as they read, in English and Chinese.
 - **Git** for a folder in a Git repository: see what changed since the last commit, word by word, then stage, commit and push from the sidebar, and browse the history as a branch graph.
 - **Picks up where you left off:** Neon reopens the last folder and file at launch.
 - **Export** to HTML, PDF or Word in the preview's font, with local images embedded.
@@ -84,11 +85,12 @@ gh attestation verify Neon-<version>-macos.dmg --repo michaelmjhhhh/neon
 | Save As | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>S</kbd> | **Editing** | |
 | Next / previous tab | <kbd>⌃</kbd> <kbd>Tab</kbd> / <kbd>⌃</kbd> <kbd>⇧</kbd> <kbd>Tab</kbd> | Bold / Italic | <kbd>⌘</kbd> <kbd>B</kbd> / <kbd>⌘</kbd> <kbd>I</kbd> |
 | Close tab | <kbd>⌘</kbd> <kbd>W</kbd> | Find | <kbd>⌘</kbd> <kbd>F</kbd> |
-| Close window | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>W</kbd> | Find and replace | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>F</kbd> |
+| Close window | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>W</kbd> | Find and replace | <kbd>⌥</kbd> <kbd>⌘</kbd> <kbd>F</kbd> |
 | Files / Changes in sidebar | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>E</kbd> / <kbd>⌃</kbd> <kbd>⇧</kbd> <kbd>G</kbd> | Indent / outdent list item | <kbd>Tab</kbd> / <kbd>⇧</kbd> <kbd>Tab</kbd> |
+| Search in folder | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>F</kbd> | | |
 | Commit, in the message | <kbd>⌘</kbd> <kbd>↩</kbd> | | |
 
-<kbd>⌘</kbd> <kbd>}</kbd> and <kbd>⌘</kbd> <kbd>{</kbd> also switch tabs. In the preview, <kbd>Space</kbd> and <kbd>⇧</kbd> <kbd>Space</kbd> page down and up, and <kbd>⌘</kbd> <kbd>↑</kbd> <kbd>↓</kbd> jump to the top and bottom.
+<kbd>⌘</kbd> <kbd>}</kbd> and <kbd>⌘</kbd> <kbd>{</kbd> also switch tabs. In the search field, <kbd>↩</kbd> or <kbd>↓</kbd> opens the next match and <kbd>⇧</kbd> <kbd>↩</kbd> or <kbd>↑</kbd> the previous one. In the preview, <kbd>Space</kbd> and <kbd>⇧</kbd> <kbd>Space</kbd> page down and up, and <kbd>⌘</kbd> <kbd>↑</kbd> <kbd>↓</kbd> jump to the top and bottom.
 
 ## Performance
 

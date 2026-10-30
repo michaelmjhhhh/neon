@@ -6,6 +6,7 @@ mod document_file;
 mod editor_pane;
 mod find_bar;
 mod folder;
+mod folder_search;
 mod git;
 mod highlighter;
 mod inline_format;
@@ -44,7 +45,7 @@ pub use workspace::{
     ShowEditor, ShowPreview, ShowSplit, SplitLeft, SplitRight, ToggleBold, ToggleItalic,
     ToggleLineNumbers, ToggleSidebar, ToggleTheme, ToggleZen, Workspace, ZoomIn, ZoomOut,
 };
-pub use workspace::{Push, ShowChanges, ShowFiles, ShowHistory, StageAll, UnstageAll};
+pub use workspace::{Push, ShowChanges, ShowFiles, ShowHistory, ShowSearch, StageAll, UnstageAll};
 
 const KEY_CONTEXT: &str = "Workspace";
 /// The sidebar's file tree while it has focus. Its Copy and Paste act on
@@ -67,6 +68,8 @@ gpui_kit::assets::icon_assets!(
         Lightbulb,
         PenLine,
         Quote,
+        Regex,
+        WholeWord,
     ]
 );
 
@@ -89,6 +92,10 @@ impl gpui_kit::AssetSource for Assets {
     }
 }
 const SETTINGS_KEY_CONTEXT: &str = "Settings";
+/// GPUI Kit's text fields and editor, which bind Find and Replace.
+const INPUT_KEY_CONTEXT: &str = "Input";
+/// The sidebar's search field.
+const SEARCH_FIELD_KEY_CONTEXT: &str = "SearchField > Input";
 
 /// The base options for a document window. The workspace draws its own title
 /// bar, and macOS centers its window controls on the document sheet's header
@@ -141,6 +148,40 @@ pub fn init(cx: &mut App) {
         // Files and Changes in the sidebar, with VS Code's shortcuts on macOS.
         KeyBinding::new("secondary-shift-e", ShowFiles, Some(KEY_CONTEXT)),
         KeyBinding::new("ctrl-shift-g", ShowChanges, Some(KEY_CONTEXT)),
+        // Search in the folder takes ⌘⇧F, as in VS Code, Zed and Xcode, and
+        // Find and Replace moves to ⌥⌘F, as in TextEdit and Pages. Both
+        // bind in the field's context too: the editor binds ⌘⇧F to Replace
+        // there, and its binding would otherwise win.
+        KeyBinding::new("secondary-shift-f", ShowSearch, Some(KEY_CONTEXT)),
+        KeyBinding::new("secondary-shift-f", ShowSearch, Some(INPUT_KEY_CONTEXT)),
+        KeyBinding::new(
+            "alt-secondary-f",
+            gpui_kit::component::input::Replace,
+            Some(INPUT_KEY_CONTEXT),
+        ),
+        // In the search field, Return and the arrows step through the
+        // matches. They bind on the field inside the search's context, so
+        // they win over the field's own Return and arrows.
+        KeyBinding::new(
+            "enter",
+            workspace::SelectNextMatch,
+            Some(SEARCH_FIELD_KEY_CONTEXT),
+        ),
+        KeyBinding::new(
+            "down",
+            workspace::SelectNextMatch,
+            Some(SEARCH_FIELD_KEY_CONTEXT),
+        ),
+        KeyBinding::new(
+            "shift-enter",
+            workspace::SelectPreviousMatch,
+            Some(SEARCH_FIELD_KEY_CONTEXT),
+        ),
+        KeyBinding::new(
+            "up",
+            workspace::SelectPreviousMatch,
+            Some(SEARCH_FIELD_KEY_CONTEXT),
+        ),
         KeyBinding::new("secondary-p", Push, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-shift-l", ToggleLineNumbers, Some(KEY_CONTEXT)),
         // Z for Zen. macOS menus cannot show Enter, so not Cmd-Shift-Enter.
