@@ -501,6 +501,7 @@ impl<'a> BlockRenderer<'a> {
             div()
                 .flex()
                 .flex_row()
+                .w_full()
                 .gap_4()
                 .child(
                     // A narrow pane gives the key less room, so short
@@ -523,6 +524,7 @@ impl<'a> BlockRenderer<'a> {
         div()
             .flex()
             .flex_col()
+            .w_full()
             .gap_1()
             .pb_4()
             .border_b_1()
