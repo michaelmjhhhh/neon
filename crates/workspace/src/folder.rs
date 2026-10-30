@@ -15,11 +15,14 @@ pub(super) struct FolderEntry {
     path: PathBuf,
     is_dir: bool,
     children: Vec<FolderEntry>,
+    /// Whether a folder holds any visible entry, listed or not.
+    has_visible: bool,
 }
 
 impl FolderEntry {
-    /// The tree item for this entry. An empty folder gets a disabled "Empty"
-    /// child: the tree treats only items with children as folders.
+    /// The tree item for this entry. A folder with nothing to list gets a
+    /// disabled child, "Empty" or "No Markdown files": the tree treats only
+    /// items with children as folders.
     pub(super) fn into_tree_item(self, expanded: &HashSet<SharedString>) -> TreeItem {
         let label = self
             .path
@@ -35,7 +38,12 @@ impl FolderEntry {
                 .join(EMPTY_PLACEHOLDER)
                 .to_string_lossy()
                 .into_owned();
-            TreeItem::new(id, "Empty").disabled(true)
+            let label = if self.has_visible {
+                "No Markdown files"
+            } else {
+                "Empty"
+            };
+            TreeItem::new(id, label).disabled(true)
         });
         TreeItem::new(id, label)
             .expanded(is_expanded)
@@ -65,8 +73,8 @@ impl FolderEntry {
 
 /// Skip hidden directories and symlinks; never follow cycles or leave the folder.
 ///
-/// A directory is listed when it holds Markdown files or nothing at all, so a
-/// new folder shows up while one of only images or code stays out of the way.
+/// Every visible directory is listed, so a folder of only images, such as
+/// `assets`, shows up beside the notes that link into it.
 pub(super) fn scan_folder(path: &Path) -> std::io::Result<Vec<FolderEntry>> {
     scan_dir(path).map(|(entries, _)| entries)
 }
@@ -84,19 +92,19 @@ fn scan_dir(path: &Path) -> std::io::Result<(Vec<FolderEntry>, bool)> {
         let kind = entry.file_type()?;
         let path = entry.path();
         if kind.is_dir() {
-            let (children, dir_has_visible) = scan_dir(&path)?;
-            if !children.is_empty() || !dir_has_visible {
-                entries.push(FolderEntry {
-                    path,
-                    is_dir: true,
-                    children,
-                });
-            }
+            let (children, has_visible) = scan_dir(&path)?;
+            entries.push(FolderEntry {
+                path,
+                is_dir: true,
+                children,
+                has_visible,
+            });
         } else if kind.is_file() && is_markdown(&path) {
             entries.push(FolderEntry {
                 path,
                 is_dir: false,
                 children: Vec::new(),
+                has_visible: false,
             });
         }
     }
@@ -470,7 +478,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lists_empty_folders_and_hides_folders_without_markdown() {
+    fn lists_every_visible_folder_and_only_markdown_files() {
         let root = std::env::temp_dir().join(format!("neon-scan-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("empty")).unwrap();
@@ -496,7 +504,11 @@ mod tests {
             .collect();
         std::fs::remove_dir_all(&root).unwrap();
 
-        assert_eq!(names, ["empty", "hidden-only", "notes", "b.md"]);
+        assert_eq!(names, ["empty", "hidden-only", "images", "notes", "b.md"]);
+        let images = &entries[2];
+        assert!(images.children.is_empty());
+        assert!(images.has_visible);
+        assert!(!entries[1].has_visible);
         let mut counts = HashMap::new();
         let total: usize = entries.iter().map(|e| e.count_files(&mut counts)).sum();
         assert_eq!(total, 2);

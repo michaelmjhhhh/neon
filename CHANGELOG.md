@@ -29,6 +29,10 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Fixed
+
+- The sidebar lists every folder, including ones with no Markdown files such as `assets`, which shows a "No Markdown files" row.
+
 ## [0.14.0] - 2026-10-30
 
 ### Added
