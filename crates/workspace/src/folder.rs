@@ -207,17 +207,32 @@ fn existing_entry(path: &Path) -> io::Result<fs::Metadata> {
 }
 
 /// Move `path`, a file or a folder with everything in it, to the Trash, from
-/// which Finder can restore it. As Finder, VS Code and Zed do on macOS, this
-/// asks `NSFileManager`, which picks a free name in the Trash and needs no
-/// permission to script Finder.
+/// which Finder can restore it. As VS Code and Zed do on macOS, this asks
+/// `NSFileManager`, which picks a free name in the Trash and needs no
+/// permission to script Finder. A volume with no Trash, such as some network
+/// shares, fails with [`io::ErrorKind::Unsupported`].
 pub(super) fn trash_entry(path: &Path) -> io::Result<()> {
     existing_entry(path)?;
     move_to_trash(path)
 }
 
+/// Delete `path`, a file or a folder with everything in it, for good: for a
+/// volume with no Trash, as Finder's Delete Immediately. A link goes, not
+/// what it points to.
+pub(super) fn delete_entry(path: &Path) -> io::Result<()> {
+    if existing_entry(path)?.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn move_to_trash(path: &Path) -> io::Result<()> {
-    use objc2_foundation::{NSFileManager, NSString, NSURL};
+    use objc2_foundation::{
+        NSCocoaErrorDomain, NSFeatureUnsupportedError, NSFileManager, NSFileNoSuchFileError,
+        NSString, NSURL,
+    };
 
     let path = path
         .to_str()
@@ -229,12 +244,19 @@ fn move_to_trash(path: &Path) -> io::Result<()> {
         NSFileManager::defaultManager()
             .trashItemAtURL_resultingItemURL_error(&url, None)
             .map_err(|error| {
-                // The reason alone, "You don’t have permission.": the
-                // description repeats the name and the failed move.
-                let reason = error
-                    .localizedFailureReason()
-                    .unwrap_or_else(|| error.localizedDescription());
-                io::Error::other(reason.to_string())
+                let cocoa = *error.domain() == *unsafe { NSCocoaErrorDomain };
+                if cocoa && error.code() == NSFeatureUnsupportedError {
+                    io::Error::new(io::ErrorKind::Unsupported, "its volume has no Trash")
+                } else if cocoa && error.code() == NSFileNoSuchFileError {
+                    io::Error::new(io::ErrorKind::NotFound, "it no longer exists")
+                } else {
+                    // The reason alone, "You don’t have permission.": the
+                    // description repeats the name and the failed move.
+                    let reason = error
+                        .localizedFailureReason()
+                        .unwrap_or_else(|| error.localizedDescription());
+                    io::Error::other(reason.to_string())
+                }
             })
     })
 }
@@ -735,6 +757,28 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let error = trash_entry(&root.path().join("gone.md")).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(error.to_string(), "it no longer exists");
+    }
+
+    #[test]
+    fn deletes_files_and_folders_but_not_what_links_point_to() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        fs::create_dir_all(root.join("notes/daily")).unwrap();
+        fs::write(root.join("notes/daily/a.md"), b"# A").unwrap();
+        fs::write(root.join("b.md"), b"# B").unwrap();
+        fs::write(root.join("kept.md"), b"# Kept").unwrap();
+        std::os::unix::fs::symlink(root.join("kept.md"), root.join("link.md")).unwrap();
+
+        delete_entry(&root.join("b.md")).unwrap();
+        delete_entry(&root.join("notes")).unwrap();
+        delete_entry(&root.join("link.md")).unwrap();
+
+        assert!(!root.join("b.md").exists());
+        assert!(!root.join("notes").exists());
+        assert!(fs::symlink_metadata(root.join("link.md")).is_err());
+        assert_eq!(fs::read(root.join("kept.md")).unwrap(), b"# Kept");
+        let error = delete_entry(&root.join("b.md")).unwrap_err();
         assert_eq!(error.to_string(), "it no longer exists");
     }
 

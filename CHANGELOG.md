@@ -31,7 +31,7 @@ Groups, in this order:
 
 ### Added
 
-- Move a file or folder to the Trash from its right-click menu in the sidebar, or with ⌘⌫ while the sidebar has focus. Neon asks first, says when a folder holds files the sidebar doesn’t list or an open document has unsaved edits, and closes the tabs that showed what was moved.
+- Move a file or folder to the Trash from its right-click menu in the sidebar, or with ⌘⌫ while the sidebar has focus. Neon asks first, says when a folder holds files the sidebar doesn’t list or an open document has unsaved edits, and closes the tabs that showed what was moved. On a volume with no Trash, such as some network shares, it offers to delete the item immediately instead.
 
 ### Changed
 

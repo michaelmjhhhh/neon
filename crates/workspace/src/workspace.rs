@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::folder::{
-    copy_entry, find_note, is_markdown, is_taken, name_error, rename_entry, renamed_path,
-    scan_folder, trash_entry,
+    copy_entry, delete_entry, find_note, is_markdown, is_taken, name_error, rename_entry,
+    renamed_path, scan_folder, trash_entry,
 };
 use crate::session_file::Session;
 use crate::typography::Typography;
@@ -1411,11 +1411,17 @@ impl Workspace {
 
     /// The file or folder selected in the sidebar.
     fn selected_entry_path(&self, cx: &gpui_kit::App) -> Option<PathBuf> {
+        self.selected_entry(cx).map(|(path, _)| path)
+    }
+
+    /// The file or folder selected in the sidebar, and whether it is a
+    /// folder.
+    fn selected_entry(&self, cx: &gpui_kit::App) -> Option<(PathBuf, bool)> {
         self.tree
             .read(cx)
             .selected_entry()
             .filter(|entry| !entry.is_disabled())
-            .map(|entry| PathBuf::from(entry.item().id.as_ref()))
+            .map(|entry| (PathBuf::from(entry.item().id.as_ref()), entry.is_folder()))
     }
 
     /// Ask for a new file's name, then create it and show it in the tab
@@ -1720,13 +1726,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let selected = self
-            .tree
-            .read(cx)
-            .selected_entry()
-            .filter(|entry| !entry.is_disabled())
-            .map(|entry| (PathBuf::from(entry.item().id.as_ref()), entry.is_folder()));
-        if let Some((path, is_dir)) = selected {
+        if let Some((path, is_dir)) = self.selected_entry(cx) {
             self.start_rename(path, is_dir, window, cx);
         }
     }
@@ -1894,13 +1894,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let selected = self
-            .tree
-            .read(cx)
-            .selected_entry()
-            .filter(|entry| !entry.is_disabled())
-            .map(|entry| (PathBuf::from(entry.item().id.as_ref()), entry.is_folder()));
-        if let Some((path, is_dir)) = selected {
+        if let Some((path, is_dir)) = self.selected_entry(cx) {
             self.confirm_trash(path, is_dir, window, cx);
         }
     }
@@ -1937,29 +1931,63 @@ impl Workspace {
                     &format!(" Unsaved edits to {} documents will be lost.", edited.len())
             }
         }
-        let description = SharedString::from(description);
+        self.confirm_removal(path, false, title, description.into(), window, cx);
+    }
+
+    /// Ask to delete `path` for good, after its volume turned out to have no
+    /// Trash, as Finder does.
+    fn confirm_delete(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let title = format!("Delete “{}” immediately?", file_name(&path)).into();
+        let description = "Its volume has no Trash, so it can’t be restored. You can’t undo \
+                           this."
+            .into();
+        self.confirm_removal(path, true, title, description, window, cx);
+    }
+
+    /// Ask with `title` and `description`, then remove `path`; see
+    /// [`Self::remove_entry`].
+    fn confirm_removal(
+        &mut self,
+        path: PathBuf,
+        permanently: bool,
+        title: SharedString,
+        description: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let this = cx.weak_entity();
         window.open_alert_dialog(cx, move |alert, _, _| {
-            let this = this.clone();
-            let path = path.clone();
+            let (this, path) = (this.clone(), path.clone());
             alert
                 .title(title.clone())
                 .description(description.clone())
                 .confirm()
-                .ok_text("Move to Trash")
+                .ok_text(if permanently {
+                    "Delete"
+                } else {
+                    "Move to Trash"
+                })
                 .ok_variant(ButtonVariant::Danger)
                 .cancel_text("Cancel")
                 .on_ok(move |_, window, cx| {
-                    this.update(cx, |this, cx| this.trash(path.clone(), window, cx))
-                        .ok();
+                    this.update(cx, |this, cx| {
+                        this.remove_entry(path.clone(), permanently, window, cx)
+                    })
+                    .ok();
                     true
                 })
         });
     }
 
-    /// Move `path` to the Trash on a background thread, then close what
-    /// showed it.
-    fn trash(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    /// Move `path` to the Trash, or delete it if `permanently`, on a
+    /// background thread, then close what showed it.
+    fn remove_entry(
+        &mut self,
+        path: PathBuf,
+        permanently: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.is_busy() {
             window.push_notification(
                 Notification::warning(
@@ -1969,25 +1997,41 @@ impl Workspace {
             );
             return;
         }
-        let trash = cx.background_spawn({
+        let remove = cx.background_spawn({
             let path = path.clone();
-            async move { trash_entry(&path) }
+            async move {
+                if permanently {
+                    delete_entry(&path)
+                } else {
+                    trash_entry(&path)
+                }
+            }
         });
         self.entry_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let result = trash.await;
+            let result = remove.await;
             this.update_in(cx, |this, window, cx| {
                 this.entry_task = None;
                 match result {
-                    Ok(()) => this.forget_trashed(&path, window, cx),
+                    Ok(()) => this.forget_removed(&path, window, cx),
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::Unsupported && !permanently =>
+                    {
+                        this.confirm_delete(path, window, cx)
+                    }
                     Err(error) => {
                         // Gone already, say in Finder: drop its stale row.
                         if error.kind() == std::io::ErrorKind::NotFound {
                             this.refresh_folder(&RefreshFolder, window, cx);
                         }
+                        let name = file_name(&path);
+                        let failed = if permanently {
+                            format!("Couldn’t delete “{name}”.")
+                        } else {
+                            format!("Couldn’t move “{name}” to the Trash.")
+                        };
                         window.push_notification(
                             Notification::error(format!(
-                                "Couldn’t move “{}” to the Trash. {}",
-                                file_name(&path),
+                                "{failed} {}",
                                 sentence(&error.to_string())
                             )),
                             cx,
@@ -2001,9 +2045,9 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Close the tabs that showed the trashed `path` or anything inside it,
+    /// Close the tabs that showed the removed `path` or anything inside it,
     /// and forget it in the sidebar. A window's last tab is emptied instead.
-    fn forget_trashed(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+    fn forget_removed(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         let mut closed_any = false;
         while let Some(ix) = self.tabs.iter().position(|tab| shows_entry(tab, path)) {
             if self.tabs.len() > 1 {
