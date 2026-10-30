@@ -715,11 +715,13 @@ mod tests {
             &AtomicBool::new(false),
         );
 
-        // The first files are all there, whole, so the first 7 matches are
-        // the first 7 in the folder, and there are more than 7, so the
-        // caller can tell the list was cut.
+        // The first file is whole, and the second holds at least the rest of
+        // the first 7 plus one, so the matches kept are the first ones in the
+        // folder and the caller can tell the list was cut. The second file
+        // may be cut short if it starts after the first one is counted.
         let counts: Vec<_> = results.iter().map(|file| file.matches.len()).collect();
-        assert_eq!(counts[..2], [5, 5]);
+        assert_eq!(counts[0], 5);
+        assert!(counts[1] >= 3);
         assert_eq!(results[0].path, files[0]);
         assert_eq!(results[1].path, files[1]);
         assert!(counts.iter().sum::<usize>() > 7);
