@@ -12,6 +12,7 @@ mod rows;
 
 use gpui_kit::{App, KeyBinding};
 
+pub use image_cache::PreviewImageCache;
 pub use preview::{
     MarkdownPreview, MarkdownPreviewEvent, OpenLinkedFile, ScrollDown, ScrollPageDown,
     ScrollPageUp, ScrollToBottom, ScrollToTop, ScrollUp,

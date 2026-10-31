@@ -260,7 +260,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.dragging_file.set(false);
+        self.dragging_file.set(None);
         if self.is_busy() {
             return;
         }

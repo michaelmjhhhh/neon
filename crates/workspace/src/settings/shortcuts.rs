@@ -18,7 +18,7 @@ use crate::workspace::{
     PasteEntry, PreviousTab, Push, Quit, RenameEntry, ResetZoom, RevealEntry, Save, SaveAs,
     SelectNextMatch, SelectPreviousMatch, ShowChanges, ShowEditor, ShowFiles, ShowPreview,
     ShowSearch, ShowSplit, SplitLeft, SplitRight, ToggleBold, ToggleItalic, ToggleLineNumbers,
-    ToggleSidebar, ToggleZen, TrashEntry, ZoomIn, ZoomOut,
+    ToggleSidebar, ToggleZen, TrashEntry, ViewEntry, ZoomIn, ZoomOut,
 };
 
 pub(super) struct Group {
@@ -145,6 +145,7 @@ fn rows(cx: &App) -> [(&'static str, Option<&'static str>, Vec<Row>); 9] {
                 ("Copy", a(&[&CopyEntry])),
                 ("Paste", a(&[&PasteEntry])),
                 ("Rename", a(&[&RenameEntry])),
+                ("Show image or open file", a(&[&ViewEntry])),
                 ("Copy path", a(&[&CopyEntryPath])),
                 ("Reveal in Finder", a(&[&RevealEntry])),
                 ("Move to Trash", a(&[&TrashEntry])),

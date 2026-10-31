@@ -9,6 +9,7 @@ mod folder;
 mod folder_search;
 mod git;
 mod highlighter;
+mod image_viewer;
 mod inline_format;
 #[cfg(feature = "diagnostics")]
 mod latency_bench;
@@ -51,6 +52,9 @@ const KEY_CONTEXT: &str = "Workspace";
 /// The sidebar's file tree while it has focus. Its Copy and Paste act on
 /// files, so they bind here alone and the editor keeps Cmd-C and Cmd-V.
 const TREE_KEY_CONTEXT: &str = "Workspace > Tree";
+/// The file tree, but not a name field in one of its rows. Bracketed:
+/// `>` binds loosest, and a `!` inside it sees no deeper than the tree.
+const TREE_OUTSIDE_INPUT_KEY_CONTEXT: &str = "(Workspace > Tree) && !Input";
 
 gpui_kit::assets::icon_assets!(
     ExtraIcons,
@@ -121,6 +125,24 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-shift-n", NewFolder, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-c", workspace::CopyEntry, Some(TREE_KEY_CONTEXT)),
         KeyBinding::new("secondary-v", workspace::PasteEntry, Some(TREE_KEY_CONTEXT)),
+        // Space shows an image or opens an attachment, as Quick Look
+        // does in Finder. The name field binds no Space of its own, so it
+        // is left out here, or a rename could not type one.
+        KeyBinding::new(
+            "space",
+            workspace::ViewEntry,
+            Some(TREE_OUTSIDE_INPUT_KEY_CONTEXT),
+        ),
+        KeyBinding::new(
+            "left",
+            image_viewer::PreviousImage,
+            Some(image_viewer::KEY_CONTEXT),
+        ),
+        KeyBinding::new(
+            "right",
+            image_viewer::NextImage,
+            Some(image_viewer::KEY_CONTEXT),
+        ),
         // Return renames, as in Finder. The name field binds Return itself
         // and wins over this while it is open.
         KeyBinding::new("enter", workspace::RenameEntry, Some(TREE_KEY_CONTEXT)),
@@ -219,4 +241,34 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-{", PreviousTab, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-q", Quit, None),
     ]);
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit::{KeyBindingContextPredicate, KeyContext};
+
+    use super::TREE_OUTSIDE_INPUT_KEY_CONTEXT;
+
+    #[test]
+    fn space_in_the_tree_leaves_a_name_field_alone() {
+        let predicate = KeyBindingContextPredicate::parse(TREE_OUTSIDE_INPUT_KEY_CONTEXT).unwrap();
+        let stack = |names: &[&str]| -> Vec<KeyContext> {
+            names
+                .iter()
+                .map(|name| KeyContext::parse(name).unwrap())
+                .collect()
+        };
+        assert!(predicate.depth_of(&stack(&["Workspace", "Tree"])).is_some());
+        assert!(
+            predicate
+                .depth_of(&stack(&["Workspace", "Tree", "Input"]))
+                .is_none()
+        );
+        // The sidebar's search field is not in the tree at all.
+        assert!(
+            predicate
+                .depth_of(&stack(&["Workspace", "SearchField", "Input"]))
+                .is_none()
+        );
+    }
 }
