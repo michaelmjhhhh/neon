@@ -563,12 +563,20 @@ impl Workspace {
     }
 }
 
-/// The header's Zen control.
+/// The header's Zen control. It rides at the end of the layout switch's
+/// track, so it takes the frame of one of that switch's small icon segments:
+/// GPUI Kit draws those 18 px tall, 1.25 times as wide, with corners 2 px
+/// inside the track's. Its icon keeps the unselected segments' color.
 pub(super) fn enter_zen_button(cx: &Context<Workspace>) -> Button {
+    let segment_height = px(18.);
     Button::new("enter-zen")
         .small()
         .ghost()
-        .icon(Icon::new(AssetIcon::Focus))
+        .icon(Icon::new(AssetIcon::ScanText))
+        .h(segment_height)
+        .w(segment_height * 1.25)
+        .rounded(cx.theme().radius - px(2.))
+        .text_color(cx.theme().tab_foreground)
         .accessibility_label("Enter Zen Mode")
         .tooltip_with_action("Enter Zen Mode", &ToggleZen, Some(KEY_CONTEXT))
         .on_click(cx.listener(|this, _, window, cx| this.enter_zen(window, cx)))
