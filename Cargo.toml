@@ -14,8 +14,33 @@ publish = false
 gpui-kit = { version = "0.7.3", features = [
     "tree-sitter-markdown",
     "tree-sitter-markdown-inline",
+    # Grammars for fenced code blocks, in the editor and the preview. JSON
+    # is always built in. Each grammar adds to the binary; Kotlin, C#,
+    # Swift, Ruby and PHP would add about 19 MB, so they are left out.
+    # SQL's grammar holds `cc` at ~1.2. Keep in step with
+    # `code_highlight::NAMES`; a test checks every name has a grammar.
+    "tree-sitter-bash",
+    "tree-sitter-c",
+    "tree-sitter-cpp",
+    "tree-sitter-css",
+    "tree-sitter-diff",
+    "tree-sitter-go",
+    "tree-sitter-html",
+    "tree-sitter-java",
+    "tree-sitter-javascript",
+    "tree-sitter-lua",
+    "tree-sitter-make",
+    "tree-sitter-python",
+    "tree-sitter-rust",
+    "tree-sitter-sql",
+    "tree-sitter-toml",
+    "tree-sitter-tsx",
+    "tree-sitter-typescript",
+    "tree-sitter-yaml",
 ] }
 markdown = { path = "crates/markdown" }
+# The version GPUI Kit's highlighter links, so edit types match.
+tree-sitter = "0.26"
 workspace = { path = "crates/workspace" }
 markdown_preview = { path = "crates/markdown_preview" }
 export = { path = "crates/export" }

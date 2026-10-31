@@ -312,4 +312,40 @@ mod tests {
         assert!(styled(&highlighter, &text, "# Title"));
         assert!(styled(&highlighter, &text, "**bold**"));
     }
+
+    /// Styles only keywords, which Markdown has none of.
+    struct Keywords;
+
+    impl HighlightStyleResolver for Keywords {
+        fn style(&self, name: &str) -> Option<HighlightStyle> {
+            (name == "keyword").then(|| HighlightStyle {
+                font_weight: Some(gpui_kit::FontWeight::BOLD),
+                ..Default::default()
+            })
+        }
+    }
+
+    #[gpui_kit::test]
+    async fn colors_code_in_fences_with_the_named_grammar(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let window = cx.add_window(EditorState::new);
+        let editor = window.root(cx).unwrap();
+        let cx = &mut VisualTestContext::from_window(*window, cx);
+
+        let text = "Intro.\n\n```rust\nfn main() {}\n```\n\n```\nfn plain\n```\n";
+        let highlighter = DeferredHighlighter::new(LANGUAGE);
+        let rope = Rope::from(text);
+        editor.update_in(cx, |_, window, cx| {
+            highlighter.start_reparse(&rope, false, window, cx);
+        });
+        cx.run_until_parked();
+        let keyword = |at: usize| {
+            highlighter
+                .styles(&(at..at + 2), &Keywords)
+                .iter()
+                .any(|(_, style)| style.font_weight.is_some())
+        };
+        assert!(keyword(text.find("fn main").unwrap()));
+        assert!(!keyword(text.find("fn plain").unwrap()));
+    }
 }

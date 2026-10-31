@@ -29,6 +29,11 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Added
+
+- Syntax colors for code blocks in the editor and the preview, in the theme's colors, for Bash, C, C++, CSS, Diff, Go, HTML, Java, JavaScript, JSON, Lua, Make, Python, Rust, SQL, TOML, TSX, TypeScript and YAML. Common short names and capitalized names work too, such as `py`, `sh`, `ts`, `Python` or `JSON`; other languages stay plain.
+- The editor colors YAML or TOML front matter and HTML blocks by their syntax as well.
+
 ## [0.16.0] - 2026-10-31
 
 ### Changed

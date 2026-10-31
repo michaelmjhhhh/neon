@@ -6,6 +6,7 @@
 //! block keeps its cached height and the scroll position stays put.
 
 mod blocks;
+mod code_highlight;
 mod image_cache;
 mod preview;
 mod rows;
@@ -20,8 +21,10 @@ pub use preview::{
 
 const KEY_CONTEXT: &str = "MarkdownPreview";
 
-/// Register the preview's keyboard scrolling. Call once at startup.
+/// Register the preview's keyboard scrolling and the code block language
+/// names the editor and preview share. Call once at startup.
 pub fn init(cx: &mut App) {
+    code_highlight::register_languages();
     cx.bind_keys([
         KeyBinding::new("up", ScrollUp, Some(KEY_CONTEXT)),
         KeyBinding::new("down", ScrollDown, Some(KEY_CONTEXT)),
