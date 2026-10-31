@@ -29,6 +29,8 @@ Groups, in this order:
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-31
+
 ### Added
 
 - The sidebar lists images, PDFs, audio, video and office documents beside your notes, with their extension shown, so a folder such as `assets` shows its files instead of “No Markdown files”. Code and other files stay hidden.
