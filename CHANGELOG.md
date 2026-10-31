@@ -29,6 +29,8 @@ Groups, in this order:
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-31
+
 ### Changed
 
 - Zen Mode now sits at the end of the Edit/Split/Preview switch, set apart by a thin line, so all the ways to view a note read as one control. Settings beside it is quieter.
