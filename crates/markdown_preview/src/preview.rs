@@ -10,18 +10,19 @@ use gpui_kit::component::empty::{
 };
 use gpui_kit::component::input::Rope;
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarHandle};
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, Theme};
 use gpui_kit::{
     App, AppContext as _, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ListAlignment, ListOffset, ListState, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render, Size,
-    StyleRefinement, Styled as _, Task, WeakEntity, Window, canvas, div, list,
+    StyleRefinement, Styled as _, Subscription, Task, WeakEntity, Window, canvas, div, list,
     prelude::FluentBuilder as _, px,
 };
 use markdown::MarkdownDocument;
 
 use crate::KEY_CONTEXT;
 use crate::blocks::{BlockLayout, inline_code_family, render_block};
+use crate::code_highlight::CodeHighlights;
 use crate::image_cache::PreviewImageCache;
 use crate::rows::PreviewRows;
 
@@ -111,6 +112,11 @@ pub struct MarkdownPreview {
     replace_on_next_parse: bool,
     /// Height hint for blocks that have not been measured yet.
     estimated_block_height: Pixels,
+    /// Syntax colors for the document's code blocks, in the current theme.
+    code_highlights: Arc<CodeHighlights>,
+    /// Recoloring code blocks after a theme change.
+    highlight_task: Option<Task<()>>,
+    _theme_changed: Subscription,
 }
 
 impl EventEmitter<MarkdownPreviewEvent> for MarkdownPreview {}
@@ -149,6 +155,9 @@ impl MarkdownPreview {
             last_parse_at: None,
             replace_on_next_parse: false,
             estimated_block_height: px(48.),
+            code_highlights: Arc::default(),
+            highlight_task: None,
+            _theme_changed: cx.observe_global::<Theme>(Self::refresh_code_highlights),
         }
     }
 
@@ -178,6 +187,8 @@ impl MarkdownPreview {
             self.pending_source = None;
             self.document = Arc::default();
             self.rows = Arc::default();
+            self.code_highlights = Arc::default();
+            self.highlight_task = None;
             self.list_state.reset(0);
             self.reset_image_cache(cx);
         }
@@ -387,24 +398,27 @@ impl MarkdownPreview {
         let cancel = Arc::new(AtomicBool::new(false));
         self.parse_cancel = Some(cancel.clone());
         let chunk_lists = self.chunk_lists;
+        let previous_highlights = self.code_highlights.clone();
+        let theme = cx.theme().highlight_theme.clone();
         let parse = cx.background_spawn(async move {
-            if cancel.load(Ordering::Relaxed) {
+            let cancelled = || cancel.load(Ordering::Relaxed);
+            if cancelled() {
                 return None;
             }
             let text = source.to_string();
-            let document = MarkdownDocument::parse_with_cancellation(&text, || {
-                cancel.load(Ordering::Relaxed)
-            })?;
+            let document = MarkdownDocument::parse_with_cancellation(&text, cancelled)?;
             let rows = PreviewRows::new(&document, chunk_lists);
-            (!cancel.load(Ordering::Relaxed)).then_some((document, rows))
+            let highlights =
+                CodeHighlights::compute(&document, &previous_highlights, theme, cancelled)?;
+            (!cancelled()).then_some((document, rows, highlights))
         });
         self.parse_task = Some(cx.spawn(async move |this, cx| {
             let document = parse.await;
             this.update(cx, |this, cx| {
                 this.parse_task = None;
                 this.parse_cancel = None;
-                if let Some((document, rows)) = document {
-                    this.apply_document(document, rows, cx);
+                if let Some((document, rows, highlights)) = document {
+                    this.apply_document(document, rows, highlights, cx);
                 }
                 if this.pending_source.is_some() {
                     this.schedule_parse(cx);
@@ -432,6 +446,7 @@ impl MarkdownPreview {
         &mut self,
         document: MarkdownDocument,
         rows: PreviewRows,
+        highlights: CodeHighlights,
         cx: &mut Context<Self>,
     ) {
         let row_count = rows.len(&document);
@@ -468,6 +483,9 @@ impl MarkdownPreview {
         }
         self.document = Arc::new(document);
         self.rows = Arc::new(rows);
+        self.code_highlights = Arc::new(highlights);
+        // The theme may have changed while the parse ran.
+        self.refresh_code_highlights(cx);
         if let Some(scroll) = splice_scroll {
             self.list_state.scroll_to(scroll);
         }
@@ -494,6 +512,38 @@ impl MarkdownPreview {
         }
         cx.emit(MarkdownPreviewEvent::DocumentChanged);
         cx.notify();
+    }
+
+    /// Recolor the code blocks if the theme's syntax colors are not the ones
+    /// they were colored with. Highlighting runs in the background; until it
+    /// finishes, blocks keep their old colors.
+    fn refresh_code_highlights(&mut self, cx: &mut Context<Self>) {
+        let theme = cx.theme().highlight_theme.clone();
+        if !self.active || self.code_highlights.is_for(&theme) {
+            self.highlight_task = None;
+            return;
+        }
+        let document = self.document.clone();
+        let previous = self.code_highlights.clone();
+        let highlight = cx.background_spawn(async move {
+            CodeHighlights::compute(&document, &previous, theme, || false)
+        });
+        let document = self.document.clone();
+        self.highlight_task = Some(cx.spawn(async move |this, cx| {
+            let highlights = highlight.await;
+            this.update(cx, |this, cx| {
+                this.highlight_task = None;
+                // A parse that finished meanwhile brought its own colors.
+                if Arc::ptr_eq(&this.document, &document)
+                    && let Some(highlights) = highlights
+                {
+                    this.code_highlights = Arc::new(highlights);
+                    cx.notify();
+                }
+                this.refresh_code_highlights(cx);
+            })
+            .ok();
+        }));
     }
 
     fn scroll_up(&mut self, _: &ScrollUp, window: &mut Window, cx: &mut Context<Self>) {
@@ -580,6 +630,7 @@ impl Render for MarkdownPreview {
             inline_code_family,
             font_scale: self.font_scale,
             column_insets: self.column_insets,
+            code_highlights: self.code_highlights.clone(),
         };
         let base_dir = self.base_dir.clone();
         let is_empty = document.blocks().is_empty() && !self.is_parsing();

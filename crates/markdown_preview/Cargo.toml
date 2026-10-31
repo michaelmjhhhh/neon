@@ -8,6 +8,8 @@ publish.workspace = true
 [dependencies]
 gpui-kit.workspace = true
 markdown.workspace = true
+# Already built for GPUI Kit's highlighter; only its edit type is used.
+tree-sitter = "0.26"
 # Already linked through GPUI; only used to shrink oversized decoded images.
 image = { version = "0.25", default-features = false }
 

@@ -23,6 +23,7 @@ use markdown::{
     InlineStyle, InlineText, MarkdownList, Property, Table,
 };
 
+use crate::code_highlight::CodeHighlights;
 use crate::image_cache::PreviewImageCache;
 
 /// Width of the reading column, about 70 characters of body text. Long lines
@@ -42,6 +43,8 @@ pub(crate) struct BlockLayout {
     pub(crate) font_scale: f32,
     /// Leading and trailing insets in place of the centered reading column.
     pub(crate) column_insets: Option<(Pixels, Pixels)>,
+    /// Syntax colors for code blocks.
+    pub(crate) code_highlights: Arc<CodeHighlights>,
 }
 
 pub(crate) fn render_block(
@@ -58,9 +61,10 @@ pub(crate) fn render_block(
         inline_code_family,
         font_scale,
         column_insets,
+        code_highlights,
     } = layout;
     let (font_scale, column_insets) = (*font_scale, *column_insets);
-    let mut renderer = BlockRenderer::new(base_dir, image_cache, cx);
+    let mut renderer = BlockRenderer::new(base_dir, image_cache, code_highlights, cx);
     renderer.font_scale = font_scale;
     renderer.palette.inline_code_font_family = inline_code_family.clone();
     let (content, continues_list) = match (block.kind(), list_items) {
@@ -146,6 +150,7 @@ struct Palette {
 struct BlockRenderer<'a> {
     base_dir: Option<&'a Arc<Path>>,
     image_cache: &'a Entity<PreviewImageCache>,
+    code_highlights: &'a CodeHighlights,
     palette: Palette,
     /// Counter for element ids inside the block. The block's content is
     /// immutable, so the same content always yields the same ids.
@@ -157,6 +162,7 @@ impl<'a> BlockRenderer<'a> {
     fn new(
         base_dir: Option<&'a Arc<Path>>,
         image_cache: &'a Entity<PreviewImageCache>,
+        code_highlights: &'a CodeHighlights,
         cx: &App,
     ) -> Self {
         let theme = cx.theme();
@@ -164,6 +170,7 @@ impl<'a> BlockRenderer<'a> {
         Self {
             base_dir,
             image_cache,
+            code_highlights,
             palette: Palette {
                 foreground: theme.foreground,
                 muted: theme.muted,
@@ -447,9 +454,20 @@ impl<'a> BlockRenderer<'a> {
                     .text_size(rems(0.8125 * self.font_scale))
                     .line_height(relative(1.6))
                     .whitespace_nowrap()
-                    .child(SharedString::from(code.code().clone())),
+                    .child(self.render_code_text(code)),
             )
             .into_any_element()
+    }
+
+    /// The code in its syntax colors, or plain when it has none.
+    fn render_code_text(&self, code: &CodeBlock) -> AnyElement {
+        let text = SharedString::from(code.code().clone());
+        match self.code_highlights.get(code) {
+            Some(tokens) => StyledText::new(text)
+                .with_highlights(tokens.iter().cloned())
+                .into_any_element(),
+            None => text.into_any_element(),
+        }
     }
 
     /// A callout: a tinted panel with its kind's icon and title, in the
