@@ -1,5 +1,7 @@
 //! Neon: a fast Markdown viewer and editor.
 
+mod updater;
+
 use std::path::{Path, PathBuf};
 
 use futures::StreamExt as _;
@@ -60,8 +62,9 @@ fn main() {
         gpui_kit::init(cx);
         workspace::init(cx);
         workspace::load_settings(cx);
+        let can_update = updater::init(cx);
         // Bindings are registered above, so the menus show their shortcuts.
-        set_menus(cx);
+        set_menus(can_update, cx);
         cx.set_global(OpenWorkspaces::default());
         cx.on_action(|_: &Quit, cx| cx.quit());
         #[cfg(feature = "memory-bench")]
@@ -239,15 +242,24 @@ fn path_from_file_url(url: &str) -> Option<PathBuf> {
     Some(Path::new(&path).to_path_buf())
 }
 
-fn set_menus(cx: &mut App) {
+fn set_menus(can_update: bool, cx: &mut App) {
+    let mut app_menu = Vec::new();
+    if can_update {
+        app_menu.push(MenuItem::action(
+            "Check for Updates…",
+            updater::CheckForUpdates,
+        ));
+        app_menu.push(MenuItem::separator());
+    }
+    app_menu.extend([
+        MenuItem::action("Settings…", OpenSettings),
+        MenuItem::separator(),
+        MenuItem::os_submenu("Services", SystemMenuType::Services),
+        MenuItem::separator(),
+        MenuItem::action("Quit Neon", Quit),
+    ]);
     cx.set_menus([
-        Menu::new("Neon").items([
-            MenuItem::action("Settings…", OpenSettings),
-            MenuItem::separator(),
-            MenuItem::os_submenu("Services", SystemMenuType::Services),
-            MenuItem::separator(),
-            MenuItem::action("Quit Neon", Quit),
-        ]),
+        Menu::new("Neon").items(app_menu),
         Menu::new("File").items([
             MenuItem::action("New Tab", NewTab),
             MenuItem::action("New File…", NewFile),

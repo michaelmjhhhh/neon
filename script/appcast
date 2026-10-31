@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Write dist/appcast.xml, the update feed Sparkle reads, for the ZIP that
+# script/bundle-mac made.
+#
+#   SPARKLE_ED_PRIVATE_KEY=… script/appcast
+#
+# The feed lists only this version: Neon reads it from the latest release, at
+# releases/latest/download/appcast.xml, so the newest release always holds the
+# newest feed. The ZIP and the feed are signed with the EdDSA private key in
+# SPARKLE_ED_PRIVATE_KEY, as `generate_keys -x` exports it.
+#
+#   NEON_APPCAST_DOWNLOAD_URL   where the ZIP is downloaded from, by default
+#                               the asset of this version's GitHub release.
+#                               Set it to try updates from a local server.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+: "${SPARKLE_ED_PRIVATE_KEY:?SPARKLE_ED_PRIVATE_KEY must hold the EdDSA private key}"
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+zip_name="Neon-$version-macos.zip"
+zip="dist/$zip_name"
+feed="dist/appcast.xml"
+repo="https://github.com/michaelmjhhhh/neon"
+url="${NEON_APPCAST_DOWNLOAD_URL:-$repo/releases/download/v$version/$zip_name}"
+minimum_system=$(/usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" dist/Neon.app/Contents/Info.plist)
+
+if [ ! -f "$zip" ]; then
+    echo "$zip not found; run script/bundle-mac first" >&2
+    exit 1
+fi
+
+sign_update="$(script/fetch-sparkle)/bin/sign_update"
+signature=$(printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$sign_update" --ed-key-file - -p "$zip")
+length=$(stat -f %z "$zip")
+
+# A key that doesn't match the app's public key would publish an update that
+# every installed copy refuses, so check the signature as Sparkle will.
+public_key=$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" dist/Neon.app/Contents/Info.plist)
+verifier=$(mktemp -d)
+trap 'rm -rf "$verifier"' EXIT
+cat > "$verifier/verify.swift" <<'SWIFT'
+import CryptoKit
+import Foundation
+
+let args = CommandLine.arguments
+let key = try Curve25519.Signing.PublicKey(rawRepresentation: Data(base64Encoded: args[1])!)
+let archive = try Data(contentsOf: URL(fileURLWithPath: args[2]))
+exit(key.isValidSignature(Data(base64Encoded: args[3])!, for: archive) ? 0 : 1)
+SWIFT
+if ! swift "$verifier/verify.swift" "$public_key" "$zip" "$signature"; then
+    echo "SPARKLE_ED_PRIVATE_KEY does not match SUPublicEDKey in Neon.app" >&2
+    exit 1
+fi
+
+notes=$(script/release-notes "$version")
+if [[ "$notes" == *"]]>"* ]]; then
+    echo "the release notes contain ]]>, which would end the feed's CDATA section" >&2
+    exit 1
+fi
+
+cat > "$feed" <<XML
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+    <channel>
+        <title>Neon</title>
+        <link>$repo</link>
+        <item>
+            <title>Neon $version</title>
+            <pubDate>$(LC_ALL=C date -u "+%a, %d %b %Y %H:%M:%S +0000")</pubDate>
+            <sparkle:version>$version</sparkle:version>
+            <sparkle:shortVersionString>$version</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>$minimum_system</sparkle:minimumSystemVersion>
+            <sparkle:fullReleaseNotesLink>$repo/releases</sparkle:fullReleaseNotesLink>
+            <description sparkle:format="markdown"><![CDATA[
+$notes
+]]></description>
+            <enclosure url="$url" length="$length" type="application/octet-stream" sparkle:edSignature="$signature"/>
+        </item>
+    </channel>
+</rss>
+XML
+xmllint --noout "$feed"
+
+# Embeds the feed's own signature, which Neon requires (SURequireSignedFeed).
+printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$sign_update" --ed-key-file - --disable-signing-warning "$feed"
+echo "Wrote $feed for Neon $version"

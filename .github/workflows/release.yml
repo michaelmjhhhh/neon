@@ -10,6 +10,8 @@
 #   NOTARY_KEY_P8             base64 of the App Store Connect API key .p8
 #   NOTARY_KEY_ID             its key ID
 #   NOTARY_ISSUER_ID          its issuer ID
+#   SPARKLE_ED_PRIVATE_KEY    the EdDSA key that signs updates, as
+#                             `generate_keys -x` exports it
 name: Release
 
 on:
@@ -118,6 +120,13 @@ jobs:
         working-directory: dist
         run: shasum -a 256 Neon-*.dmg Neon-*.zip | tee SHA256SUMS
 
+      # Installed copies read this feed from the latest release to find the
+      # update. It names this release's ZIP, so it is published with it.
+      - name: Write the update feed
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: script/appcast
+
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -132,6 +141,7 @@ jobs:
             dist/Neon-*.dmg
             dist/Neon-*.zip
             dist/SHA256SUMS
+            dist/appcast.xml
           if-no-files-found: error
 
       - name: Publish the GitHub release
@@ -146,9 +156,11 @@ jobs:
             echo
             echo "Download \`Neon-${GITHUB_REF_NAME#v}-macos.dmg\`, open it and drag Neon to Applications. It runs natively on Apple Silicon and Intel Macs, macOS 11 or later."
             echo
+            echo "Neon checks for updates and installs them itself, so you only download it once."
+            echo
             echo "Neon is signed with an Apple Developer ID and notarized by Apple. To check a download, compare it with \`SHA256SUMS\`, or run \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."
           } > notes.md
-          gh release create "$GITHUB_REF_NAME" dist/Neon-*.dmg dist/Neon-*.zip dist/SHA256SUMS \
+          gh release create "$GITHUB_REF_NAME" dist/Neon-*.dmg dist/Neon-*.zip dist/SHA256SUMS dist/appcast.xml \
             --title "Neon ${GITHUB_REF_NAME#v}" \
             --notes-file notes.md \
             --verify-tag
