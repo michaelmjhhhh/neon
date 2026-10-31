@@ -162,12 +162,15 @@ const ATTACHMENT_EXTENSIONS: &[&str] = &[
 /// How the sidebar treats the file at `path`, or `None` if it does not
 /// list it. Decided by extension, without case.
 pub(super) fn file_kind(path: &Path) -> Option<FileKind> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    if ext == "md" || ext == "markdown" {
+    // Runs for every sidebar row as it draws, so it compares in place
+    // rather than lowercasing a copy.
+    let ext = path.extension()?.to_str()?;
+    let listed = |list: &[&str]| list.iter().any(|known| known.eq_ignore_ascii_case(ext));
+    if listed(&["md", "markdown"]) {
         Some(FileKind::Markdown)
-    } else if IMAGE_EXTENSIONS.contains(&ext.as_str()) {
+    } else if listed(IMAGE_EXTENSIONS) {
         Some(FileKind::Image)
-    } else if ATTACHMENT_EXTENSIONS.contains(&ext.as_str()) {
+    } else if listed(ATTACHMENT_EXTENSIONS) {
         Some(FileKind::Attachment)
     } else {
         None
@@ -179,23 +182,35 @@ pub(super) fn file_kind(path: &Path) -> Option<FileKind> {
 /// anything else. The path is relative, with `/` between parts, so the
 /// link works wherever the folder goes, on GitHub and in exports. A path
 /// with spaces or brackets is written as `<path>`, which CommonMark reads
-/// as it is.
+/// as it is. `from_dir` that is not absolute, as for an untitled note with
+/// no folder open, links from beside the target.
 pub(super) fn markdown_link(from_dir: &Path, target: &Path) -> String {
-    let path = relative_path(from_dir, target);
+    let from_dir = match target.parent() {
+        Some(parent) if !from_dir.is_absolute() => parent,
+        _ => from_dir,
+    };
+    // Readers cut a link at `#` or `?`, decode `%XX` and take `name:` as
+    // a scheme, so those characters in a file name are escaped.
+    let path = relative_path(from_dir, target)
+        .replace('%', "%25")
+        .replace('#', "%23")
+        .replace('?', "%3F")
+        .replace(':', "%3A");
     let destination = if path.contains([' ', '(', ')', '<', '>']) {
         format!("<{}>", path.replace('<', "\\<").replace('>', "\\>"))
     } else {
         path
     };
-    let text = match file_kind(target) {
-        Some(FileKind::Markdown) | Some(FileKind::Image) => target.file_stem(),
+    let kind = file_kind(target);
+    let text = match kind {
+        Some(FileKind::Markdown | FileKind::Image) => target.file_stem(),
         _ => target.file_name(),
     }
     .unwrap_or_default()
     .to_string_lossy()
     // Brackets in the text would end it early.
     .replace(['[', ']'], "");
-    let embed = if file_kind(target) == Some(FileKind::Image) {
+    let embed = if kind == Some(FileKind::Image) {
         "!"
     } else {
         ""
@@ -223,7 +238,14 @@ pub(super) fn embed_padding(
             ""
         }
     };
-    (padding(before, above), padding(after, below))
+    // Indentation before the cursor would make four spaces a code block;
+    // the link starts the next line, and the spaces leave a blank line.
+    let before = if !before.is_empty() && before.trim().is_empty() {
+        "\n"
+    } else {
+        padding(before, above)
+    };
+    (before, padding(after, below))
 }
 
 /// `target` as seen from `from_dir`, both absolute: `img/a.png`,
@@ -658,6 +680,8 @@ mod tests {
         assert_eq!(embed_padding("", "", Some(false), Some(false)), ("", ""));
         assert_eq!(embed_padding("", "", None, None), ("", ""));
         assert_eq!(embed_padding("End.", "", Some(true), None), ("\n\n", ""));
+        // After indentation, which would make it code.
+        assert_eq!(embed_padding("    ", "", Some(false), None), ("\n", ""));
     }
 
     #[test]
@@ -679,6 +703,17 @@ mod tests {
         assert_eq!(
             markdown_link(root, Path::new("/notes/my files/shot (2) [x].png")),
             "![shot (2) x](<my files/shot (2) [x].png>)"
+        );
+        // Characters readers take for an anchor, a query, an escape or
+        // a scheme are escaped.
+        assert_eq!(
+            markdown_link(root, Path::new("/notes/what? #2 100%:a.png")),
+            "![what? #2 100%:a](<what%3F %232 100%25%3Aa.png>)"
+        );
+        // With nowhere to link from, the link starts beside the file.
+        assert_eq!(
+            markdown_link(Path::new(""), Path::new("/notes/a.png")),
+            "![a](a.png)"
         );
         assert_eq!(
             markdown_link(root, Path::new("/notes/a<b>.png")),

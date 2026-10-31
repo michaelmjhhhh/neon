@@ -21,7 +21,7 @@ pub(crate) struct ImageViewer {
     /// The images in the shown one's folder, in the sidebar's order.
     images: Vec<PathBuf>,
     index: usize,
-    focus_handle: FocusHandle,
+    pub(crate) focus_handle: FocusHandle,
     /// Holds the shown image alone, so stepping through a folder of
     /// photos frees each one as the next shows.
     cache: Entity<PreviewImageCache>,

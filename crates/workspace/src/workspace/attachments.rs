@@ -185,13 +185,26 @@ impl Workspace {
                     .tooltip_with_action(label, action, Some(image_viewer::KEY_CONTEXT))
                     .disabled(disabled)
                     .on_click(move |_, window, cx| {
-                        viewer.update(cx, |viewer, cx| step(viewer, window, cx))
+                        viewer.update(cx, |viewer, cx| {
+                            step(viewer, window, cx);
+                            // The press focused the button; Left and
+                            // Right work only on the image.
+                            viewer.focus_handle.focus(window, cx);
+                        })
                     })
             };
+            // A note still loading takes no link; the viewer stays open
+            // rather than closing on nothing.
+            let can_insert = this
+                .upgrade()
+                .is_some_and(|this| !this.read(cx).is_loading());
             let on_ok = {
                 let this = this.clone();
                 let path = path.clone();
                 move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut gpui_kit::App| {
+                    if !can_insert {
+                        return false;
+                    }
                     // Closed first, so focus goes back to where it was
                     // before the link moves it into the note.
                     window.close_dialog(cx);
@@ -261,9 +274,14 @@ impl Workspace {
                                         .label("Open in Default App")
                                         .on_click(open),
                                 )
-                                .child(DialogAction::new().child(
-                                    Button::new("insert-link").primary().label("Insert Link"),
-                                )),
+                                .child(
+                                    DialogAction::new().child(
+                                        Button::new("insert-link")
+                                            .primary()
+                                            .label("Insert Link")
+                                            .disabled(!can_insert),
+                                    ),
+                                ),
                         ),
                 )
                 .on_ok(on_ok)
@@ -288,7 +306,7 @@ impl Workspace {
             .pb_6()
             .drag_over::<DraggedFile>(move |style, _, _, _| style.bg(tint))
             .on_drop(cx.listener(move |this, file: &DraggedFile, window, cx| {
-                this.dragging_file.set(false);
+                this.dragging_file.set(None);
                 this.insert_link(tab_id, &file.path.clone(), window, cx);
             }))
             // The link goes in at the cursor, not where the file drops.

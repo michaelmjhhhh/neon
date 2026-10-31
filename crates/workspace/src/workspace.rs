@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::folder::{
-    copy_entry, delete_entry, find_note, is_markdown, is_taken, name_error, rename_entry,
-    renamed_path, scan_folder, trash_entry,
+    FileKind, copy_entry, delete_entry, file_kind, find_note, is_markdown, is_taken, name_error,
+    rename_entry, renamed_path, scan_folder, trash_entry,
 };
 use crate::session_file::Session;
 use crate::typography::Typography;
@@ -255,12 +255,10 @@ pub struct Workspace {
     /// pressed, but a press may start a drag to a pane, so the file opens
     /// on the click instead.
     tree_press: Rc<Cell<bool>>,
-    /// Set while a file from the sidebar is being dragged, so the panes
-    /// offer to take it. Other drags, such as a resize handle's, do not.
-    dragging_file: Cell<bool>,
-    /// Set with `dragging_file` when the file is an attachment, so the
-    /// panes take a link to it instead of opening it.
-    dragging_attachment: Cell<bool>,
+    /// The kind of file being dragged from the sidebar, if one is, so the
+    /// panes offer to take it: a note opens there, an attachment goes in
+    /// as a link. Other drags, such as a resize handle's, set nothing.
+    dragging_file: Cell<Option<FileKind>>,
     /// How many Markdown files each listed folder holds, at any depth.
     folder_file_counts: Rc<HashMap<SharedString, usize>>,
     sidebar_visible: bool,
@@ -443,8 +441,7 @@ impl Workspace {
             entry_task: None,
             renamed_label: None,
             tree_press: Rc::default(),
-            dragging_file: Cell::new(false),
-            dragging_attachment: Cell::new(false),
+            dragging_file: Cell::new(None),
             folder_file_counts: Rc::default(),
             sidebar_visible: true,
             sidebar_view: SidebarView::default(),
@@ -1832,12 +1829,9 @@ impl Workspace {
         let Some(renaming) = self.end_rename(window, cx) else {
             return;
         };
-        let label = if renaming.is_dir || !is_markdown(Path::new(&name)) {
-            name.clone()
-        } else {
-            split_extension(&name).0
-        };
-        self.renamed_label = Some((renaming.id, label.into()));
+        // The full name: the row drops `.md` and mutes an attachment's
+        // extension as it draws it.
+        self.renamed_label = Some((renaming.id, name.clone().into()));
         let from = renaming.path;
         let rename = cx.background_spawn({
             let from = from.clone();
@@ -2505,31 +2499,27 @@ impl Workspace {
                         // extension, muted, so `photo.png` reads apart from
                         // a note named `photo`, and stays in sight when a
                         // long name is cut short.
-                        let label = item.label.as_ref();
-                        let stem = match label.rfind('.') {
-                            Some(ix)
-                                if ix > 0
-                                    && !entry.is_folder()
-                                    && is_markdown(Path::new(label)) =>
-                            {
-                                &label[..ix]
-                            }
-                            _ => label,
-                        };
-                        let stem = match &renamed_label {
+                        let label = match &renamed_label {
                             Some((id, label)) if *id == item.id => label.as_ref(),
-                            _ => stem,
+                            _ => item.label.as_ref(),
                         };
-                        let (name, extension) = match stem.rfind('.') {
-                            Some(ix)
-                                if ix > 0
-                                    && !entry.is_folder()
-                                    && !entry.is_disabled()
-                                    && !is_markdown(Path::new(stem)) =>
+                        let (name, extension) = match split_extension(label) {
+                            (stem, Some(extension))
+                                if !entry.is_folder() && !entry.is_disabled() =>
                             {
-                                (&stem[..ix], Some(&stem[ix..]))
+                                if is_markdown(Path::new(label)) {
+                                    (stem, None)
+                                } else {
+                                    (stem, Some(extension))
+                                }
                             }
-                            _ => (stem, None),
+                            _ => (label.to_string(), None),
+                        };
+                        // A dragged note goes by its name alone, as its
+                        // row shows it.
+                        let stem = match &extension {
+                            Some(extension) => format!("{name}{extension}"),
+                            None => name.clone(),
                         };
                         // One slot per ancestor, each with a hairline under that
                         // ancestor's chevron, so a nested row reads as a branch.
@@ -2581,7 +2571,7 @@ impl Workspace {
                         };
                         let dragged = DraggedFile {
                             path: PathBuf::from(item.id.as_ref()),
-                            name: SharedString::from(stem.to_string()),
+                            name: SharedString::from(stem),
                             press_offset: gpui_kit::Point::default(),
                         };
                         // A right-click focuses the tree, so the row's menu shows
@@ -2616,9 +2606,7 @@ impl Workspace {
                                         // tree under the pointer.
                                         workspace
                                             .update(cx, |this, cx| {
-                                                this.dragging_file.set(true);
-                                                this.dragging_attachment
-                                                    .set(!is_markdown(&file.path));
+                                                this.dragging_file.set(file_kind(&file.path));
                                                 this.select_open_file_in_tree(false, cx);
                                                 cx.notify();
                                             })
@@ -2716,13 +2704,13 @@ impl Workspace {
                                                                 div()
                                                                     .min_w_0()
                                                                     .truncate()
-                                                                    .child(name.to_string()),
+                                                                    .child(name.clone()),
                                                             )
                                                             .children(extension.map(|extension| {
                                                                 div()
                                                                     .flex_none()
                                                                     .text_color(muted)
-                                                                    .child(extension.to_string())
+                                                                    .child(extension)
                                                             }))
                                                             .into_any_element(),
                                                     }),
@@ -3263,10 +3251,11 @@ impl Workspace {
     fn render_documents(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         // A drag that ended anywhere, dropped or not, is over.
         if !cx.has_active_drag() {
-            self.dragging_file.set(false);
+            self.dragging_file.set(None);
         }
-        let dragging = self.dragging_file.get();
-        let attachment = self.dragging_attachment.get();
+        let dragged = self.dragging_file.get();
+        let dragging = dragged.is_some();
+        let attachment = dragged.is_some_and(|kind| kind != FileKind::Markdown);
         let (Some((_, active_side)), Some(other)) = (self.active_split(), self.other_pane_tab())
         else {
             let tab_id = self.tab().id;
