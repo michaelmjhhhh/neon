@@ -3125,41 +3125,53 @@ impl Workspace {
                     .gap_3()
                     .children(save_button)
                     .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .child(
-                                TabBar::new("layout")
-                                    .segmented()
-                                    .small()
-                                    .children(LayoutMode::ALL.map(|mode| {
-                                        // Icons keep the switch compact; the
-                                        // tooltip names each mode and its
-                                        // shortcut.
-                                        Tab::new()
-                                            .icon(mode.icon())
-                                            .aria_label(mode.label())
-                                            .tooltip(move |window, cx| {
-                                                Tooltip::new(mode.label())
-                                                    .action(mode.action(), Some(KEY_CONTEXT))
-                                                    .build(window, cx)
-                                            })
-                                    }))
-                                    .selected_index(selected)
-                                    .on_click(cx.listener(|this, ix: &usize, window, cx| {
-                                        if let Some(mode) = LayoutMode::ALL.get(*ix) {
-                                            this.show_layout(*mode, window, cx);
-                                        }
-                                    })),
-                            )
-                            .child(zen_mode::enter_zen_button(cx)),
+                        // How to view the document is one object: the three
+                        // layouts, then Zen in the same track. A hairline sets
+                        // Zen apart, since it is a command, not a fourth choice.
+                        TabBar::new("layout")
+                            .segmented()
+                            .small()
+                            .children(LayoutMode::ALL.map(|mode| {
+                                // Icons keep the switch compact; the tooltip
+                                // names each mode and its shortcut.
+                                Tab::new()
+                                    .icon(mode.icon())
+                                    .aria_label(mode.label())
+                                    .tooltip(move |window, cx| {
+                                        Tooltip::new(mode.label())
+                                            .action(mode.action(), Some(KEY_CONTEXT))
+                                            .build(window, cx)
+                                    })
+                            }))
+                            .selected_index(selected)
+                            .on_click(cx.listener(|this, ix: &usize, window, cx| {
+                                if let Some(mode) = LayoutMode::ALL.get(*ix) {
+                                    this.show_layout(*mode, window, cx);
+                                }
+                            }))
+                            // No spacer after the layouts: the hairline sits
+                            // as far from Preview as from Zen, the bar's tab
+                            // gap plus this padding on one side, the gap on
+                            // the other.
+                            .last_empty_space(div())
+                            .suffix(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .pl_0p5()
+                                    .gap_1()
+                                    .child(div().w_px().h_3().bg(theme.input))
+                                    .child(zen_mode::enter_zen_button(cx)),
+                            ),
                     )
                     .child(
+                        // The app's setting is the least used control here, so
+                        // it recedes to the unselected layouts' color.
                         Button::new("settings")
                             .small()
                             .ghost()
                             .icon(IconName::Settings)
+                            .text_color(theme.muted_foreground)
                             .accessibility_label("Settings…")
                             .tooltip_with_action("Settings…", &OpenSettings, Some(KEY_CONTEXT))
                             .on_click(cx.listener(|this, _, window, cx| {

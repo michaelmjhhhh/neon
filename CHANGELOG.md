@@ -29,6 +29,11 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Changed
+
+- Zen Mode now sits at the end of the Edit/Split/Preview switch, set apart by a thin line, so all the ways to view a note read as one control. Settings beside it is quieter.
+- Zen Mode's button shows lines of text in a frame, in place of the camera-like viewfinder, so it reads as focusing on your writing.
+
 ## [0.15.0] - 2026-10-31
 
 ### Added

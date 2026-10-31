@@ -63,7 +63,6 @@ gpui_kit::assets::icon_assets!(
         Columns2,
         FilePlus,
         FolderPlus,
-        Focus,
         GitBranch,
         GitCompare,
         GitGraph,
@@ -73,6 +72,7 @@ gpui_kit::assets::icon_assets!(
         PenLine,
         Quote,
         Regex,
+        ScanText,
         WholeWord,
     ]
 );
