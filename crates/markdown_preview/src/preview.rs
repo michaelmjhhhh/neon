@@ -22,7 +22,7 @@ use markdown::MarkdownDocument;
 
 use crate::KEY_CONTEXT;
 use crate::blocks::{BlockLayout, inline_code_family, render_block};
-use crate::code_highlight::CodeHighlights;
+use crate::code_highlight::{CodeHighlights, Highlighters};
 use crate::image_cache::PreviewImageCache;
 use crate::rows::PreviewRows;
 
@@ -114,8 +114,10 @@ pub struct MarkdownPreview {
     estimated_block_height: Pixels,
     /// Syntax colors for the document's code blocks, in the current theme.
     code_highlights: Arc<CodeHighlights>,
-    /// Recoloring code blocks after a theme change.
+    highlighters: Arc<Highlighters>,
+    /// Recoloring code blocks after a theme change, and how to stop it.
     highlight_task: Option<Task<()>>,
+    highlight_cancel: Option<Arc<AtomicBool>>,
     _theme_changed: Subscription,
 }
 
@@ -156,7 +158,9 @@ impl MarkdownPreview {
             replace_on_next_parse: false,
             estimated_block_height: px(48.),
             code_highlights: Arc::default(),
+            highlighters: Arc::default(),
             highlight_task: None,
+            highlight_cancel: None,
             _theme_changed: cx.observe_global::<Theme>(Self::refresh_code_highlights),
         }
     }
@@ -188,7 +192,8 @@ impl MarkdownPreview {
             self.document = Arc::default();
             self.rows = Arc::default();
             self.code_highlights = Arc::default();
-            self.highlight_task = None;
+            self.highlighters = Arc::default();
+            self.cancel_highlight();
             self.list_state.reset(0);
             self.reset_image_cache(cx);
         }
@@ -399,6 +404,7 @@ impl MarkdownPreview {
         self.parse_cancel = Some(cancel.clone());
         let chunk_lists = self.chunk_lists;
         let previous_highlights = self.code_highlights.clone();
+        let highlighters = self.highlighters.clone();
         let theme = cx.theme().highlight_theme.clone();
         let parse = cx.background_spawn(async move {
             let cancelled = || cancel.load(Ordering::Relaxed);
@@ -408,8 +414,13 @@ impl MarkdownPreview {
             let text = source.to_string();
             let document = MarkdownDocument::parse_with_cancellation(&text, cancelled)?;
             let rows = PreviewRows::new(&document, chunk_lists);
-            let highlights =
-                CodeHighlights::compute(&document, &previous_highlights, theme, cancelled)?;
+            let highlights = CodeHighlights::compute(
+                &document,
+                &previous_highlights,
+                &highlighters,
+                theme,
+                cancelled,
+            )?;
             (!cancelled()).then_some((document, rows, highlights))
         });
         self.parse_task = Some(cx.spawn(async move |this, cx| {
@@ -518,21 +529,27 @@ impl MarkdownPreview {
     /// they were colored with. Highlighting runs in the background; until it
     /// finishes, blocks keep their old colors.
     fn refresh_code_highlights(&mut self, cx: &mut Context<Self>) {
+        self.cancel_highlight();
         let theme = cx.theme().highlight_theme.clone();
         if !self.active || self.code_highlights.is_for(&theme) {
-            self.highlight_task = None;
             return;
         }
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.highlight_cancel = Some(cancel.clone());
         let document = self.document.clone();
         let previous = self.code_highlights.clone();
+        let highlighters = self.highlighters.clone();
         let highlight = cx.background_spawn(async move {
-            CodeHighlights::compute(&document, &previous, theme, || false)
+            CodeHighlights::compute(&document, &previous, &highlighters, theme, || {
+                cancel.load(Ordering::Relaxed)
+            })
         });
         let document = self.document.clone();
         self.highlight_task = Some(cx.spawn(async move |this, cx| {
             let highlights = highlight.await;
             this.update(cx, |this, cx| {
                 this.highlight_task = None;
+                this.highlight_cancel = None;
                 // A parse that finished meanwhile brought its own colors.
                 if Arc::ptr_eq(&this.document, &document)
                     && let Some(highlights) = highlights
@@ -544,6 +561,13 @@ impl MarkdownPreview {
             })
             .ok();
         }));
+    }
+
+    fn cancel_highlight(&mut self) {
+        if let Some(cancel) = self.highlight_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.highlight_task = None;
     }
 
     fn scroll_up(&mut self, _: &ScrollUp, window: &mut Window, cx: &mut Context<Self>) {
@@ -594,6 +618,7 @@ impl MarkdownPreview {
 impl Drop for MarkdownPreview {
     fn drop(&mut self) {
         self.cancel_parse();
+        self.cancel_highlight();
     }
 }
 

@@ -7,9 +7,9 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::{Arc, Once};
+use std::sync::{Arc, Mutex, Once};
 
-use gpui_kit::base::input::Rope;
+use gpui_kit::base::input::{Point, Rope, RopeExt as _};
 use gpui_kit::component::highlighter::{HighlightTheme, LanguageRegistry, SyntaxHighlighter};
 use gpui_kit::{HighlightStyle, SharedString};
 use markdown::{BlockKind, CodeBlock, MarkdownDocument};
@@ -51,8 +51,9 @@ const ALIASES: &[(&str, &str)] = &[
     ("sqlite", "sql"),
 ];
 
-/// Grammar names fences also write capitalized or in capitals, such as
-/// `Python` or `JSON`, which the editor matches as written.
+/// The grammars Neon builds in. Fences also write these, and the short
+/// names in [`SHORT_NAMES`], capitalized or in capitals, such as `Python` or
+/// `JSON`; the editor matches fence names as written.
 const NAMES: &[&str] = &[
     "bash",
     "c",
@@ -75,6 +76,11 @@ const NAMES: &[&str] = &[
     "yaml",
 ];
 
+/// Short names GPUI Kit already resolves, but only in lowercase.
+const SHORT_NAMES: &[&str] = &[
+    "sh", "js", "ts", "py", "rs", "yml", "jsonc", "scss", "c++", "makefile",
+];
+
 /// Teach the shared language registry the names in [`ALIASES`] and the
 /// capitalized forms of every grammar. The editor's Markdown highlighter
 /// resolves fences through the same registry, so both panes agree on which
@@ -86,7 +92,7 @@ pub(crate) fn register_languages() {
         let names = ALIASES
             .iter()
             .copied()
-            .chain(NAMES.iter().map(|name| (*name, *name)));
+            .chain(NAMES.iter().chain(SHORT_NAMES).map(|name| (*name, *name)));
         for (alias, target) in names {
             let Some(config) = registry.language(target) else {
                 continue;
@@ -133,17 +139,17 @@ pub(crate) struct CodeHighlights {
 impl CodeHighlights {
     /// Highlight every code block in `document`, reusing the tokens in
     /// `previous` for blocks that did not change when the theme is the
-    /// same. `None` when `cancelled` says a newer document replaced this one.
+    /// same. `None` when `cancelled` says the result is no longer wanted.
     pub(crate) fn compute(
         document: &MarkdownDocument,
         previous: &CodeHighlights,
+        highlighters: &Highlighters,
         theme: Arc<HighlightTheme>,
         cancelled: impl Fn() -> bool,
     ) -> Option<Self> {
         register_languages();
         let reuse = previous.is_for(&theme);
         let mut blocks = HashMap::new();
-        let mut highlighters = HashMap::<SharedString, Highlighter>::new();
         let mut pending = document
             .blocks()
             .iter()
@@ -182,10 +188,13 @@ impl CodeHighlights {
             if cancelled() {
                 return None;
             }
-            let tokens = highlighters
-                .entry(grammar.clone())
-                .or_insert_with(|| Highlighter::new(&grammar))
-                .highlight(code.code(), &theme);
+            let tokens = {
+                let mut highlighters = highlighters.0.lock().unwrap();
+                let highlighter = highlighters
+                    .entry(grammar.clone())
+                    .or_insert_with(|| SyntaxHighlighter::new(&grammar));
+                highlight(highlighter, code.code(), &theme)
+            };
             if !tokens.is_empty() {
                 blocks.insert(code.clone(), tokens.into());
             }
@@ -208,56 +217,38 @@ impl CodeHighlights {
     }
 }
 
-/// One grammar's highlighter, reused from block to block so its queries are
-/// compiled once per document rather than once per block.
-struct Highlighter {
-    highlighter: SyntaxHighlighter,
-    /// Where the text it last parsed ends.
-    len: usize,
-    end: tree_sitter::Point,
-}
+/// One highlighter per grammar, kept across parses so each grammar's
+/// queries are compiled once rather than on every parse that changes one of
+/// its blocks.
+#[derive(Default)]
+pub(crate) struct Highlighters(Mutex<HashMap<SharedString, SyntaxHighlighter>>);
 
-impl Highlighter {
-    fn new(grammar: &str) -> Self {
-        Self {
-            highlighter: SyntaxHighlighter::new(grammar),
-            len: 0,
-            end: tree_sitter::Point::new(0, 0),
-        }
-    }
-
-    fn highlight(
-        &mut self,
-        code: &str,
-        theme: &HighlightTheme,
-    ) -> Vec<(Range<usize>, HighlightStyle)> {
-        // The new block replaces all of the last one's text, so no part of
-        // the old tree is reused for unrelated code.
-        let end = end_point(code);
-        let edit = tree_sitter::InputEdit {
-            start_byte: 0,
-            old_end_byte: self.len,
-            new_end_byte: code.len(),
-            start_position: tree_sitter::Point::new(0, 0),
-            old_end_position: self.end,
-            new_end_position: end,
-        };
-        self.highlighter.update(Some(edit), &Rope::from(code), None);
-        self.len = code.len();
-        self.end = end;
-        self.highlighter
-            .styles(&(0..code.len()), theme)
-            .into_iter()
-            .filter(|(_, style)| *style != HighlightStyle::default())
-            .collect()
-    }
-}
-
-/// The row and byte column just past the end of `text`.
-fn end_point(text: &str) -> tree_sitter::Point {
-    let row = text.bytes().filter(|byte| *byte == b'\n').count();
-    let column = text.len() - text.rfind('\n').map_or(0, |ix| ix + 1);
-    tree_sitter::Point::new(row, column)
+/// The tokens of `code`, parsed by `highlighter` in place of the text it
+/// held before.
+fn highlight(
+    highlighter: &mut SyntaxHighlighter,
+    code: &str,
+    theme: &HighlightTheme,
+) -> Vec<(Range<usize>, HighlightStyle)> {
+    // The new text replaces all of the old, so no part of the old tree is
+    // reused for unrelated code.
+    let old = highlighter.text();
+    let new = Rope::from(code);
+    let point = |point: Point| tree_sitter::Point::new(point.row, point.column);
+    let edit = tree_sitter::InputEdit {
+        start_byte: 0,
+        old_end_byte: old.len(),
+        new_end_byte: new.len(),
+        start_position: tree_sitter::Point::new(0, 0),
+        old_end_position: point(old.offset_to_point(old.len())),
+        new_end_position: point(new.offset_to_point(new.len())),
+    };
+    highlighter.update(Some(edit), &new, None);
+    highlighter
+        .styles(&(0..code.len()), theme)
+        .into_iter()
+        .filter(|(_, style)| *style != HighlightStyle::default())
+        .collect()
 }
 
 #[cfg(test)]
@@ -268,6 +259,7 @@ mod tests {
         CodeHighlights::compute(
             &MarkdownDocument::parse(source),
             &CodeHighlights::default(),
+            &Highlighters::default(),
             HighlightTheme::default_dark(),
             || false,
         )
@@ -352,23 +344,30 @@ mod tests {
 
     #[test]
     fn keeps_tokens_of_unchanged_blocks_in_the_same_theme() {
+        let highlighters = Highlighters::default();
         let source = "```rust\nfn main() {}\n```\n";
         let theme = HighlightTheme::default_dark();
         let document = MarkdownDocument::parse(source);
-        let first =
-            CodeHighlights::compute(&document, &CodeHighlights::default(), theme.clone(), || {
-                false
-            })
-            .unwrap();
+        let first = CodeHighlights::compute(
+            &document,
+            &CodeHighlights::default(),
+            &highlighters,
+            theme.clone(),
+            || false,
+        )
+        .unwrap();
         let block = &code_blocks(&document)[0];
-        let second = CodeHighlights::compute(&document, &first, theme, || false).unwrap();
+        let second =
+            CodeHighlights::compute(&document, &first, &highlighters, theme, || false).unwrap();
         assert!(Arc::ptr_eq(
             first.get(block).unwrap(),
             second.get(block).unwrap()
         ));
 
         let light = HighlightTheme::default_light();
-        let third = CodeHighlights::compute(&document, &second, light.clone(), || false).unwrap();
+        let third =
+            CodeHighlights::compute(&document, &second, &highlighters, light.clone(), || false)
+                .unwrap();
         assert!(third.is_for(&light));
         assert!(!Arc::ptr_eq(
             second.get(block).unwrap(),
@@ -389,6 +388,7 @@ mod tests {
         let result = CodeHighlights::compute(
             &document,
             &CodeHighlights::default(),
+            &Highlighters::default(),
             HighlightTheme::default_dark(),
             || true,
         );
@@ -396,10 +396,55 @@ mod tests {
     }
 
     #[test]
-    fn end_point_counts_rows_and_bytes() {
-        assert_eq!(end_point(""), tree_sitter::Point::new(0, 0));
-        assert_eq!(end_point("ab"), tree_sitter::Point::new(0, 2));
-        assert_eq!(end_point("a\nbé"), tree_sitter::Point::new(1, 3));
-        assert_eq!(end_point("a\n"), tree_sitter::Point::new(1, 0));
+    fn every_listed_name_has_a_grammar_in_every_case() {
+        register_languages();
+        let registry = LanguageRegistry::singleton();
+        let names = NAMES
+            .iter()
+            .chain(SHORT_NAMES)
+            .chain(ALIASES.iter().map(|(alias, _)| alias));
+        for name in names {
+            // Exactly as written, as the editor looks fences up.
+            for form in [name.to_string(), name.to_uppercase(), capitalized(name)] {
+                let config = registry.language(&form);
+                assert!(
+                    config.is_some_and(|config| config.has_grammar()),
+                    "{form} has no grammar; is its feature enabled?"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_kept_highlighter_parses_later_documents_afresh() {
+        let highlighters = Highlighters::default();
+        let theme = HighlightTheme::default_dark();
+        for source in [
+            "```rust\nfn long_first_block() { let s = \"text\"; }\n```\n",
+            "```rust\nstruct S;\n```\n",
+        ] {
+            let document = MarkdownDocument::parse(source);
+            let highlights = CodeHighlights::compute(
+                &document,
+                &CodeHighlights::default(),
+                &highlighters,
+                theme.clone(),
+                || false,
+            )
+            .unwrap();
+            let block = &code_blocks(&document)[0];
+            let keyword = &block.code()[..block.code().find(' ').unwrap()];
+            let tokens = highlights.get(block).unwrap();
+            assert!(
+                tokens
+                    .iter()
+                    .all(|(range, _)| range.end <= block.code().len())
+            );
+            assert!(
+                tokens
+                    .iter()
+                    .any(|(range, _)| &block.code()[range.clone()] == keyword)
+            );
+        }
     }
 }
