@@ -29,6 +29,13 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Added
+
+- The sidebar lists images, PDFs, audio, video and office documents beside your notes, with their extension shown, so a folder such as `assets` no longer looks empty. Code and other files stay hidden.
+- Click an image in the sidebar, or select it and press Space, to view it. ← and → step through the other images in its folder, Insert Link (Return) adds it to the note at the cursor, and Open in Default App hands it to Preview or your chosen app. Other attachments open in their default app.
+- Drag an attachment from the sidebar onto a note to insert a link to it at the cursor. An image gets a paragraph of its own, so the preview shows it.
+- Copy Markdown Link in a file's right-click menu copies a link to it from the open note, such as `![photo](assets/photo.png)` or `[report.pdf](../assets/report.pdf)`.
+
 ## [0.14.0] - 2026-10-30
 
 ### Added

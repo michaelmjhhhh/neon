@@ -45,14 +45,16 @@ impl Entry {
     }
 }
 
-pub(crate) struct PreviewImageCache {
+/// Decodes images for `img(...).image_cache(...)`, shrinking any wider than
+/// [`MAX_DECODED_WIDTH`], and frees them all when dropped.
+pub struct PreviewImageCache {
     this: WeakEntity<Self>,
     entries: HashMap<Resource, Entry>,
     frame: u64,
 }
 
 impl PreviewImageCache {
-    pub(crate) fn new(cx: &mut App) -> Entity<Self> {
+    pub fn new(cx: &mut App) -> Entity<Self> {
         let cache = cx.new(|cx| Self {
             this: cx.weak_entity(),
             entries: HashMap::new(),

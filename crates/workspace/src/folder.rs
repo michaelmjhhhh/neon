@@ -48,10 +48,11 @@ impl FolderEntry {
     }
 
     /// Record how many Markdown files each folder holds, at any depth, and
-    /// return this entry's count.
+    /// return this entry's count. Attachments are listed but not counted:
+    /// the count says how many notes a folder holds.
     pub(super) fn count_files(&self, counts: &mut HashMap<SharedString, usize>) -> usize {
         if !self.is_dir {
-            return 1;
+            return usize::from(is_markdown(&self.path));
         }
         let count = self
             .children
@@ -65,8 +66,9 @@ impl FolderEntry {
 
 /// Skip hidden directories and symlinks; never follow cycles or leave the folder.
 ///
-/// A directory is listed when it holds Markdown files or nothing at all, so a
-/// new folder shows up while one of only images or code stays out of the way.
+/// A directory is listed when it holds listed files or nothing at all, so a
+/// new folder and one of images show up while one of only code stays out of
+/// the way.
 pub(super) fn scan_folder(path: &Path) -> std::io::Result<Vec<FolderEntry>> {
     scan_dir(path).map(|(entries, _)| entries)
 }
@@ -92,7 +94,7 @@ fn scan_dir(path: &Path) -> std::io::Result<(Vec<FolderEntry>, bool)> {
                     children,
                 });
             }
-        } else if kind.is_file() && is_markdown(&path) {
+        } else if kind.is_file() && file_kind(&path).is_some() {
             entries.push(FolderEntry {
                 path,
                 is_dir: false,
@@ -119,7 +121,7 @@ pub(super) fn markdown_files(folder: &Path) -> io::Result<Vec<PathBuf>> {
         for entry in entries {
             if entry.is_dir {
                 walk(entry.children, files);
-            } else {
+            } else if is_markdown(&entry.path) {
                 files.push(entry.path);
             }
         }
@@ -130,9 +132,114 @@ pub(super) fn markdown_files(folder: &Path) -> io::Result<Vec<PathBuf>> {
 }
 
 pub(super) fn is_markdown(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
+    file_kind(path) == Some(FileKind::Markdown)
+}
+
+/// What a listed file is, which decides how it opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FileKind {
+    /// A note, opened in a tab.
+    Markdown,
+    /// An image Neon can draw, shown in the image viewer.
+    Image,
+    /// Any other attachment, opened in its default app.
+    Attachment,
+}
+
+/// Images GPUI decodes, so the viewer can show them.
+const IMAGE_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tif", "tiff", "ico",
+];
+
+/// Files notes link to or embed, as Obsidian lists by default: other
+/// image formats, PDFs, audio, video and office documents. Code, archives
+/// and anything else stay out of the sidebar.
+const ATTACHMENT_EXTENSIONS: &[&str] = &[
+    "heic", "heif", "avif", "pdf", "mp3", "m4a", "wav", "aac", "flac", "ogg", "mp4", "mov", "m4v",
+    "webm", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "pages", "numbers", "key", "csv",
+];
+
+/// How the sidebar treats the file at `path`, or `None` if it does not
+/// list it. Decided by extension, without case.
+pub(super) fn file_kind(path: &Path) -> Option<FileKind> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    if ext == "md" || ext == "markdown" {
+        Some(FileKind::Markdown)
+    } else if IMAGE_EXTENSIONS.contains(&ext.as_str()) {
+        Some(FileKind::Image)
+    } else if ATTACHMENT_EXTENSIONS.contains(&ext.as_str()) {
+        Some(FileKind::Attachment)
+    } else {
+        None
+    }
+}
+
+/// A Markdown link from a note in `from_dir` to the file at `target`:
+/// `![name](path)` for an image, which embeds it, `[name](path)` for
+/// anything else. The path is relative, with `/` between parts, so the
+/// link works wherever the folder goes, on GitHub and in exports. A path
+/// with spaces or brackets is written as `<path>`, which CommonMark reads
+/// as it is.
+pub(super) fn markdown_link(from_dir: &Path, target: &Path) -> String {
+    let path = relative_path(from_dir, target);
+    let destination = if path.contains([' ', '(', ')', '<', '>']) {
+        format!("<{}>", path.replace('<', "\\<").replace('>', "\\>"))
+    } else {
+        path
+    };
+    let text = match file_kind(target) {
+        Some(FileKind::Markdown) | Some(FileKind::Image) => target.file_stem(),
+        _ => target.file_name(),
+    }
+    .unwrap_or_default()
+    .to_string_lossy()
+    // Brackets in the text would end it early.
+    .replace(['[', ']'], "");
+    let embed = if file_kind(target) == Some(FileKind::Image) {
+        "!"
+    } else {
+        ""
+    };
+    format!("{embed}[{text}]({destination})")
+}
+
+/// What goes before and after an image link inserted at a cursor, so the
+/// image is a paragraph of its own: the preview, like GitHub, draws an
+/// image there and shows only its name inside a sentence. `before` and
+/// `after` are the cursor's line on each side of it; `above` and `below`
+/// say whether the lines next to it have text, if there are any.
+pub(super) fn embed_padding(
+    before: &str,
+    after: &str,
+    above: Option<bool>,
+    below: Option<bool>,
+) -> (&'static str, &'static str) {
+    let padding = |beside: &str, next: Option<bool>| {
+        if !beside.trim().is_empty() {
+            "\n\n"
+        } else if next == Some(true) {
+            "\n"
+        } else {
+            ""
+        }
+    };
+    (padding(before, above), padding(after, below))
+}
+
+/// `target` as seen from `from_dir`, both absolute: `img/a.png`,
+/// `../assets/a.png`.
+fn relative_path(from_dir: &Path, target: &Path) -> String {
+    let from: Vec<_> = from_dir.components().collect();
+    let to: Vec<_> = target.components().collect();
+    let shared = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    std::iter::repeat_n("..".to_string(), from.len() - shared)
+        .chain(
+            to[shared..]
+                .iter()
+                .map(|part| part.as_os_str().to_string_lossy().into_owned()),
+        )
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// The Markdown file in `folder` that a link such as `Note.md` or
@@ -470,12 +577,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lists_empty_folders_and_hides_folders_without_markdown() {
+    fn lists_notes_attachments_and_empty_folders_but_not_code() {
         let root = std::env::temp_dir().join(format!("neon-scan-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("empty")).unwrap();
         std::fs::create_dir_all(root.join("images")).unwrap();
         std::fs::write(root.join("images/photo.png"), b"").unwrap();
+        std::fs::write(root.join("images/scan.PDF"), b"").unwrap();
+        std::fs::create_dir_all(root.join("code")).unwrap();
+        std::fs::write(root.join("code/main.rs"), b"").unwrap();
+        std::fs::write(root.join("build.zip"), b"").unwrap();
         std::fs::create_dir_all(root.join("hidden-only")).unwrap();
         std::fs::write(root.join("hidden-only/.DS_Store"), b"").unwrap();
         std::fs::create_dir_all(root.join("notes")).unwrap();
@@ -494,12 +605,85 @@ mod tests {
                     .into_owned()
             })
             .collect();
+        let images: Vec<_> = entries[2]
+            .children
+            .iter()
+            .map(|entry| {
+                entry
+                    .path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        let notes = markdown_files(&root).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
 
-        assert_eq!(names, ["empty", "hidden-only", "notes", "b.md"]);
+        assert_eq!(names, ["empty", "hidden-only", "images", "notes", "b.md"]);
+        assert_eq!(images, ["photo.png", "scan.PDF"]);
+        // Folder search and the counts see notes alone.
+        assert_eq!(notes, [root.join("notes/a.md"), root.join("b.md")]);
         let mut counts = HashMap::new();
         let total: usize = entries.iter().map(|e| e.count_files(&mut counts)).sum();
         assert_eq!(total, 2);
+        assert_eq!(
+            counts[&SharedString::from(root.join("images").to_string_lossy().into_owned())],
+            0
+        );
+    }
+
+    #[test]
+    fn tells_notes_images_and_attachments_apart() {
+        assert_eq!(file_kind(Path::new("a/Note.MD")), Some(FileKind::Markdown));
+        assert_eq!(file_kind(Path::new("a/photo.JPG")), Some(FileKind::Image));
+        assert_eq!(
+            file_kind(Path::new("a/scan.pdf")),
+            Some(FileKind::Attachment)
+        );
+        assert_eq!(file_kind(Path::new("a/main.rs")), None);
+        assert_eq!(file_kind(Path::new("a/README")), None);
+    }
+
+    #[test]
+    fn gives_an_image_a_paragraph_of_its_own() {
+        // Mid-sentence: the line splits around it.
+        assert_eq!(
+            embed_padding("Some ", "text", Some(false), None),
+            ("\n\n", "\n\n")
+        );
+        // On an empty line between paragraphs: a blank line each side.
+        assert_eq!(embed_padding("", "", Some(true), Some(true)), ("\n", "\n"));
+        // Already apart, or at either end of the note: nothing to add.
+        assert_eq!(embed_padding("", "", Some(false), Some(false)), ("", ""));
+        assert_eq!(embed_padding("", "", None, None), ("", ""));
+        assert_eq!(embed_padding("End.", "", Some(true), None), ("\n\n", ""));
+    }
+
+    #[test]
+    fn links_relative_to_the_note() {
+        let root = Path::new("/notes");
+        assert_eq!(
+            markdown_link(root, Path::new("/notes/assets/photo.png")),
+            "![photo](assets/photo.png)"
+        );
+        assert_eq!(
+            markdown_link(&root.join("daily"), Path::new("/notes/assets/scan.pdf")),
+            "[scan.pdf](../assets/scan.pdf)"
+        );
+        assert_eq!(
+            markdown_link(&root.join("daily"), Path::new("/notes/Ideas.md")),
+            "[Ideas](../Ideas.md)"
+        );
+        // Spaces and brackets keep the path whole; brackets leave the text.
+        assert_eq!(
+            markdown_link(root, Path::new("/notes/my files/shot (2) [x].png")),
+            "![shot (2) x](<my files/shot (2) [x].png>)"
+        );
+        assert_eq!(
+            markdown_link(root, Path::new("/notes/a<b>.png")),
+            "![a<b>](<a\\<b\\>.png>)"
+        );
     }
 
     #[test]
