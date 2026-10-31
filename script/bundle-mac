@@ -19,6 +19,11 @@
 #
 # With credentials set, the DMG is notarized and the ticket is stapled to both
 # the DMG and the app, so they open offline without a Gatekeeper prompt.
+#
+# The app embeds Sparkle, which checks the appcast.xml of the latest GitHub
+# release for updates; script/appcast writes that file. Updates must carry an
+# EdDSA signature from the key whose public half is sparkle_public_key below.
+# NEON_SPARKLE_PUBLIC_KEY overrides it, to try updates with a throwaway key.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -33,12 +38,22 @@ done
 
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 bundle_id="io.github.michaelmjhhhh.neon"
+feed_url="https://github.com/michaelmjhhhh/neon/releases/latest/download/appcast.xml"
+# The public half of the update signing key, as `generate_keys -p` prints it.
+sparkle_public_key="${NEON_SPARKLE_PUBLIC_KEY:-CG5N19keBF6c86aAmY9Oec8qlv6GMwwhmfBhEeNhkxQ=}"
+identity="${NEON_SIGNING_IDENTITY:--}"
 dist="dist"
 app="$dist/Neon.app"
 
 # Rewrite source paths baked into the binary (panic messages, line tables) so
 # they do not reveal the build machine's home directory or checkout location.
 export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=~ --remap-path-prefix=$PWD=."
+
+# A release without the updater would strand its users on that version.
+if [ "$identity" != "-" ] && [ -z "$sparkle_public_key" ]; then
+    echo "a Developer ID build needs sparkle_public_key for updates" >&2
+    exit 1
+fi
 
 echo "Building Neon $version"
 rm -rf "$dist"
@@ -58,6 +73,32 @@ else
 fi
 
 cp assets/icon/Neon.icns "$app/Contents/Resources/Neon.icns"
+
+# Without a public key Sparkle refuses every update, so a build without one
+# leaves the updater out and the app hides Check for Updates.
+updater_keys=""
+if [ -n "$sparkle_public_key" ]; then
+    sparkle_dir=$(script/fetch-sparkle)
+    mkdir -p "$app/Contents/Frameworks"
+    ditto "$sparkle_dir/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
+    # The XPC services exist for sandboxed apps; Neon is not sandboxed.
+    rm -rf "$app/Contents/Frameworks/Sparkle.framework/XPCServices" \
+        "$app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices"
+    # Sparkle checks the feed's signature as well as the update's, so a
+    # tampered feed can't change the release notes or point at an old
+    # version, and checks the update before unpacking it.
+    updater_keys="
+    <key>SUFeedURL</key>
+    <string>$feed_url</string>
+    <key>SUPublicEDKey</key>
+    <string>$sparkle_public_key</string>
+    <key>SURequireSignedFeed</key>
+    <true/>
+    <key>SUVerifyUpdateBeforeExtraction</key>
+    <true/>"
+else
+    echo "No sparkle_public_key: building without the updater"
+fi
 
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -89,7 +130,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
-    <true/>
+    <true/>$updater_keys
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>
@@ -117,13 +158,23 @@ cat > "$app/Contents/Info.plist" <<PLIST
 PLIST
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 
-identity="${NEON_SIGNING_IDENTITY:--}"
-if [ "$identity" = "-" ]; then
-    codesign --force --sign - "$app"
-else
-    codesign --force --options runtime --timestamp --sign "$identity" "$app"
+sign() {
+    if [ "$identity" = "-" ]; then
+        codesign --force --sign - "$1"
+    else
+        codesign --force --options runtime --timestamp --sign "$identity" "$1"
+    fi
+}
+# Sign nested code first, each part on its own: `codesign --deep` would give
+# Sparkle's helpers the app's signing options.
+sparkle="$app/Contents/Frameworks/Sparkle.framework"
+if [ -d "$sparkle" ]; then
+    sign "$sparkle/Versions/B/Autoupdate"
+    sign "$sparkle/Versions/B/Updater.app"
+    sign "$sparkle"
 fi
-codesign --verify --strict "$app"
+sign "$app"
+codesign --verify --deep --strict "$app"
 
 notary_args=()
 if [ -n "${NEON_NOTARY_PROFILE:-}" ]; then

@@ -35,6 +35,7 @@ Groups, in this order:
 - Click an image in the sidebar, or select it and press Space, to view it. ← and → step through the other images in its folder, Insert Link (Return) adds it to the note at the cursor, and Open in Default App hands it to Preview or your chosen app. Other attachments open in their default app.
 - Drag an attachment from the sidebar onto a note to insert a link to it at the cursor. An image gets a paragraph of its own, so the preview shows it.
 - Copy Markdown Link in a file's right-click menu copies a link to it from the open note, such as `![photo](assets/photo.png)` or `[report.pdf](../assets/report.pdf)`.
+- Neon updates itself: it checks for a new version once a day, after asking on the second launch, shows what changed and installs it when you agree. Neon › Check for Updates… checks right away. Updates are signed, and Neon refuses any that are not. Install this version by hand once; later versions arrive on their own.
 
 ## [0.14.1] - 2026-10-30
 

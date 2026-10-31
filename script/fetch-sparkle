@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Download the pinned Sparkle release once, check its hash, and print the
+# directory it was unpacked to. That directory holds Sparkle.framework, which
+# script/bundle-mac embeds in Neon.app, and bin/sign_update, which
+# script/appcast uses to sign updates.
+#
+# To upgrade Sparkle, change the version and set the hash of its
+# Sparkle-<version>.tar.xz, from `shasum -a 256`.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+version="2.10.1"
+sha256="1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27"
+dir="target/sparkle/$version"
+
+if [ ! -f "$dir/.complete" ]; then
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    archive="$dir/Sparkle-$version.tar.xz"
+    curl --fail --silent --show-error --location --retry 3 --output "$archive" \
+        "https://github.com/sparkle-project/Sparkle/releases/download/$version/Sparkle-$version.tar.xz"
+    if ! echo "$sha256  $archive" | shasum -a 256 --check --status; then
+        echo "Sparkle-$version.tar.xz does not match its pinned SHA-256" >&2
+        rm -rf "$dir"
+        exit 1
+    fi
+    tar -xf "$archive" -C "$dir"
+    rm "$archive"
+    touch "$dir/.complete"
+fi
+
+echo "$PWD/$dir"

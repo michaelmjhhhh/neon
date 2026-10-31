@@ -61,6 +61,8 @@ Neon is built on [GPUI](https://github.com/zed-industries/zed/tree/main/crates/g
 
 Neon runs natively on Apple Silicon and Intel, macOS 11 or later. It is signed with an Apple Developer ID and notarized, so macOS opens it without a warning.
 
+Neon updates itself. On the second launch it asks whether to check for updates automatically; when one is out, it shows what changed and installs it on request. **Neon › Check for Updates…** checks right away. Updates are signed, and Neon refuses one that is not.
+
 <details>
 <summary>Verify a download</summary>
 
@@ -121,6 +123,8 @@ cargo test --workspace           # run the tests
 script/bundle-mac --native       # package dist/Neon.app, .dmg and .zip for this Mac
 script/bundle-mac                # universal binary for Apple Silicon and Intel
 ```
+
+Builds from source have no updater: `cargo run` leaves Sparkle out, and so does `script/bundle-mac` unless `sparkle_public_key` in it is set. `script/appcast` writes the update feed for a release.
 
 If the Metal compiler is missing, run `xcodebuild -downloadComponent MetalToolchain`.
 
