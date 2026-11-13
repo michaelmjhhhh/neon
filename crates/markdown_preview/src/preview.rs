@@ -196,7 +196,7 @@ impl MarkdownPreview {
             inline_code_family: None,
             font_scale: 1.,
             column_insets: None,
-            readable_line_length: true,
+            readable_line_length: false,
             list_state,
             scrollbar,
             focus_handle: cx.focus_handle(),

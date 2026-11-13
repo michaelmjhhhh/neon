@@ -52,7 +52,7 @@ use crate::inline_format::{self, Style};
 use crate::list_continuation;
 use crate::present_now::{self, NativeView};
 use crate::scroll_metrics::ScrollMetrics;
-use crate::settings::{LineNumbersChanged, ReadableLineLengthChanged, SettingsView};
+use crate::settings::{LineNumbersChanged, SettingsView};
 use crate::slash_commands::SlashMenu;
 use crate::theme::{self, Appearance};
 use crate::word_count::WordCount;
@@ -404,9 +404,12 @@ impl Workspace {
                 let LineNumbersChanged(visible) = *event;
                 this.set_line_numbers(visible, window, cx);
             }),
-            cx.subscribe(&settings, |this, _, event, cx| {
-                let ReadableLineLengthChanged(readable) = *event;
-                this.set_readable_line_length(readable, cx);
+            // Saved from this window's settings or another's.
+            crate::settings_file::observe(cx, |this, cx| {
+                let readable = crate::settings_file::saved(cx).readable_line_length;
+                if this.readable_line_length != readable {
+                    this.set_readable_line_length(readable, cx);
+                }
             }),
             cx.observe_window_appearance(window, |_, window, cx| {
                 theme::apply_appearance(window, cx);
@@ -716,11 +719,13 @@ impl Workspace {
         }
         let cursor = editor.read(cx).cursor();
         self.update_slash_menu(editor, &source, cursor, true, cx);
-        // The Editor layout's column widens with the gutter when the line
-        // count gains a digit, as at line 1000. Other layouts do not
-        // measure the column, so typing there never redraws this view.
+        // The Editor layout's readable column widens with the gutter when
+        // the line count gains a digit, as at line 1000. Full width and
+        // other layouts do not measure the column, so typing there never
+        // redraws this view.
         let digits = gutter_digits(source.lines_len());
         if self.line_numbers
+            && self.readable_line_length
             && self.zen.is_none()
             && self.layout == LayoutMode::Editor
             && self.gutter_digits.replace(digits) != digits

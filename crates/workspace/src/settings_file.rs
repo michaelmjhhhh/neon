@@ -4,14 +4,14 @@
 
 use std::path::{Path, PathBuf};
 
-use gpui_kit::{App, Global};
+use gpui_kit::{App, Context, Global, Subscription};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::theme::{self, Appearance};
 use crate::workspace::LayoutMode;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Settings {
     #[serde(deserialize_with = "or_default")]
@@ -22,24 +22,12 @@ pub(crate) struct Settings {
     /// default: prose reads better without a gutter, as in Typora.
     pub(crate) line_numbers: bool,
     /// Whether the editor and the preview keep text to a readable line
-    /// length, centered in a wide window, or fill the pane. On by default.
+    /// length, centered in a wide window. Off by default: text fills the
+    /// pane, so a large screen is used.
     pub(crate) readable_line_length: bool,
     /// The layout new windows open in: Editor, Split or Preview.
     #[serde(deserialize_with = "or_default")]
     pub(crate) default_layout: LayoutMode,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            appearance: Appearance::default(),
-            editor: PaneTypography::default(),
-            preview: PaneTypography::default(),
-            line_numbers: false,
-            readable_line_length: true,
-            default_layout: LayoutMode::default(),
-        }
-    }
 }
 
 /// A choice's default when the file names one this version does not know,
@@ -87,6 +75,15 @@ pub(crate) fn saved(cx: &App) -> Settings {
     cx.try_global::<SettingsFile>()
         .map(|file| file.settings.clone())
         .unwrap_or_default()
+}
+
+/// Call `changed` whenever the saved settings change, from any window, so
+/// every window can follow a setting it shows.
+pub(crate) fn observe<T: 'static>(
+    cx: &mut Context<T>,
+    changed: impl FnMut(&mut T, &mut Context<T>) + 'static,
+) -> Subscription {
+    cx.observe_global::<SettingsFile>(changed)
 }
 
 /// Change the settings and save them, if they were loaded.
@@ -160,7 +157,7 @@ mod tests {
             },
             preview: PaneTypography::default(),
             line_numbers: true,
-            readable_line_length: false,
+            readable_line_length: true,
             default_layout: LayoutMode::Preview,
         };
         write(&path, &settings).unwrap();
@@ -178,7 +175,7 @@ mod tests {
         let settings: Settings = read(&path);
         assert_eq!(settings.preview.size, Some(20));
         assert!(!settings.line_numbers);
-        assert!(settings.readable_line_length);
+        assert!(!settings.readable_line_length);
         assert_eq!(settings.default_layout, LayoutMode::Split);
         std::fs::write(&path, r#"{"default_layout": "editor"}"#).unwrap();
         let settings: Settings = read(&path);

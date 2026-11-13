@@ -70,9 +70,6 @@ impl Section {
 /// The saved line-numbers setting changed; the window applies it at once.
 pub(crate) struct LineNumbersChanged(pub(crate) bool);
 
-/// The saved line-length setting changed; the window applies it at once.
-pub(crate) struct ReadableLineLengthChanged(pub(crate) bool);
-
 pub(crate) struct SettingsView {
     section: Section,
     typography: Entity<Typography>,
@@ -89,7 +86,6 @@ pub(crate) struct SettingsView {
 }
 
 impl EventEmitter<LineNumbersChanged> for SettingsView {}
-impl EventEmitter<ReadableLineLengthChanged> for SettingsView {}
 
 impl SettingsView {
     pub(crate) fn new(
@@ -391,10 +387,10 @@ impl SettingsView {
                     .checked(self.readable_line_length)
                     .on_click(cx.listener(|this, checked: &bool, _, cx| {
                         this.readable_line_length = *checked;
+                        // Every window follows the saved setting.
                         settings_file::update(cx, |settings| {
                             settings.readable_line_length = *checked
                         });
-                        cx.emit(ReadableLineLengthChanged(*checked));
                         cx.notify();
                     })),
             ),
