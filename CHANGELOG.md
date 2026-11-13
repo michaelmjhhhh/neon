@@ -29,6 +29,8 @@ Groups, in this order:
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-13
+
 ### Added
 
 - Settings › Editor › Line length: turn on Readable line length to keep text in a centered column of about 80 characters in a wide window.
