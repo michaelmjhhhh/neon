@@ -46,6 +46,8 @@ pub(crate) struct BlockLayout {
     pub(crate) font_scale: f32,
     /// Leading and trailing insets in place of the centered reading column.
     pub(crate) column_insets: Option<(Pixels, Pixels)>,
+    /// Whether blocks keep to the reading column's width or fill the pane.
+    pub(crate) readable_line_length: bool,
     /// Syntax colors for code blocks.
     pub(crate) code_highlights: Arc<CodeHighlights>,
 }
@@ -64,6 +66,7 @@ pub(crate) fn render_block(
         inline_code_family,
         font_scale,
         column_insets,
+        readable_line_length,
         code_highlights,
     } = layout;
     let (font_scale, column_insets) = (*font_scale, *column_insets);
@@ -100,7 +103,7 @@ pub(crate) fn render_block(
         .child(
             div()
                 .w_full()
-                .when(column_insets.is_none(), |this| {
+                .when(column_insets.is_none() && *readable_line_length, |this| {
                     this.max_w(rems(MAX_READING_WIDTH_REMS))
                 })
                 .map(|this| {

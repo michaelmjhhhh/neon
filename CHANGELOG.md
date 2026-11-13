@@ -29,8 +29,13 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Added
+
+- Settings › Editor › Line length: turn on Readable line length to keep text in a centered column of about 80 characters in a wide window.
+
 ### Changed
 
+- Text now fills the editor and the preview in a wide window, instead of a centered column. Turn on Readable line length in Settings for the column.
 - In Split, the preview scrolls with the editor and keeps the text you see side by side, from the start of the note to its end. Scroll the preview yourself to read elsewhere; it follows again when the editor scrolls or the caret moves.
 - Double-click a line in the editor in Split to bring the matching text in the preview level with it.
 - Headings in the preview are smaller beside the body text, so a title no longer dwarfs the paragraph under it.

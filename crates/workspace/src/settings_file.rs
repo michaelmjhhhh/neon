@@ -1,10 +1,10 @@
 //! Settings that outlast the app: the appearance, each pane's typography, the
-//! editor's line numbers and the layout new windows open in, kept as JSON in
-//! the user's settings directory.
+//! editor's line numbers, the line length and the layout new windows open
+//! in, kept as JSON in the user's settings directory.
 
 use std::path::{Path, PathBuf};
 
-use gpui_kit::{App, Global};
+use gpui_kit::{App, Context, Global, Subscription};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -21,6 +21,10 @@ pub(crate) struct Settings {
     /// Whether new windows show line numbers beside the editor. Off by
     /// default: prose reads better without a gutter, as in Typora.
     pub(crate) line_numbers: bool,
+    /// Whether the editor and the preview keep text to a readable line
+    /// length, centered in a wide window. Off by default: text fills the
+    /// pane, so a large screen is used.
+    pub(crate) readable_line_length: bool,
     /// The layout new windows open in: Editor, Split or Preview.
     #[serde(deserialize_with = "or_default")]
     pub(crate) default_layout: LayoutMode,
@@ -71,6 +75,15 @@ pub(crate) fn saved(cx: &App) -> Settings {
     cx.try_global::<SettingsFile>()
         .map(|file| file.settings.clone())
         .unwrap_or_default()
+}
+
+/// Call `changed` whenever the saved settings change, from any window, so
+/// every window can follow a setting it shows.
+pub(crate) fn observe<T: 'static>(
+    cx: &mut Context<T>,
+    changed: impl FnMut(&mut T, &mut Context<T>) + 'static,
+) -> Subscription {
+    cx.observe_global::<SettingsFile>(changed)
 }
 
 /// Change the settings and save them, if they were loaded.
@@ -144,6 +157,7 @@ mod tests {
             },
             preview: PaneTypography::default(),
             line_numbers: true,
+            readable_line_length: true,
             default_layout: LayoutMode::Preview,
         };
         write(&path, &settings).unwrap();
@@ -161,6 +175,7 @@ mod tests {
         let settings: Settings = read(&path);
         assert_eq!(settings.preview.size, Some(20));
         assert!(!settings.line_numbers);
+        assert!(!settings.readable_line_length);
         assert_eq!(settings.default_layout, LayoutMode::Split);
         std::fs::write(&path, r#"{"default_layout": "editor"}"#).unwrap();
         let settings: Settings = read(&path);
