@@ -70,11 +70,15 @@ impl Section {
 /// The saved line-numbers setting changed; the window applies it at once.
 pub(crate) struct LineNumbersChanged(pub(crate) bool);
 
+/// The saved line-length setting changed; the window applies it at once.
+pub(crate) struct ReadableLineLengthChanged(pub(crate) bool);
+
 pub(crate) struct SettingsView {
     section: Section,
     typography: Entity<Typography>,
     /// The saved setting, not a window's temporary toggle.
     line_numbers: bool,
+    readable_line_length: bool,
     /// The layout new windows open in.
     default_layout: LayoutMode,
     /// Filters the Shortcuts section by command name.
@@ -85,6 +89,7 @@ pub(crate) struct SettingsView {
 }
 
 impl EventEmitter<LineNumbersChanged> for SettingsView {}
+impl EventEmitter<ReadableLineLengthChanged> for SettingsView {}
 
 impl SettingsView {
     pub(crate) fn new(
@@ -106,6 +111,7 @@ impl SettingsView {
             section: Section::Appearance,
             typography,
             line_numbers: saved.line_numbers,
+            readable_line_length: saved.readable_line_length,
             default_layout: saved.default_layout,
             shortcut_query,
             shortcuts: shortcuts::all(cx),
@@ -120,6 +126,7 @@ impl SettingsView {
         if open {
             let saved = settings_file::saved(cx);
             self.line_numbers = saved.line_numbers;
+            self.readable_line_length = saved.readable_line_length;
             self.default_layout = saved.default_layout;
         }
         self.typography.update(cx, |typography, cx| {
@@ -342,10 +349,8 @@ impl SettingsView {
                 }))
             })),
         );
-        let line_numbers = section(
-            "Line numbers",
-            Some("⇧⌘L shows or hides them in the current window until it closes."),
-            None,
+        // A labeled switch in a quiet card.
+        let switch_row = |label: &'static str, switch: Switch| {
             div()
                 .flex()
                 .items_center()
@@ -357,18 +362,44 @@ impl SettingsView {
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.sidebar.opacity(0.4))
-                .child(div().text_sm().child("Show line numbers"))
-                .child(
-                    Switch::new("line-numbers")
-                        .checked(self.line_numbers)
-                        .accessibility_label("Show line numbers")
-                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                            this.line_numbers = *checked;
-                            settings_file::update(cx, |settings| settings.line_numbers = *checked);
-                            cx.emit(LineNumbersChanged(*checked));
-                            cx.notify();
-                        })),
-                ),
+                .child(div().text_sm().child(label))
+                .child(switch.accessibility_label(label))
+        };
+        let line_numbers = section(
+            "Line numbers",
+            Some("⇧⌘L shows or hides them in the current window until it closes."),
+            None,
+            switch_row(
+                "Show line numbers",
+                Switch::new("line-numbers")
+                    .checked(self.line_numbers)
+                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        this.line_numbers = *checked;
+                        settings_file::update(cx, |settings| settings.line_numbers = *checked);
+                        cx.emit(LineNumbersChanged(*checked));
+                        cx.notify();
+                    })),
+            ),
+        );
+        let line_length = section(
+            "Line length",
+            Some(
+                "On, text keeps to about 80 characters, centered in a wide window. Off, it fills the editor and the preview. Zen Mode keeps its own column.",
+            ),
+            None,
+            switch_row(
+                "Readable line length",
+                Switch::new("readable-line-length")
+                    .checked(self.readable_line_length)
+                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        this.readable_line_length = *checked;
+                        settings_file::update(cx, |settings| {
+                            settings.readable_line_length = *checked
+                        });
+                        cx.emit(ReadableLineLengthChanged(*checked));
+                        cx.notify();
+                    })),
+            ),
         );
         div()
             .flex()
@@ -376,6 +407,7 @@ impl SettingsView {
             .gap_8()
             .child(default_view)
             .child(line_numbers)
+            .child(line_length)
     }
 
     /// A search field, then each group of commands as a card of rows with

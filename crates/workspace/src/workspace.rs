@@ -52,7 +52,7 @@ use crate::inline_format::{self, Style};
 use crate::list_continuation;
 use crate::present_now::{self, NativeView};
 use crate::scroll_metrics::ScrollMetrics;
-use crate::settings::{LineNumbersChanged, SettingsView};
+use crate::settings::{LineNumbersChanged, ReadableLineLengthChanged, SettingsView};
 use crate::slash_commands::SlashMenu;
 use crate::theme::{self, Appearance};
 use crate::word_count::WordCount;
@@ -282,6 +282,8 @@ pub struct Workspace {
     /// Starts from the saved setting; the shortcut changes it for this
     /// window only.
     line_numbers: bool,
+    /// Whether text keeps to a readable line length or fills the pane.
+    readable_line_length: bool,
     /// The digits the line-number gutter had room for when the editor's
     /// column was last measured.
     gutter_digits: Cell<usize>,
@@ -325,8 +327,17 @@ impl Workspace {
         let slash_menu = cx.new(|_| SlashMenu::default());
         let saved = crate::settings_file::saved(cx);
         let (line_numbers, layout) = (saved.line_numbers, saved.default_layout);
+        let readable_line_length = saved.readable_line_length;
         let typography = cx.new(|cx| Typography::new(window, cx));
-        let tab = DocumentTab::new(0, line_numbers, &slash_menu, &typography, window, cx);
+        let tab = DocumentTab::new(
+            0,
+            line_numbers,
+            readable_line_length,
+            &slash_menu,
+            &typography,
+            window,
+            cx,
+        );
         let scroll_metrics = cx.new(|cx| {
             let mut metrics =
                 ScrollMetrics::new(tab.editor.clone(), tab.preview.clone(), window, cx);
@@ -393,6 +404,10 @@ impl Workspace {
                 let LineNumbersChanged(visible) = *event;
                 this.set_line_numbers(visible, window, cx);
             }),
+            cx.subscribe(&settings, |this, _, event, cx| {
+                let ReadableLineLengthChanged(readable) = *event;
+                this.set_readable_line_length(readable, cx);
+            }),
             cx.observe_window_appearance(window, |_, window, cx| {
                 theme::apply_appearance(window, cx);
             }),
@@ -456,6 +471,7 @@ impl Workspace {
                 cx.new(|_| ResizableState::default()),
             ],
             line_numbers,
+            readable_line_length,
             gutter_digits: Cell::new(0),
             settings_open: false,
             settings,
@@ -2169,6 +2185,17 @@ impl Workspace {
         cx.notify();
     }
 
+    fn set_readable_line_length(&mut self, readable: bool, cx: &mut Context<Self>) {
+        self.readable_line_length = readable;
+        for tab in &self.tabs {
+            tab.preview.update(cx, |preview, cx| {
+                preview.set_readable_line_length(readable, cx)
+            });
+        }
+        // The Editor layout's column.
+        cx.notify();
+    }
+
     fn zoom_in(&mut self, _: &ZoomIn, window: &mut Window, cx: &mut Context<Self>) {
         self.typography
             .update(cx, |typography, cx| typography.zoom(1, window, cx));
@@ -3373,6 +3400,8 @@ impl Workspace {
                 .child(MarkdownPreview::pane(&tab.preview, cx))
         };
         match self.layout {
+            // The editor's own inset already matches the preview's margin.
+            LayoutMode::Editor if !self.readable_line_length => editor().into_any_element(),
             // Centered at a readable measure; the margins beside it scroll
             // the text too, so the pointer can rest anywhere.
             LayoutMode::Editor => {

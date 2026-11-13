@@ -128,6 +128,8 @@ pub struct MarkdownPreview {
     font_scale: f32,
     /// Leading and trailing insets that replace the centered reading column.
     column_insets: Option<(Pixels, Pixels)>,
+    /// Whether blocks keep to the reading column's width or fill the pane.
+    readable_line_length: bool,
     list_state: ListState,
     scrollbar: Entity<PreviewScrollbar>,
     focus_handle: FocusHandle,
@@ -194,6 +196,7 @@ impl MarkdownPreview {
             inline_code_family: None,
             font_scale: 1.,
             column_insets: None,
+            readable_line_length: true,
             list_state,
             scrollbar,
             focus_handle: cx.focus_handle(),
@@ -271,6 +274,18 @@ impl MarkdownPreview {
             return;
         }
         self.column_insets = insets;
+        self.list_state
+            .remeasure_items(0..self.rows.len(&self.document));
+        cx.notify();
+    }
+
+    /// Keep blocks to a readable line length, centered in a wide pane, or
+    /// let them fill it.
+    pub fn set_readable_line_length(&mut self, readable: bool, cx: &mut Context<Self>) {
+        if self.readable_line_length == readable {
+            return;
+        }
+        self.readable_line_length = readable;
         self.list_state
             .remeasure_items(0..self.rows.len(&self.document));
         cx.notify();
@@ -836,6 +851,7 @@ impl Render for MarkdownPreview {
             inline_code_family,
             font_scale: self.font_scale,
             column_insets: self.column_insets,
+            readable_line_length: self.readable_line_length,
             code_highlights: self.code_highlights.clone(),
         };
         let base_dir = self.base_dir.clone();

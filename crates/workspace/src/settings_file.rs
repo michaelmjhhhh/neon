@@ -1,6 +1,6 @@
 //! Settings that outlast the app: the appearance, each pane's typography, the
-//! editor's line numbers and the layout new windows open in, kept as JSON in
-//! the user's settings directory.
+//! editor's line numbers, the line length and the layout new windows open
+//! in, kept as JSON in the user's settings directory.
 
 use std::path::{Path, PathBuf};
 
@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::theme::{self, Appearance};
 use crate::workspace::LayoutMode;
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Settings {
     #[serde(deserialize_with = "or_default")]
@@ -21,9 +21,25 @@ pub(crate) struct Settings {
     /// Whether new windows show line numbers beside the editor. Off by
     /// default: prose reads better without a gutter, as in Typora.
     pub(crate) line_numbers: bool,
+    /// Whether the editor and the preview keep text to a readable line
+    /// length, centered in a wide window, or fill the pane. On by default.
+    pub(crate) readable_line_length: bool,
     /// The layout new windows open in: Editor, Split or Preview.
     #[serde(deserialize_with = "or_default")]
     pub(crate) default_layout: LayoutMode,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            appearance: Appearance::default(),
+            editor: PaneTypography::default(),
+            preview: PaneTypography::default(),
+            line_numbers: false,
+            readable_line_length: true,
+            default_layout: LayoutMode::default(),
+        }
+    }
 }
 
 /// A choice's default when the file names one this version does not know,
@@ -144,6 +160,7 @@ mod tests {
             },
             preview: PaneTypography::default(),
             line_numbers: true,
+            readable_line_length: false,
             default_layout: LayoutMode::Preview,
         };
         write(&path, &settings).unwrap();
@@ -161,6 +178,7 @@ mod tests {
         let settings: Settings = read(&path);
         assert_eq!(settings.preview.size, Some(20));
         assert!(!settings.line_numbers);
+        assert!(settings.readable_line_length);
         assert_eq!(settings.default_layout, LayoutMode::Split);
         std::fs::write(&path, r#"{"default_layout": "editor"}"#).unwrap();
         let settings: Settings = read(&path);

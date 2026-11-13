@@ -29,6 +29,10 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Added
+
+- Settings › Editor › Line length: turn off Readable line length to let text fill the editor and the preview in a wide window, instead of a centered column of about 80 characters.
+
 ### Changed
 
 - In Split, the preview scrolls with the editor and keeps the text you see side by side, from the start of the note to its end. Scroll the preview yourself to read elsewhere; it follows again when the editor scrolls or the caret moves.

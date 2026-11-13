@@ -45,6 +45,7 @@ impl DocumentTab {
     pub(super) fn new(
         id: u64,
         line_numbers: bool,
+        readable_line_length: bool,
         slash_menu: &Entity<SlashMenu>,
         typography: &Entity<Typography>,
         window: &mut Window,
@@ -66,7 +67,10 @@ impl DocumentTab {
         let preview = cx.new(MarkdownPreview::new);
         let state = typography.read(cx);
         let (font, scale) = (state.preview_font(cx), state.preview_size(cx) / 16.);
-        preview.update(cx, |preview, cx| preview.set_typography(font, scale, cx));
+        preview.update(cx, |preview, cx| {
+            preview.set_typography(font, scale, cx);
+            preview.set_readable_line_length(readable_line_length, cx);
+        });
         let editor_pane = cx.new(|cx| {
             EditorPane::new(
                 editor.clone(),
@@ -151,6 +155,7 @@ impl Workspace {
         let tab = DocumentTab::new(
             self.next_tab_id,
             self.line_numbers,
+            self.readable_line_length,
             &self.slash_menu,
             &self.typography,
             window,
