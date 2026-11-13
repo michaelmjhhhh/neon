@@ -383,9 +383,7 @@ impl SettingsView {
         );
         let line_length = section(
             "Line length",
-            Some(
-                "On, text keeps to about 80 characters, centered in a wide window. Off, it fills the editor and the preview. Zen Mode keeps its own column.",
-            ),
+            None,
             None,
             switch_row(
                 "Readable line length",
