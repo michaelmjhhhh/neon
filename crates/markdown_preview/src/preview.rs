@@ -65,6 +65,17 @@ const ANCHOR_STEPS: u8 = 4;
 /// of the first block, so the start of the source maps to the very top.
 const TOP_PADDING_REMS: f32 = 2.5;
 
+/// Space below the last block, in rems.
+const BOTTOM_PADDING_REMS: f32 = 4.;
+
+/// A 0-based source line, with a fraction for the way through it, and the
+/// height below the viewport's top it is shown at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SourceAnchor {
+    pub line: f32,
+    pub y: Pixels,
+}
+
 /// Minimum time between the starts of two parses while typing. An isolated
 /// edit parses at once; a burst parses at most this often, so preview frames
 /// do not compete with the editor's frames for every keystroke. Zed's
@@ -95,9 +106,14 @@ pub struct MarkdownPreview {
     /// A fractional source line kept at a height below the viewport's top,
     /// set by [`Self::scroll_to_source_line`] and dropped when the reader
     /// scrolls the preview.
-    source_anchor: Option<(f32, Pixels)>,
+    source_anchor: Option<SourceAnchor>,
     anchor_steps: u8,
+    /// The list's maximum scroll offset and viewport size when the anchor
+    /// last settled. A change means blocks were measured anew, as after a
+    /// font change, an image load or a resize, so the anchor settles again.
+    anchor_geometry: Option<(Pixels, Size<Pixels>)>,
     top_padding: Pixels,
+    bottom_padding: Pixels,
     image_cache: Option<Entity<PreviewImageCache>>,
     suspended_scroll: Option<(usize, Pixels)>,
     pending_reveal_offset: Option<usize>,
@@ -168,7 +184,9 @@ impl MarkdownPreview {
             parsed_source: Rope::new(),
             source_anchor: None,
             anchor_steps: 0,
+            anchor_geometry: None,
             top_padding: px(40.),
+            bottom_padding: px(64.),
             image_cache: Some(PreviewImageCache::new(cx)),
             suspended_scroll: None,
             pending_reveal_offset: None,
@@ -407,16 +425,17 @@ impl MarkdownPreview {
         }
     }
 
-    /// Scroll so the source at `line`, a 0-based line with a fraction for
-    /// the way through it, sits `y` below the viewport's top, as in an
-    /// editor beside the preview. Within a block the position is
-    /// interpolated by source lines, and a block's span reaches the next
-    /// block's first line, so the gap between them moves smoothly too.
+    /// Scroll so the source at `anchor.line` sits `anchor.y` below the
+    /// viewport's top, as in an editor beside the preview; see
+    /// [`source_position`].
     ///
     /// The preview holds the line there as blocks are measured and the
     /// document is re-parsed, until the reader scrolls the preview.
-    pub fn scroll_to_source_line(&mut self, line: f32, y: Pixels, cx: &mut Context<Self>) {
-        self.source_anchor = Some((line.max(0.), y));
+    pub fn scroll_to_source_line(&mut self, anchor: SourceAnchor, cx: &mut Context<Self>) {
+        self.source_anchor = Some(SourceAnchor {
+            line: anchor.line.max(0.),
+            ..anchor
+        });
         self.anchor_steps = ANCHOR_STEPS;
         if self.apply_source_anchor() {
             cx.notify();
@@ -426,36 +445,14 @@ impl MarkdownPreview {
     /// Move the list to the source anchor with the heights known now.
     /// Returns whether the list moved.
     fn apply_source_anchor(&mut self) -> bool {
-        let Some((line, y)) = self.source_anchor else {
+        let Some(SourceAnchor { line, y }) = self.source_anchor else {
             return false;
         };
-        let count = self.rows.len(&self.document);
-        if count == 0 {
+        let Some((ix, fraction)) =
+            source_position(&self.parsed_source, &self.rows, &self.document, line)
+        else {
             return false;
-        }
-        let text = &self.parsed_source;
-        let line_of = |offset: usize| {
-            let point = text.offset_to_point(offset.min(text.len()));
-            point.row as f32 + if point.column > 0 { 1. } else { 0. }
         };
-        let row = (line as usize).min(text.lines_len().saturating_sub(1));
-        let ix = self
-            .rows
-            .row_for_offset(text.line_start_offset(row), &self.document)
-            .unwrap_or(0);
-        let range = self.rows.source_range(ix, &self.document);
-        let start = text.offset_to_point(range.start.min(text.len())).row as f32;
-        let end = if ix + 1 < count {
-            text.offset_to_point(self.rows.source_range(ix + 1, &self.document).start)
-                .row as f32
-        } else {
-            line_of(range.end)
-        };
-        // The first block starts at the source's start, before blank lines
-        // or front matter the editor shows above it.
-        let start = if ix == 0 { 0. } else { start };
-        let fraction = ((line - start) / (end - start).max(1.)).clamp(0., 1.);
-
         let before = self.list_state.logical_scroll_top();
         self.list_state.scroll_to(ListOffset {
             item_ix: ix,
@@ -473,15 +470,34 @@ impl MarkdownPreview {
             (self.top_padding, height)
         };
         self.list_state.scroll_by(lead + span * fraction - y);
+        // Stop at the end as layout would. Past it, layout pulls the list
+        // back, and the anchor would never settle.
+        let max =
+            self.list_state.max_offset_for_scrollbar().y + self.top_padding + self.bottom_padding;
+        let overshoot = -self.list_state.scroll_px_offset_for_scrollbar().y - max;
+        if overshoot > px(0.) {
+            self.list_state.scroll_by(-overshoot);
+        }
         let after = self.list_state.logical_scroll_top();
         before.item_ix != after.item_ix
             || (before.offset_in_item - after.offset_in_item).abs() > px(0.5)
     }
 
     /// After a layout, move to the source anchor again with the heights it
-    /// measured, for a few frames at most.
+    /// measured, for a few frames after the anchor or the list's geometry
+    /// changed.
     fn settle_source_anchor(&mut self, cx: &mut Context<Self>) {
-        if self.source_anchor.is_none() || self.anchor_steps == 0 {
+        if self.source_anchor.is_none() {
+            return;
+        }
+        let geometry = (
+            self.list_state.max_offset_for_scrollbar().y,
+            self.list_state.viewport_bounds().size,
+        );
+        if self.anchor_geometry.replace(geometry) != Some(geometry) {
+            self.anchor_steps = ANCHOR_STEPS;
+        }
+        if self.anchor_steps == 0 {
             return;
         }
         self.anchor_steps -= 1;
@@ -741,6 +757,42 @@ impl MarkdownPreview {
     }
 }
 
+/// The row holding source `line`, and how far through the row it falls,
+/// from 0 at its first line to 1 at the next row's first line, so the blank
+/// lines after a block count as part of it and the gap moves smoothly. The
+/// first row also covers any lines before it, so line 0 maps to the top.
+/// `text` is the source `document` was parsed from.
+fn source_position(
+    text: &Rope,
+    rows: &PreviewRows,
+    document: &MarkdownDocument,
+    line: f32,
+) -> Option<(usize, f32)> {
+    let count = rows.len(document);
+    if count == 0 {
+        return None;
+    }
+    let line_of = |offset: usize| text.offset_to_point(offset.min(text.len())).row as f32;
+    let row = (line as usize).min(text.lines_len().saturating_sub(1));
+    let ix = rows
+        .row_for_offset(text.line_start_offset(row), document)
+        .unwrap_or(0);
+    let start = if ix == 0 {
+        0.
+    } else {
+        line_of(rows.source_range(ix, document).start)
+    };
+    let end = if ix + 1 < count {
+        line_of(rows.source_range(ix + 1, document).start)
+    } else {
+        // The last row ends after its last line.
+        let end = text.offset_to_point(rows.source_range(ix, document).end.min(text.len()));
+        end.row as f32 + if end.column > 0 { 1. } else { 0. }
+    };
+    let fraction = ((line - start) / (end - start).max(1.)).clamp(0., 1.);
+    Some((ix, fraction))
+}
+
 impl Drop for MarkdownPreview {
     fn drop(&mut self) {
         self.cancel_parse();
@@ -759,7 +811,8 @@ impl Render for MarkdownPreview {
         // Track the rem size so unmeasured blocks get a proportional hint.
         self.estimated_block_height = window.rem_size() * 3.;
         self.top_padding = window.rem_size() * TOP_PADDING_REMS;
-        let top_padding = self.top_padding;
+        self.bottom_padding = window.rem_size() * BOTTOM_PADDING_REMS;
+        let (top_padding, bottom_padding) = (self.top_padding, self.bottom_padding);
 
         let document = self.document.clone();
         let rows = self.rows.clone();
@@ -849,7 +902,7 @@ impl Render for MarkdownPreview {
                     })
                     .size_full()
                     .pt(top_padding)
-                    .pb_16(),
+                    .pb(bottom_padding),
                 )
             });
         content
@@ -979,6 +1032,55 @@ mod tests {
 
     fn rope(text: &str) -> Rope {
         Rope::from(text)
+    }
+
+    /// Where each source line falls, for the document `text`.
+    fn positions(text: &str, lines: &[f32]) -> Vec<(usize, f32)> {
+        let document = MarkdownDocument::parse(text);
+        let rows = PreviewRows::new(&document, false);
+        lines
+            .iter()
+            .map(|&line| source_position(&rope(text), &rows, &document, line).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn source_lines_map_through_blocks_and_the_gaps_after_them() {
+        // Lines: 0 heading, 1 blank, 2-3 paragraph, 4 blank, 5 heading.
+        let text = "# Title\n\nfirst line\nsecond line\n\n## Next\n";
+        assert_eq!(
+            positions(text, &[0., 1., 2., 3., 4., 5., 5.5]),
+            [
+                (0, 0.),
+                (0, 0.5),
+                (1, 0.),
+                (1, 1. / 3.),
+                (1, 2. / 3.),
+                (2, 0.),
+                (2, 0.5)
+            ]
+        );
+    }
+
+    #[test]
+    fn the_first_block_covers_the_lines_before_it() {
+        let text = "\n\n# Title\n\nbody\n";
+        // Line 0 is the source's start, so the preview's top.
+        assert_eq!(positions(text, &[0.])[0], (0, 0.));
+        assert_eq!(positions(text, &[2.])[0], (0, 0.5));
+    }
+
+    #[test]
+    fn lines_past_the_end_stay_at_the_last_block_end() {
+        let text = "one\n\ntwo\n";
+        assert_eq!(positions(text, &[40.]), [(1, 1.)]);
+    }
+
+    #[test]
+    fn an_empty_document_has_no_position() {
+        let document = MarkdownDocument::parse("");
+        let rows = PreviewRows::new(&document, false);
+        assert_eq!(source_position(&rope(""), &rows, &document, 0.), None);
     }
 
     #[gpui_kit::test]

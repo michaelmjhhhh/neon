@@ -11,11 +11,11 @@ use gpui_kit::{
     MouseDownEvent, ParentElement as _, Pixels, Point, Render, SharedString, Styled as _,
     Subscription, TextRun, UTF16Selection, Window, canvas, div, point,
 };
-use markdown_preview::MarkdownPreview;
+use markdown_preview::{MarkdownPreview, SourceAnchor};
 
 use crate::find_bar::FindBar;
 use crate::list_guides;
-use crate::preview_sync::{self, Anchor};
+use crate::preview_sync::{self, LayoutKey};
 use crate::scroll_anchor::ScrollAnchor;
 use crate::slash_commands::SlashMenu;
 use crate::slash_menu;
@@ -44,9 +44,12 @@ pub(crate) struct EditorPane {
     /// while `sync_preview` is on, as in Split.
     preview: Entity<MarkdownPreview>,
     sync_preview: bool,
-    /// The anchor last sent to the preview, so a paint that did not move the
-    /// editor leaves a preview the reader scrolled alone.
-    synced: Rc<Cell<Anchor>>,
+    /// The layout the anchor was last computed for and the anchor sent to
+    /// the preview, so a paint that did not move the editor neither
+    /// recomputes it nor moves a preview the reader scrolled alone.
+    synced: Rc<Cell<Option<(LayoutKey, SourceAnchor)>>>,
+    /// A double-click asked to bring the preview beside the caret's line.
+    align_caret: Rc<Cell<bool>>,
     _slash_menu_changed: Subscription,
 }
 
@@ -73,6 +76,7 @@ impl EditorPane {
             preview,
             sync_preview: false,
             synced: Rc::default(),
+            align_caret: Rc::default(),
             _slash_menu_changed: slash_menu_changed,
         }
     }
@@ -86,6 +90,13 @@ impl EditorPane {
             self.synced.set(None);
             cx.notify();
         }
+    }
+
+    /// Match the preview to the editor again on the next paint, even if the
+    /// editor did not move, as after the caret moved: editing brings back a
+    /// preview the reader scrolled elsewhere.
+    pub(crate) fn resync(&self) {
+        self.synced.set(None);
     }
 
     /// Keep the line at the top of the editor in place after a typography
@@ -182,9 +193,11 @@ impl Render for EditorPane {
         let laid_out_text = self.laid_out_text.clone();
         let laid_out_size = self.laid_out_size.clone();
         let scroll_anchor = self.scroll_anchor.clone();
-        let sync = self
-            .sync_preview
-            .then(|| (self.preview.clone(), self.synced.clone()));
+        let sync = self.sync_preview.then(|| PreviewSync {
+            preview: self.preview.clone(),
+            synced: self.synced.clone(),
+            align_caret: self.align_caret.clone(),
+        });
         let size = typography.editor_size(cx);
         let slash_menu = slash_menu::render(
             &self.slash_menu,
@@ -237,8 +250,8 @@ impl Render for EditorPane {
                         if let Some(anchor) = scroll_anchor.take() {
                             scroll_anchor.set(anchor.restore(&editor, cx));
                         }
-                        if let Some((preview, synced)) = &sync {
-                            sync_preview(&editor, preview, synced, window, cx);
+                        if let Some(sync) = &sync {
+                            sync.paint(&editor, window, cx);
                         }
                         let focus = editor.read(cx).focus_handle(cx);
                         window.handle_input(&focus, ElementInputHandler::new(bounds, pane), cx);
@@ -252,49 +265,64 @@ impl Render for EditorPane {
     }
 }
 
-/// Match the preview to the editor's layout for this frame when it moved,
-/// and listen for a double-click that brings the preview's text beside the
-/// clicked line.
-fn sync_preview(
-    editor: &Entity<EditorState>,
-    preview: &Entity<MarkdownPreview>,
-    synced: &Rc<Cell<Anchor>>,
-    window: &mut Window,
-    cx: &mut gpui_kit::App,
-) {
-    let anchor = preview_sync::scroll_anchor(editor.read(cx));
-    if anchor.is_some() && synced.replace(anchor) != anchor {
-        send_anchor(preview, anchor, cx);
-    }
-    let editor = editor.clone();
-    let preview = preview.clone();
-    window.on_mouse_event(move |event: &MouseDownEvent, phase, _, cx| {
-        if phase != DispatchPhase::Bubble
-            || event.button != MouseButton::Left
-            || event.click_count != 2
-            || !editor.read(cx).input_bounds().contains(&event.position)
-        {
-            return;
-        }
-        let (editor, preview) = (editor.clone(), preview.clone());
-        // After the editor has placed the selection for the click.
-        cx.defer(move |cx| {
-            let state = editor.read(cx);
-            let anchor = preview_sync::line_anchor(state, state.cursor());
-            send_anchor(&preview, anchor, cx);
-        });
-    });
+/// The pane's state for matching the preview to the editor, for its paint.
+struct PreviewSync {
+    preview: Entity<MarkdownPreview>,
+    synced: Rc<Cell<Option<(LayoutKey, SourceAnchor)>>>,
+    align_caret: Rc<Cell<bool>>,
 }
 
-fn send_anchor(preview: &Entity<MarkdownPreview>, anchor: Anchor, cx: &mut gpui_kit::App) {
-    let Some((line, y)) = anchor else {
-        return;
-    };
-    let preview = preview.clone();
-    // Not while painting: the preview moves on the next frame.
-    cx.defer(move |cx| {
-        preview.update(cx, |preview, cx| preview.scroll_to_source_line(line, y, cx));
-    });
+impl PreviewSync {
+    /// Match the preview to the editor's layout for this frame: beside the
+    /// caret's line after a double-click, or else by scroll when the editor
+    /// moved. Then listen for the next double-click.
+    fn paint(&self, editor: &Entity<EditorState>, window: &mut Window, cx: &mut gpui_kit::App) {
+        let state = editor.read(cx);
+        let key = LayoutKey::of(state);
+        let last = self.synced.get();
+        let scroll_anchor = || {
+            if last.map(|(key, _)| key) == Some(key) {
+                return last.map(|(_, anchor)| anchor);
+            }
+            preview_sync::scroll_anchor(state)
+        };
+        let anchor = if self.align_caret.take() {
+            // Recorded as sent, so the line stays beside the caret until the
+            // editor scrolls.
+            self.synced.set(scroll_anchor().map(|anchor| (key, anchor)));
+            preview_sync::line_anchor(state, state.cursor())
+        } else if last.map(|(key, _)| key) != Some(key) {
+            let anchor = scroll_anchor();
+            self.synced.set(anchor.map(|anchor| (key, anchor)));
+            anchor.filter(|&anchor| last.map(|(_, sent)| sent) != Some(anchor))
+        } else {
+            None
+        };
+        if let Some(anchor) = anchor {
+            let preview = self.preview.clone();
+            // Not while painting: the preview moves on the next frame.
+            cx.defer(move |cx| {
+                preview.update(cx, |preview, cx| preview.scroll_to_source_line(anchor, cx));
+            });
+        }
+
+        let editor = editor.clone();
+        let align_caret = self.align_caret.clone();
+        window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+            let state = editor.read(cx);
+            // Focus excludes the find bar and menus over the editor: the
+            // first click of the pair moved focus there.
+            if phase == DispatchPhase::Bubble
+                && event.button == MouseButton::Left
+                && event.click_count == 2
+                && state.input_bounds().contains(&event.position)
+                && state.focus_handle(cx).is_focused(window)
+            {
+                // The next paint aligns, once the click has placed the caret.
+                align_caret.set(true);
+            }
+        });
+    }
 }
 
 /// Forwards to the editor, except for [`Self::bounds_for_range`].

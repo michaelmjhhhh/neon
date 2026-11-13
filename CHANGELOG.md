@@ -31,13 +31,14 @@ Groups, in this order:
 
 ### Changed
 
-- In Split, the preview scrolls with the editor and keeps the text you see side by side, from the start of the note to its end. Scroll the preview yourself to read elsewhere; it follows again when the editor moves.
+- In Split, the preview scrolls with the editor and keeps the text you see side by side, from the start of the note to its end. Scroll the preview yourself to read elsewhere; it follows again when the editor scrolls or the caret moves.
 - Double-click a line in the editor in Split to bring the matching text in the preview level with it.
 - Headings in the preview are smaller beside the body text, so a title no longer dwarfs the paragraph under it.
 
 ### Fixed
 
 - Long lines in a preview code block scroll sideways with a trackpad swipe or Shift-scroll, instead of being cut off. Scrolling up and down over a code block moves the page, not the code.
+- Wide tables in the preview scroll sideways instead of cutting off the columns past the edge.
 
 ## [0.17.0] - 2026-10-31
 
