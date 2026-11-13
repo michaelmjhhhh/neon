@@ -34,6 +34,9 @@ const MAX_READING_WIDTH_REMS: f32 = 38.;
 /// in a serif stay open and easy to track from line to line.
 const BODY_LINE_HEIGHT: f32 = 1.7;
 
+/// The narrowest a table column gets before the table scrolls sideways.
+const TABLE_CELL_MIN_REMS: f32 = 6.;
+
 /// How blocks are set: their typeface and scale, and the column they sit in.
 pub(crate) struct BlockLayout {
     pub(crate) font_family: SharedString,
@@ -658,14 +661,19 @@ impl<'a> BlockRenderer<'a> {
             .iter()
             .map(|row| self.render_table_row(row, &alignments, false))
             .collect();
+        // Rows laid out at the box's width would never overflow it, and
+        // columns past its edge were cut off. At least as wide as its
+        // cells' minimum widths, the table scrolls sideways instead; cells
+        // still wrap their text within those widths.
+        let min_width = rems(TABLE_CELL_MIN_REMS * alignments.len() as f32);
         div()
             .id(self.next_id("table"))
             .overflow_x_scroll()
+            .restrict_scroll_to_axis()
             .rounded(self.palette.radius_lg)
             .border_1()
             .border_color(self.palette.border)
-            .child(header)
-            .children(rows)
+            .child(div().w_full().min_w(min_width).child(header).children(rows))
             .into_any_element()
     }
 
@@ -682,7 +690,7 @@ impl<'a> BlockRenderer<'a> {
                 let content = cells.get(ix).map(|cell| self.render_inline(cell));
                 div()
                     .flex_1()
-                    .min_w_24()
+                    .min_w(rems(TABLE_CELL_MIN_REMS))
                     .px_3()
                     .py_2()
                     .map(|this| match alignment {
