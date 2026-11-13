@@ -6,14 +6,16 @@ use gpui_kit::component::input::{
     Editor, EditorState, Escape, Replace, Rope, RopeExt as _, Search,
 };
 use gpui_kit::{
-    AppContext as _, Bounds, Context, ElementInputHandler, Entity, EntityInputHandler,
-    Focusable as _, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point,
-    Render, SharedString, Styled as _, Subscription, TextRun, UTF16Selection, Window, canvas, div,
-    point,
+    AppContext as _, Bounds, Context, DispatchPhase, ElementInputHandler, Entity,
+    EntityInputHandler, Focusable as _, InteractiveElement as _, IntoElement, MouseButton,
+    MouseDownEvent, ParentElement as _, Pixels, Point, Render, SharedString, Styled as _,
+    Subscription, TextRun, UTF16Selection, Window, canvas, div, point,
 };
+use markdown_preview::MarkdownPreview;
 
 use crate::find_bar::FindBar;
 use crate::list_guides;
+use crate::preview_sync::{self, Anchor};
 use crate::scroll_anchor::ScrollAnchor;
 use crate::slash_commands::SlashMenu;
 use crate::slash_menu;
@@ -38,12 +40,20 @@ pub(crate) struct EditorPane {
     laid_out_size: Rc<Cell<f32>>,
     /// The line to keep in place while a typography change takes effect.
     scroll_anchor: Rc<Cell<Option<ScrollAnchor>>>,
+    /// The preview of the same document, which follows the editor's scroll
+    /// while `sync_preview` is on, as in Split.
+    preview: Entity<MarkdownPreview>,
+    sync_preview: bool,
+    /// The anchor last sent to the preview, so a paint that did not move the
+    /// editor leaves a preview the reader scrolled alone.
+    synced: Rc<Cell<Anchor>>,
     _slash_menu_changed: Subscription,
 }
 
 impl EditorPane {
     pub(crate) fn new(
         editor: Entity<EditorState>,
+        preview: Entity<MarkdownPreview>,
         typography: Entity<Typography>,
         slash_menu: Entity<SlashMenu>,
         window: &mut Window,
@@ -60,7 +70,21 @@ impl EditorPane {
             laid_out_text: Rc::default(),
             laid_out_size: Rc::default(),
             scroll_anchor: Rc::default(),
+            preview,
+            sync_preview: false,
+            synced: Rc::default(),
             _slash_menu_changed: slash_menu_changed,
+        }
+    }
+
+    /// Have the preview follow the editor's scroll, and a double-click
+    /// bring the preview's text beside the clicked line. Turning it on
+    /// matches the preview to the editor on the next paint.
+    pub(crate) fn set_sync_preview(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.sync_preview != on {
+            self.sync_preview = on;
+            self.synced.set(None);
+            cx.notify();
         }
     }
 
@@ -158,6 +182,9 @@ impl Render for EditorPane {
         let laid_out_text = self.laid_out_text.clone();
         let laid_out_size = self.laid_out_size.clone();
         let scroll_anchor = self.scroll_anchor.clone();
+        let sync = self
+            .sync_preview
+            .then(|| (self.preview.clone(), self.synced.clone()));
         let size = typography.editor_size(cx);
         let slash_menu = slash_menu::render(
             &self.slash_menu,
@@ -210,6 +237,9 @@ impl Render for EditorPane {
                         if let Some(anchor) = scroll_anchor.take() {
                             scroll_anchor.set(anchor.restore(&editor, cx));
                         }
+                        if let Some((preview, synced)) = &sync {
+                            sync_preview(&editor, preview, synced, window, cx);
+                        }
                         let focus = editor.read(cx).focus_handle(cx);
                         window.handle_input(&focus, ElementInputHandler::new(bounds, pane), cx);
                     },
@@ -220,6 +250,51 @@ impl Render for EditorPane {
             .child(self.find_bar.clone())
             .children(slash_menu)
     }
+}
+
+/// Match the preview to the editor's layout for this frame when it moved,
+/// and listen for a double-click that brings the preview's text beside the
+/// clicked line.
+fn sync_preview(
+    editor: &Entity<EditorState>,
+    preview: &Entity<MarkdownPreview>,
+    synced: &Rc<Cell<Anchor>>,
+    window: &mut Window,
+    cx: &mut gpui_kit::App,
+) {
+    let anchor = preview_sync::scroll_anchor(editor.read(cx));
+    if anchor.is_some() && synced.replace(anchor) != anchor {
+        send_anchor(preview, anchor, cx);
+    }
+    let editor = editor.clone();
+    let preview = preview.clone();
+    window.on_mouse_event(move |event: &MouseDownEvent, phase, _, cx| {
+        if phase != DispatchPhase::Bubble
+            || event.button != MouseButton::Left
+            || event.click_count != 2
+            || !editor.read(cx).input_bounds().contains(&event.position)
+        {
+            return;
+        }
+        let (editor, preview) = (editor.clone(), preview.clone());
+        // After the editor has placed the selection for the click.
+        cx.defer(move |cx| {
+            let state = editor.read(cx);
+            let anchor = preview_sync::line_anchor(state, state.cursor());
+            send_anchor(&preview, anchor, cx);
+        });
+    });
+}
+
+fn send_anchor(preview: &Entity<MarkdownPreview>, anchor: Anchor, cx: &mut gpui_kit::App) {
+    let Some((line, y)) = anchor else {
+        return;
+    };
+    let preview = preview.clone();
+    // Not while painting: the preview moves on the next frame.
+    cx.defer(move |cx| {
+        preview.update(cx, |preview, cx| preview.scroll_to_source_line(line, y, cx));
+    });
 }
 
 /// Forwards to the editor, except for [`Self::bounds_for_range`].

@@ -70,6 +70,7 @@ impl DocumentTab {
         let editor_pane = cx.new(|cx| {
             EditorPane::new(
                 editor.clone(),
+                preview.clone(),
                 typography.clone(),
                 slash_menu.clone(),
                 window,

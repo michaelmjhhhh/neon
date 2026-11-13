@@ -16,6 +16,7 @@ use gpui_kit::{
 
 use super::tabs::DocumentTab;
 use super::{SplitLeft, SplitRight, Workspace};
+use crate::LayoutMode;
 
 /// A pane's place in the sheet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -324,15 +325,19 @@ impl Workspace {
     }
 
     /// Turn on the previews on screen and off the rest, so a hidden preview
-    /// does no work as its text changes.
+    /// does no work as its text changes. In Split, each preview on screen
+    /// follows its editor's scroll.
     pub(super) fn sync_previews(&self, cx: &mut Context<Self>) {
         let shown = self.preview_shown();
+        let split = shown && self.zen.is_none() && self.layout == LayoutMode::Split;
         let active = self.tab().id;
         let other = self.other_pane_tab().map(|tab| tab.id);
         for tab in &self.tabs {
             let on = shown && (tab.id == active || Some(tab.id) == other);
             tab.preview
                 .update(cx, |preview, cx| preview.set_active(on, cx));
+            tab.editor_pane
+                .update(cx, |pane, cx| pane.set_sync_preview(on && split, cx));
         }
     }
 
