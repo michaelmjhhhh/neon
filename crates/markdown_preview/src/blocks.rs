@@ -273,23 +273,25 @@ impl<'a> BlockRenderer<'a> {
                 1..=3 => FontWeight::SEMIBOLD,
                 _ => FontWeight::MEDIUM,
             })
+            // A gentle scale over the body size, so a title stands out
+            // without dwarfing the paragraph under it.
             .map(|this| match level {
                 1 => this
                     .pt_2()
                     .line_height(relative(1.15))
-                    .text_size(rems(2. * scale)),
+                    .text_size(rems(1.5 * scale)),
                 2 => this
                     .pt_6()
                     .line_height(relative(1.25))
-                    .text_size(rems(1.4 * scale)),
+                    .text_size(rems(1.3 * scale)),
                 3 => this
                     .pt_4()
                     .line_height(relative(1.3))
-                    .text_size(rems(1.175 * scale)),
+                    .text_size(rems(1.15 * scale)),
                 4 => this
                     .pt_2()
                     .line_height(relative(1.4))
-                    .text_size(rems(1.0625 * scale)),
+                    .text_size(rems(1.05 * scale)),
                 5 => this
                     .pt_2()
                     .line_height(relative(1.4))
@@ -445,16 +447,23 @@ impl<'a> BlockRenderer<'a> {
                 )
             })
             .child(
+                // A block child is laid out at the box's width, so long lines
+                // would never overflow it; as a flex item that does not
+                // shrink, the code keeps its own width and scrolls sideways.
+                // Restricted to that axis, a vertical scroll over the block
+                // moves the page, not the code.
                 div()
                     .id(scroll_id)
+                    .flex()
                     .overflow_x_scroll()
+                    .restrict_scroll_to_axis()
                     .px_4()
                     .py_3()
                     .font_family(palette.mono_font_family.clone())
                     .text_size(rems(0.8125 * self.font_scale))
                     .line_height(relative(1.6))
                     .whitespace_nowrap()
-                    .child(self.render_code_text(code)),
+                    .child(div().flex_none().child(self.render_code_text(code))),
             )
             .into_any_element()
     }

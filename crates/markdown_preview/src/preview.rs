@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use gpui_kit::component::empty::{
     Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
 };
-use gpui_kit::component::input::Rope;
+use gpui_kit::component::input::{Rope, RopeExt as _};
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarHandle};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, Theme};
 use gpui_kit::{
@@ -57,6 +57,14 @@ pub struct OpenLinkedFile {
 /// geometry, not design spacing.
 const OVERDRAW: Pixels = px(1200.);
 
+/// Frames that may correct a source anchor after layout measures the blocks
+/// it fell among, before leaving the view where it is.
+const ANCHOR_STEPS: u8 = 4;
+
+/// Space above the first block, in rems. The source anchor counts it as part
+/// of the first block, so the start of the source maps to the very top.
+const TOP_PADDING_REMS: f32 = 2.5;
+
 /// Minimum time between the starts of two parses while typing. An isolated
 /// edit parses at once; a burst parses at most this often, so preview frames
 /// do not compete with the editor's frames for every keystroke. Zed's
@@ -82,6 +90,14 @@ pub struct MarkdownPreview {
     chunk_lists: bool,
     active: bool,
     source: Rope,
+    /// The source `document` was parsed from, for source lines.
+    parsed_source: Rope,
+    /// A fractional source line kept at a height below the viewport's top,
+    /// set by [`Self::scroll_to_source_line`] and dropped when the reader
+    /// scrolls the preview.
+    source_anchor: Option<(f32, Pixels)>,
+    anchor_steps: u8,
+    top_padding: Pixels,
     image_cache: Option<Entity<PreviewImageCache>>,
     suspended_scroll: Option<(usize, Pixels)>,
     pending_reveal_offset: Option<usize>,
@@ -127,6 +143,15 @@ impl MarkdownPreview {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let list_state = ListState::new(0, ListAlignment::Top, OVERDRAW);
         let preview = cx.weak_entity();
+        // Called for wheel and trackpad scrolls only, not for scrolls in code.
+        list_state.set_scroll_handler({
+            let preview = preview.clone();
+            move |_, _, cx| {
+                preview
+                    .update(cx, |preview, _| preview.source_anchor = None)
+                    .ok();
+            }
+        });
         let scrollbar = cx.new(|_| PreviewScrollbar {
             handle: PreviewScrollHandle {
                 list_state: list_state.clone(),
@@ -140,6 +165,10 @@ impl MarkdownPreview {
             chunk_lists: false,
             active: true,
             source: Rope::new(),
+            parsed_source: Rope::new(),
+            source_anchor: None,
+            anchor_steps: 0,
+            top_padding: px(40.),
             image_cache: Some(PreviewImageCache::new(cx)),
             suspended_scroll: None,
             pending_reveal_offset: None,
@@ -191,6 +220,7 @@ impl MarkdownPreview {
             self.pending_source = None;
             self.document = Arc::default();
             self.rows = Arc::default();
+            self.parsed_source = Rope::new();
             self.code_highlights = Arc::default();
             self.highlighters = Arc::default();
             self.cancel_highlight();
@@ -261,6 +291,7 @@ impl MarkdownPreview {
 
     /// Scroll by `distance`; positive moves toward the end.
     pub fn scroll_by(&mut self, distance: Pixels, cx: &mut Context<Self>) {
+        self.source_anchor = None;
         self.list_state.scroll_by(distance);
         cx.notify();
     }
@@ -346,6 +377,7 @@ impl MarkdownPreview {
         self.cancel_parse();
         self.suspended_scroll = None;
         self.pending_reveal_offset = None;
+        self.source_anchor = None;
         self.document = Arc::default();
         self.rows = Arc::default();
         self.chunk_lists = false;
@@ -361,6 +393,7 @@ impl MarkdownPreview {
 
     /// Scroll so the block rendered from the source byte `offset` is visible.
     pub fn reveal_offset(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.source_anchor = None;
         let Some(ix) = self.rows.row_for_offset(offset, &self.document) else {
             self.pending_reveal_offset = Some(offset);
             return;
@@ -370,6 +403,89 @@ impl MarkdownPreview {
         let after = self.list_state.logical_scroll_top();
         // Typing inside a visible block moves nothing; skip the re-render.
         if (before.item_ix, before.offset_in_item) != (after.item_ix, after.offset_in_item) {
+            cx.notify();
+        }
+    }
+
+    /// Scroll so the source at `line`, a 0-based line with a fraction for
+    /// the way through it, sits `y` below the viewport's top, as in an
+    /// editor beside the preview. Within a block the position is
+    /// interpolated by source lines, and a block's span reaches the next
+    /// block's first line, so the gap between them moves smoothly too.
+    ///
+    /// The preview holds the line there as blocks are measured and the
+    /// document is re-parsed, until the reader scrolls the preview.
+    pub fn scroll_to_source_line(&mut self, line: f32, y: Pixels, cx: &mut Context<Self>) {
+        self.source_anchor = Some((line.max(0.), y));
+        self.anchor_steps = ANCHOR_STEPS;
+        if self.apply_source_anchor() {
+            cx.notify();
+        }
+    }
+
+    /// Move the list to the source anchor with the heights known now.
+    /// Returns whether the list moved.
+    fn apply_source_anchor(&mut self) -> bool {
+        let Some((line, y)) = self.source_anchor else {
+            return false;
+        };
+        let count = self.rows.len(&self.document);
+        if count == 0 {
+            return false;
+        }
+        let text = &self.parsed_source;
+        let line_of = |offset: usize| {
+            let point = text.offset_to_point(offset.min(text.len()));
+            point.row as f32 + if point.column > 0 { 1. } else { 0. }
+        };
+        let row = (line as usize).min(text.lines_len().saturating_sub(1));
+        let ix = self
+            .rows
+            .row_for_offset(text.line_start_offset(row), &self.document)
+            .unwrap_or(0);
+        let range = self.rows.source_range(ix, &self.document);
+        let start = text.offset_to_point(range.start.min(text.len())).row as f32;
+        let end = if ix + 1 < count {
+            text.offset_to_point(self.rows.source_range(ix + 1, &self.document).start)
+                .row as f32
+        } else {
+            line_of(range.end)
+        };
+        // The first block starts at the source's start, before blank lines
+        // or front matter the editor shows above it.
+        let start = if ix == 0 { 0. } else { start };
+        let fraction = ((line - start) / (end - start).max(1.)).clamp(0., 1.);
+
+        let before = self.list_state.logical_scroll_top();
+        self.list_state.scroll_to(ListOffset {
+            item_ix: ix,
+            offset_in_item: px(0.),
+        });
+        let height = self
+            .list_state
+            .bounds_for_item(ix)
+            .map_or(self.estimated_block_height, |bounds| bounds.size.height);
+        // The top padding counts as part of the first block, so the source's
+        // start maps to the list's top.
+        let (lead, span) = if ix == 0 {
+            (px(0.), height + self.top_padding)
+        } else {
+            (self.top_padding, height)
+        };
+        self.list_state.scroll_by(lead + span * fraction - y);
+        let after = self.list_state.logical_scroll_top();
+        before.item_ix != after.item_ix
+            || (before.offset_in_item - after.offset_in_item).abs() > px(0.5)
+    }
+
+    /// After a layout, move to the source anchor again with the heights it
+    /// measured, for a few frames at most.
+    fn settle_source_anchor(&mut self, cx: &mut Context<Self>) {
+        if self.source_anchor.is_none() || self.anchor_steps == 0 {
+            return;
+        }
+        self.anchor_steps -= 1;
+        if self.apply_source_anchor() {
             cx.notify();
         }
     }
@@ -421,14 +537,15 @@ impl MarkdownPreview {
                 theme,
                 cancelled,
             )?;
-            (!cancelled()).then_some((document, rows, highlights))
+            (!cancelled()).then_some((source, document, rows, highlights))
         });
         self.parse_task = Some(cx.spawn(async move |this, cx| {
             let document = parse.await;
             this.update(cx, |this, cx| {
                 this.parse_task = None;
                 this.parse_cancel = None;
-                if let Some((document, rows, highlights)) = document {
+                if let Some((source, document, rows, highlights)) = document {
+                    this.parsed_source = source;
                     this.apply_document(document, rows, highlights, cx);
                 }
                 if this.pending_source.is_some() {
@@ -508,6 +625,9 @@ impl MarkdownPreview {
                 offset_in_item,
             });
         }
+        // Blocks around the anchor may have changed height.
+        self.anchor_steps = ANCHOR_STEPS;
+        self.apply_source_anchor();
         if let Some(offset) = self.pending_reveal_offset.take() {
             if let Some(item_ix) = self.rows.row_for_offset(offset, &self.document) {
                 // Fresh rows only have height hints. Anchor the target directly:
@@ -571,16 +691,19 @@ impl MarkdownPreview {
     }
 
     fn scroll_up(&mut self, _: &ScrollUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.source_anchor = None;
         self.list_state.scroll_by(-window.line_height() * 3.);
         cx.notify();
     }
 
     fn scroll_down(&mut self, _: &ScrollDown, window: &mut Window, cx: &mut Context<Self>) {
+        self.source_anchor = None;
         self.list_state.scroll_by(window.line_height() * 3.);
         cx.notify();
     }
 
     fn scroll_page_up(&mut self, _: &ScrollPageUp, window: &mut Window, cx: &mut Context<Self>) {
+        self.source_anchor = None;
         self.list_state.scroll_by(-self.page_height(window));
         cx.notify();
     }
@@ -591,11 +714,13 @@ impl MarkdownPreview {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.source_anchor = None;
         self.list_state.scroll_by(self.page_height(window));
         cx.notify();
     }
 
     fn scroll_to_top(&mut self, _: &ScrollToTop, _: &mut Window, cx: &mut Context<Self>) {
+        self.source_anchor = None;
         self.list_state.scroll_to(ListOffset {
             item_ix: 0,
             offset_in_item: px(0.),
@@ -604,6 +729,7 @@ impl MarkdownPreview {
     }
 
     fn scroll_to_bottom(&mut self, _: &ScrollToBottom, _: &mut Window, cx: &mut Context<Self>) {
+        self.source_anchor = None;
         self.list_state.scroll_to_end();
         cx.notify();
     }
@@ -632,6 +758,8 @@ impl Render for MarkdownPreview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Track the rem size so unmeasured blocks get a proportional hint.
         self.estimated_block_height = window.rem_size() * 3.;
+        self.top_padding = window.rem_size() * TOP_PADDING_REMS;
+        let top_padding = self.top_padding;
 
         let document = self.document.clone();
         let rows = self.rows.clone();
@@ -664,6 +792,7 @@ impl Render for MarkdownPreview {
             cache.update(cx, |cache, _| cache.begin_frame());
         }
         let finish_cache = cache.clone();
+        let preview = cx.weak_entity();
         let theme = cx.theme();
         let content = div()
             .id("markdown-preview")
@@ -719,22 +848,40 @@ impl Render for MarkdownPreview {
                         )
                     })
                     .size_full()
-                    .pt_10()
+                    .pt(top_padding)
                     .pb_16(),
                 )
             });
-        content.when_some(finish_cache, |this, cache| {
-            this.child(
-                canvas(
-                    |_, _, _| {},
-                    move |_, _, window, cx| {
-                        cache.update(cx, |cache, cx| cache.finish_frame(window, cx));
-                    },
+        content
+            .when_some(finish_cache, |this, cache| {
+                this.child(
+                    canvas(
+                        |_, _, _| {},
+                        move |_, _, window, cx| {
+                            cache.update(cx, |cache, cx| cache.finish_frame(window, cx));
+                        },
+                    )
+                    .absolute()
+                    .size_0(),
                 )
-                .absolute()
-                .size_0(),
-            )
-        })
+            })
+            .when(self.source_anchor.is_some(), |this| {
+                this.child(
+                    canvas(
+                        |_, _, _| {},
+                        move |_, _, _, cx| {
+                            // Not while painting: the move applies next frame.
+                            cx.defer(move |cx| {
+                                preview
+                                    .update(cx, |preview, cx| preview.settle_source_anchor(cx))
+                                    .ok();
+                            });
+                        },
+                    )
+                    .absolute()
+                    .size_0(),
+                )
+            })
     }
 }
 
@@ -762,7 +909,12 @@ impl Render for PreviewScrollbar {
                             let preview = preview.clone();
                             move |cx: &mut App| {
                                 if moved.take() {
-                                    preview.update(cx, |_, cx| cx.notify()).ok();
+                                    preview
+                                        .update(cx, |preview, cx| {
+                                            preview.source_anchor = None;
+                                            cx.notify();
+                                        })
+                                        .ok();
                                 }
                             }
                         };

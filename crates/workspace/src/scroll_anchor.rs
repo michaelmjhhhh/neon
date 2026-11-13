@@ -128,7 +128,9 @@ impl ScrollAnchor {
 /// content coordinates: from the top of the text, as the negated scroll
 /// offset. Range bounds are in window coordinates and move with the scroll,
 /// like the text's own origin.
-fn laid_out_rows(editor: &EditorState) -> impl Iterator<Item = (usize, Pixels, Pixels)> + '_ {
+pub(crate) fn laid_out_rows(
+    editor: &EditorState,
+) -> impl Iterator<Item = (usize, Pixels, Pixels)> + '_ {
     let text = editor.text();
     let origin = editor.text_bounds().map(|bounds| bounds.top());
     origin

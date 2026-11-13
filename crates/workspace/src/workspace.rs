@@ -725,7 +725,8 @@ impl Workspace {
         }
     }
 
-    /// Keep the preview on the block being edited when the cursor moves.
+    /// Follow a cursor move in the active editor. In Split the preview
+    /// follows the editor's scroll instead, from `EditorPane`.
     fn on_editor_notified(
         &mut self,
         editor: Entity<EditorState>,
@@ -749,11 +750,6 @@ impl Workspace {
         self.zen_follow_cursor(cx);
         self.glide_zen_caret(window, cx);
         self.draw_soon(window, cx);
-        if self.layout == LayoutMode::Split {
-            self.tab()
-                .preview
-                .update(cx, |preview, cx| preview.reveal_offset(cursor, cx));
-        }
         // No notify: the status bar reads the cursor during this view's
         // render, so the editor's own notification already redraws it.
         // Notifying here would also invalidate the cached sidebar.
@@ -2838,7 +2834,8 @@ impl Workspace {
         self.scroll_metrics
             .update(cx, |metrics, cx| metrics.set_layout(layout, cx));
         self.count_selection(cx);
-        if layout != LayoutMode::Editor {
+        // Split matches the preview to the editor's scroll on its own.
+        if layout == LayoutMode::Preview {
             let cursor = self.tab().editor.read(cx).cursor();
             self.tab()
                 .preview
