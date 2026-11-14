@@ -3904,6 +3904,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e57c38c1e860fd37c604281cdfb1dd2216977fd76a50f85ba2f388ef3219616"
 
 [[package]]
+name = "lint"
+version = "0.20.0"
+dependencies = [
+ "pulldown-cmark",
+ "regex",
+ "serde",
+ "tempfile",
+ "toml 0.8.23",
+ "unicode-width",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8744,6 +8756,7 @@ dependencies = [
  "anyhow",
  "export",
  "gpui-kit",
+ "lint",
  "lsp-types",
  "markdown 0.20.0",
  "markdown_preview",

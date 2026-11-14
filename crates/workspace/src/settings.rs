@@ -76,6 +76,8 @@ pub(crate) struct SettingsView {
     /// The saved setting, not a window's temporary toggle.
     line_numbers: bool,
     readable_line_length: bool,
+    lint_issues: bool,
+    lint_on_save: bool,
     /// The layout new windows open in.
     default_layout: LayoutMode,
     /// Filters the Shortcuts section by command name.
@@ -108,6 +110,8 @@ impl SettingsView {
             typography,
             line_numbers: saved.line_numbers,
             readable_line_length: saved.readable_line_length,
+            lint_issues: saved.lint_issues,
+            lint_on_save: saved.lint_on_save,
             default_layout: saved.default_layout,
             shortcut_query,
             shortcuts: shortcuts::all(cx),
@@ -123,6 +127,8 @@ impl SettingsView {
             let saved = settings_file::saved(cx);
             self.line_numbers = saved.line_numbers;
             self.readable_line_length = saved.readable_line_length;
+            self.lint_issues = saved.lint_issues;
+            self.lint_on_save = saved.lint_on_save;
             self.default_layout = saved.default_layout;
         }
         self.typography.update(cx, |typography, cx| {
@@ -395,6 +401,38 @@ impl SettingsView {
                     })),
             ),
         );
+        let linting = section(
+            "Linting",
+            Some(
+                "Rules come from a .neonlint.toml in the note’s folder or above it, \
+                 or from lint.toml beside Neon’s settings. ⌥⇧F fixes the note.",
+            ),
+            None,
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(switch_row(
+                    "Mark issues in the editor",
+                    Switch::new("lint-issues")
+                        .checked(self.lint_issues)
+                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            this.lint_issues = *checked;
+                            settings_file::update(cx, |settings| settings.lint_issues = *checked);
+                            cx.notify();
+                        })),
+                ))
+                .child(switch_row(
+                    "Fix spacing on save",
+                    Switch::new("lint-on-save")
+                        .checked(self.lint_on_save)
+                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            this.lint_on_save = *checked;
+                            settings_file::update(cx, |settings| settings.lint_on_save = *checked);
+                            cx.notify();
+                        })),
+                )),
+        );
         div()
             .flex()
             .flex_col()
@@ -402,6 +440,7 @@ impl SettingsView {
             .child(default_view)
             .child(line_numbers)
             .child(line_length)
+            .child(linting)
     }
 
     /// A search field, then each group of commands as a card of rows with

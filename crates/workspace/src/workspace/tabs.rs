@@ -14,7 +14,7 @@ use gpui_kit::component::{ActiveTheme as _, Disableable as _, IconName, Sizable 
 use gpui_kit::{
     AppContext as _, Context, Entity, Focusable as _, FontWeight, InteractiveElement as _,
     IntoElement, MouseButton, ParentElement as _, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Window, div, prelude::FluentBuilder as _,
+    Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
 };
 use markdown_preview::MarkdownPreview;
 
@@ -38,6 +38,12 @@ pub(super) struct DocumentTab {
     pub(super) revealed_cursor: Option<usize>,
     /// Made the first time this tab shows in Zen.
     pub(super) zen_focus: Option<ZenFocus>,
+    /// Counts changes to the text, so a lint finished after another edit
+    /// is dropped; see [`super::lint`].
+    pub(super) text_version: u64,
+    /// The text version last linted, or being linted.
+    pub(super) linted_version: Option<u64>,
+    pub(super) lint_task: Option<Task<()>>,
     _subscriptions: [Subscription; 5],
 }
 
@@ -105,6 +111,9 @@ impl DocumentTab {
             preview,
             revealed_cursor: None,
             zen_focus: None,
+            text_version: 0,
+            linted_version: None,
+            lint_task: None,
             _subscriptions: subscriptions,
         }
     }
@@ -266,6 +275,7 @@ impl Workspace {
         // middle; its caret did not move, so the editor would not ask.
         self.zen_follow_cursor(cx);
         self.glide_zen_caret_once_drawn(window, cx);
+        self.lint_visible_tabs(cx);
         cx.notify();
     }
 
