@@ -16,8 +16,9 @@ use workspace::{
     CloseTab, CloseWindow, ExportDocx, ExportHtml, ExportPdf, FocusLeftPane, FocusRightPane,
     NewFile, NewFolder, NewTab, NextTab, Open, OpenFolder, OpenSettings, PreviousTab, Quit,
     RefreshFolder, ResetZoom, Save, SaveAs, ShowChanges, ShowEditor, ShowFiles, ShowHistory,
-    ShowPreview, ShowSearch, ShowSplit, SplitLeft, SplitRight, ToggleBold, ToggleItalic,
-    ToggleLineNumbers, ToggleSidebar, ToggleTheme, ToggleZen, Workspace, ZoomIn, ZoomOut,
+    ShowOutline, ShowPreview, ShowSearch, ShowSplit, SplitLeft, SplitRight, ToggleBold,
+    ToggleItalic, ToggleLineNumbers, ToggleSidebar, ToggleTheme, ToggleZen, Workspace, ZoomIn,
+    ZoomOut,
 };
 
 /// Every open document window, so files opened from Finder can reuse one.
@@ -301,6 +302,7 @@ fn set_menus(can_update: bool, cx: &mut App) {
             MenuItem::action("Preview", ShowPreview),
             MenuItem::separator(),
             MenuItem::action("Files", ShowFiles),
+            MenuItem::action("Outline", ShowOutline),
             MenuItem::action("Search", ShowSearch),
             MenuItem::action("Changes", ShowChanges),
             MenuItem::action("History", ShowHistory),

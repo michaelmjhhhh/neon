@@ -13,6 +13,12 @@ use gpui_kit::{App, Entity, Pixels, point, px};
 /// Correction frames before leaving the view where it is.
 const MAX_STEPS: u8 = 4;
 
+/// Correction frames for a jump to a far row, as to a heading picked in the
+/// outline. Each frame lays out rows nearer the target, so the estimate
+/// tightens; a jump across a long document of wrapped lines may need more
+/// than a size change does.
+const JUMP_STEPS: u8 = 8;
+
 /// The line at the top of the viewport before a typography change.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ScrollAnchor {
@@ -41,6 +47,20 @@ impl ScrollAnchor {
             size,
             steps_left: MAX_STEPS,
         })
+    }
+
+    /// Bring `row` to `lines` line heights below the viewport's top over the
+    /// next layouts at text size `size`, as for a jump to a heading.
+    pub(crate) fn to_row(row: usize, lines: f32, size: f32) -> Self {
+        Self {
+            row,
+            offset: lines,
+            // Only an estimate before a layout reads these; a size change
+            // meanwhile starts from the top and corrects from there.
+            viewport_top: px(0.),
+            size,
+            steps_left: JUMP_STEPS,
+        }
     }
 
     /// Scroll so the next layout, at text size `size`, starts near the row,
@@ -83,8 +103,13 @@ impl ScrollAnchor {
     /// cannot reach its old place.
     pub(crate) fn restore(self, editor: &Entity<EditorState>, cx: &mut App) -> Option<Self> {
         let state = editor.read(cx);
-        let line_height = state.line_height()?;
-        let viewport_top = state.input_bounds().top() - state.text_bounds()?.top();
+        // Before the editor's first layout there is nothing to place the
+        // row by yet; wait for one.
+        let (Some(line_height), Some(text_bounds)) = (state.line_height(), state.text_bounds())
+        else {
+            return Some(self);
+        };
+        let viewport_top = state.input_bounds().top() - text_bounds.top();
         let rows: Vec<_> = laid_out_rows(state).collect();
         let (&(first_row, first_top, _), &(last_row, last_top, _)) = (rows.first()?, rows.last()?);
         let (top, found) = match rows.iter().find(|&&(row, _, _)| row == self.row) {

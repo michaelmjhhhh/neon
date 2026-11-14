@@ -119,6 +119,15 @@ impl EditorPane {
         self.scroll_anchor.set(Some(anchor));
     }
 
+    /// Bring buffer `row` to `lines` line heights below the editor's top,
+    /// over the next few frames as the rows around it are laid out.
+    pub(crate) fn scroll_row_to_top(&mut self, row: usize, lines: f32, cx: &mut Context<Self>) {
+        let size = self.typography.read(cx).editor_size(cx);
+        self.scroll_anchor
+            .set(Some(ScrollAnchor::to_row(row, lines, size)));
+        cx.notify();
+    }
+
     pub(crate) fn set_readonly(&mut self, readonly: bool, cx: &mut Context<Self>) {
         if self.readonly != readonly {
             self.readonly = readonly;

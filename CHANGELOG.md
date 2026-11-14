@@ -29,6 +29,16 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Added
+
+- Outline in the sidebar (⌃⌘1, or View › Outline): the document's headings, indented by level. Click one to put the caret on it and bring it to the top; the row of the section you are writing or reading is lit as you go.
+- Write `[TOC]` (or `[[_TOC_]]`) on a line of its own for a table of contents in the preview, in HTML, PDF and Word exports. Each entry goes to its heading and updates as headings change.
+- Links to a heading work: `[Setup](#getting-started)` with GitHub's anchors, `[[#Heading]]`, and `[[Note#Heading]]` or `note.md#setup`, which open the note at that heading; a link to a heading that isn't there says so. Headings in exported HTML carry the same anchors, and Word exports link them too.
+
+### Fixed
+
+- The sidebar no longer gets narrower than its view switch and its hide button need, so they stay clear of the window controls and the document. A folder in a Git repository, with all five views, widens the sidebar a little.
+
 ## [0.18.0] - 2026-11-13
 
 ### Added

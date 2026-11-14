@@ -51,6 +51,7 @@ gpui_kit::actions!(
     workspace,
     [
         ShowFiles,
+        ShowOutline,
         ShowChanges,
         ShowHistory,
         StageAll,
@@ -65,6 +66,8 @@ gpui_kit::actions!(
 pub(super) enum SidebarView {
     #[default]
     Files,
+    /// The shown document's headings; see [`super::outline`].
+    Outline,
     Search,
     Changes,
     History,
@@ -262,7 +265,7 @@ impl Workspace {
     /// the document.
     pub(super) fn showing_diff(&self) -> bool {
         let picked = match self.sidebar_view {
-            SidebarView::Files | SidebarView::Search => false,
+            SidebarView::Files | SidebarView::Outline | SidebarView::Search => false,
             SidebarView::Changes => self.changes.selected.is_some(),
             SidebarView::History => self.history.selected().is_some(),
         };
@@ -577,6 +580,15 @@ impl Workspace {
         self.set_sidebar_view(SidebarView::Files, window, cx);
     }
 
+    pub(super) fn show_outline(
+        &mut self,
+        _: &ShowOutline,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_sidebar_view(SidebarView::Outline, window, cx);
+    }
+
     pub(super) fn show_changes(
         &mut self,
         _: &ShowChanges,
@@ -782,9 +794,13 @@ impl Workspace {
     }
 
     /// The switch between the sidebar's views. Changes and History join
-    /// Files and Search for a folder in a Git repository.
+    /// Files, Outline and Search for a folder in a Git repository.
     pub(super) fn render_sidebar_switch(&self, cx: &mut Context<Self>) -> TabBar {
-        let mut views = vec![SidebarView::Files, SidebarView::Search];
+        let mut views = vec![
+            SidebarView::Files,
+            SidebarView::Outline,
+            SidebarView::Search,
+        ];
         if self.has_repository() {
             views.extend([SidebarView::Changes, SidebarView::History]);
         }
@@ -796,6 +812,9 @@ impl Workspace {
             let (icon, label, action): (Icon, &'static str, &'static dyn gpui_kit::Action) =
                 match view {
                     SidebarView::Files => (IconName::Folder.into(), "Files", &ShowFiles),
+                    SidebarView::Outline => {
+                        (AssetIcon::TableOfContents.into(), "Outline", &ShowOutline)
+                    }
                     SidebarView::Search => (IconName::Search.into(), "Search", &ShowSearch),
                     SidebarView::Changes => (AssetIcon::GitCompare.into(), "Changes", &ShowChanges),
                     SidebarView::History => (AssetIcon::GitGraph.into(), "History", &ShowHistory),

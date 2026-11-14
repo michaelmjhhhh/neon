@@ -10,6 +10,7 @@ use pulldown_cmark::{
 };
 
 use crate::inline::{InlineBuilder, InlineStyle, InlineText, literal_prefix};
+use crate::outline::{Outline, TocEntry, is_toc_marker};
 
 /// The dialect Neon reads: CommonMark with the extensions people expect from
 /// a Markdown editor: tables, task lists, strikethrough, footnotes, YAML
@@ -27,6 +28,7 @@ pub const PARSER_OPTIONS: Options = Options::ENABLE_TABLES
 #[derive(Clone, Debug, Default)]
 pub struct MarkdownDocument {
     blocks: Vec<Block>,
+    outline: Outline,
     stats: DocumentStats,
 }
 
@@ -45,40 +47,58 @@ impl MarkdownDocument {
         if cancelled() {
             return None;
         }
-        let mut parser = BlockParser {
-            source,
-            events: Parser::new_ext(source, PARSER_OPTIONS)
-                .into_offset_iter()
-                .peekable(),
-            pending_task: None,
-        };
+        let mut parser = BlockParser::new(source);
 
-        let mut blocks = Vec::new();
-        let mut occurrences = HashMap::<u64, u64>::new();
+        let mut kinds = Vec::new();
+        let mut tocs = Vec::new();
         while let Some((event, range)) = parser.events.next() {
             if cancelled() {
                 return None;
             }
-            let Some(kind) = parser.block_from_event(event) else {
+            // A paragraph that only asks for a table of contents becomes
+            // one, filled once every heading is known.
+            if matches!(event, Event::Start(Tag::Paragraph))
+                && is_toc_marker(&source[range.clone()])
+            {
+                parser.skip_until(TagEnd::Paragraph);
+                tocs.push(kinds.len());
+                kinds.push((BlockKind::TableOfContents(Arc::default()), range));
                 continue;
-            };
-            let fingerprint = fingerprint(&kind);
-            let occurrence = occurrences.entry(fingerprint).or_default();
-            let id = BlockId(fingerprint_of(&(fingerprint, *occurrence)));
-            *occurrence += 1;
-            blocks.push(Block {
-                id,
-                fingerprint,
-                source_range: range,
-                kind,
-            });
+            }
+            if let Some(kind) = parser.block_from_event(event, range.clone()) {
+                kinds.push((kind, range));
+            }
         }
 
         if cancelled() {
             return None;
         }
+        let outline = Outline::from_headings(parser.headings);
+        if !tocs.is_empty() {
+            let entries = TocEntry::all(&outline);
+            for ix in tocs {
+                kinds[ix].0 = BlockKind::TableOfContents(entries.clone());
+            }
+        }
+        let mut occurrences = HashMap::<u64, u64>::new();
+        let blocks = kinds
+            .into_iter()
+            .map(|(kind, source_range)| {
+                let fingerprint = fingerprint(&kind);
+                let occurrence = occurrences.entry(fingerprint).or_default();
+                let id = BlockId(fingerprint_of(&(fingerprint, *occurrence)));
+                *occurrence += 1;
+                Block {
+                    id,
+                    fingerprint,
+                    source_range,
+                    kind,
+                }
+            })
+            .collect();
         Some(Self {
             blocks,
+            outline,
             stats: DocumentStats::measure(source),
         })
     }
@@ -89,6 +109,11 @@ impl MarkdownDocument {
 
     pub fn stats(&self) -> DocumentStats {
         self.stats
+    }
+
+    /// Every heading, at any depth, with its anchor.
+    pub fn outline(&self) -> &Outline {
+        &self.outline
     }
 
     /// The index of the block containing, or else preceding, a byte offset
@@ -188,6 +213,8 @@ pub enum BlockKind {
     Rule,
     /// YAML front matter, read as the document's properties.
     FrontMatter(Vec<Property>),
+    /// A paragraph of just `[TOC]`, shown as the document's headings.
+    TableOfContents(Arc<[TocEntry]>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -417,19 +444,54 @@ fn fingerprint_of(value: &impl Hash) -> u64 {
     hasher.finish()
 }
 
+/// A heading's level, text and source range, as the parser found it.
+pub(crate) type RawHeading = (u8, Arc<str>, Range<usize>);
+
+/// Every heading of `source`, at any depth, built as [`BlockParser`] builds
+/// a heading block. Cancellation is checked between headings.
+pub(crate) fn scan_headings(source: &str, cancelled: impl Fn() -> bool) -> Option<Vec<RawHeading>> {
+    let mut parser = BlockParser::new(source);
+    while let Some((event, range)) = parser.events.next() {
+        if let Event::Start(Tag::Heading { level, .. }) = event {
+            if cancelled() {
+                return None;
+            }
+            let text = parser.collect_inline_until(TagEnd::Heading(level)).finish();
+            parser
+                .headings
+                .push((heading_level(level), text.text().clone(), range));
+        }
+    }
+    (!cancelled()).then_some(parser.headings)
+}
+
 /// Recursive descent over pulldown-cmark's event stream.
 struct BlockParser<'a> {
     source: &'a str,
     events: Peekable<OffsetIter<'a>>,
     /// A task marker seen inside the list item being parsed.
     pending_task: Option<bool>,
+    /// Each heading built so far, at any depth, for the outline.
+    headings: Vec<RawHeading>,
 }
 
 impl<'a> BlockParser<'a> {
-    /// Build the block that `event` opens, consuming events through its end.
-    fn block_from_event(&mut self, event: Event<'a>) -> Option<BlockKind> {
+    fn new(source: &'a str) -> Self {
+        Self {
+            source,
+            events: Parser::new_ext(source, PARSER_OPTIONS)
+                .into_offset_iter()
+                .peekable(),
+            pending_task: None,
+            headings: Vec::new(),
+        }
+    }
+
+    /// Build the block that `event`, at `range` of the source, opens,
+    /// consuming events through its end.
+    fn block_from_event(&mut self, event: Event<'a>, range: Range<usize>) -> Option<BlockKind> {
         match event {
-            Event::Start(tag) => self.block_from_tag(tag),
+            Event::Start(tag) => self.block_from_tag(tag, range),
             Event::Rule => Some(BlockKind::Rule),
             Event::Html(html) => Some(BlockKind::Html(html.trim_end().into())),
             Event::TaskListMarker(checked) => {
@@ -440,16 +502,21 @@ impl<'a> BlockParser<'a> {
         }
     }
 
-    fn block_from_tag(&mut self, tag: Tag<'a>) -> Option<BlockKind> {
+    fn block_from_tag(&mut self, tag: Tag<'a>, range: Range<usize>) -> Option<BlockKind> {
         match tag {
             Tag::Paragraph => {
                 let inline = self.collect_inline_until(TagEnd::Paragraph);
                 Some(paragraph_or_image(inline))
             }
-            Tag::Heading { level, .. } => Some(BlockKind::Heading(Heading {
-                level: heading_level(level),
-                text: self.collect_inline_until(TagEnd::Heading(level)).finish(),
-            })),
+            Tag::Heading { level, .. } => {
+                let heading = Heading {
+                    level: heading_level(level),
+                    text: self.collect_inline_until(TagEnd::Heading(level)).finish(),
+                };
+                self.headings
+                    .push((heading.level, heading.text.text().clone(), range));
+                Some(BlockKind::Heading(heading))
+            }
             Tag::CodeBlock(kind) => {
                 let language = match kind {
                     CodeBlockKind::Fenced(info) => info
@@ -517,13 +584,13 @@ impl<'a> BlockParser<'a> {
                 }
                 continue;
             }
-            let Some((event, _)) = self.events.next() else {
+            let Some((event, range)) = self.events.next() else {
                 break;
             };
             if matches!(&event, Event::End(tag_end) if *tag_end == end) {
                 break;
             }
-            if let Some(block) = self.block_from_event(event) {
+            if let Some(block) = self.block_from_event(event, range) {
                 children.push(block);
             }
         }
