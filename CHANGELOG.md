@@ -31,7 +31,7 @@ Groups, in this order:
 
 ### Changed
 
-- Full screen rounds the window's corners, as a window has outside full screen.
+- Full screen rounds the window's corners instead of filling the screen edge to edge.
 
 ## [0.19.0] - 2026-11-14
 

@@ -161,8 +161,8 @@ const EDITOR_MEASURE_CHARS: f32 = 80.;
 /// the window's leading edge: three 16 px controls from 20 px, their gaps,
 /// and a small clearance. Platform geometry: it does not follow the rem size.
 const WINDOW_CONTROLS_END: Pixels = gpui_kit::px(88.);
-/// The radius of the window's corners in full screen, where macOS draws the
-/// window square. Platform geometry: it does not follow the rem size.
+/// The radius of the window's corners in full screen. Platform geometry: it
+/// does not follow the rem size.
 const FULLSCREEN_CORNER_RADIUS: Pixels = gpui_kit::px(20.);
 
 /// Which panes the window shows.
@@ -3818,30 +3818,55 @@ impl Render for Workspace {
             .text_color(theme.foreground)
             .child(content)
             .when(window.is_fullscreen(), |this| {
-                this.child(fullscreen_corners())
+                this.children(fullscreen_corners())
             })
     }
 }
 
-/// Black corners over the window's own in full screen, so the window keeps
-/// the rounded corners it has outside full screen.
+/// Black corners over the window's own in full screen, where macOS draws the
+/// window square, so it reads as a rounded pane on the screen's black.
 ///
-/// GPUI clips only to rectangles, so the corners are painted over the
-/// content instead of clipped from it: a border one radius thick, laid one
-/// radius outside the window, with twice the radius at its outer edge. Its
-/// inner edge then follows the window's bounds, rounded by the radius. It
-/// takes no mouse events, so clicks reach what is under it.
-fn fullscreen_corners() -> impl IntoElement {
+/// GPUI clips only to rectangles, so each corner is painted over the content
+/// instead of clipped from it. A corner is a box laid one radius outside the
+/// window on two sides, bordered one radius thick on those sides and rounded
+/// by twice the radius between them. The border then sits outside the
+/// window, and its inner edge is an arc of one radius inside it. The box is
+/// four radii wide because GPUI caps a radius at half the box. The corners
+/// take no mouse events, so clicks reach what is under them.
+fn fullscreen_corners() -> [gpui_kit::Div; 4] {
     let radius = FULLSCREEN_CORNER_RADIUS;
-    div()
-        .absolute()
-        .top(-radius)
-        .right(-radius)
-        .bottom(-radius)
-        .left(-radius)
-        .border(radius)
-        .border_color(gpui_kit::black())
-        .rounded(radius * 2.)
+    let corner = || {
+        div()
+            .absolute()
+            .size(radius * 4.)
+            .border_color(gpui_kit::black())
+    };
+    [
+        corner()
+            .top(-radius)
+            .left(-radius)
+            .border_t(radius)
+            .border_l(radius)
+            .rounded_tl(radius * 2.),
+        corner()
+            .top(-radius)
+            .right(-radius)
+            .border_t(radius)
+            .border_r(radius)
+            .rounded_tr(radius * 2.),
+        corner()
+            .bottom(-radius)
+            .right(-radius)
+            .border_b(radius)
+            .border_r(radius)
+            .rounded_br(radius * 2.),
+        corner()
+            .bottom(-radius)
+            .left(-radius)
+            .border_b(radius)
+            .border_l(radius)
+            .rounded_bl(radius * 2.),
+    ]
 }
 
 /// One of the sheet header's icon buttons: quiet, in the muted color unless
