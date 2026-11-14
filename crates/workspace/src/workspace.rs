@@ -2488,9 +2488,11 @@ impl Workspace {
             .into_any_element()
         } else {
             let muted = theme.muted_foreground;
+            // Row icons sit a step below muted text, so the names lead and
+            // the column of icons stays in the background.
+            let faint = muted.opacity(0.75);
             let guide = theme.sidebar_border;
             let row_radius = theme.radius;
-            let counts = self.folder_file_counts.clone();
             // A press on a row marks itself here before the press reaches
             // the space around the rows, which clears the selection so new
             // files and folders go to the top of the open folder.
@@ -2537,7 +2539,7 @@ impl Workspace {
                     })
                 })
                 .child(
-                    Tree::new(&self.tree, move |_, entry, _, window, _| {
+                    Tree::new(&self.tree, move |_, entry, selected, window, _| {
                         let item = entry.item();
                         let rem = window.rem_size();
                         let is_active = active.as_deref() == Some(item.id.as_ref());
@@ -2546,9 +2548,9 @@ impl Workspace {
                             .as_ref()
                             .filter(|(id, _)| *id == item.id)
                             .map(|(_, input)| input.clone());
-                        // Only folders carry a mark, their chevron; as in
-                        // Obsidian, names alone read faster than a column of
-                        // identical icons.
+                        // Folders carry a chevron; every row also carries a
+                        // folder or note icon, as in Finder, so a note at the
+                        // end of a folder reads apart from its sibling folders.
                         let chevron = (entry.is_folder() && !entry.is_disabled()).then(|| {
                             if entry.is_expanded() {
                                 IconName::ChevronDown
@@ -2556,11 +2558,15 @@ impl Workspace {
                                 IconName::ChevronRight
                             }
                         });
-                        // A collapsed folder says how much it holds.
-                        let count = counts
-                            .get(&item.id)
-                            .copied()
-                            .filter(|count| *count > 0 && !entry.is_expanded());
+                        let kind_icon = if entry.is_disabled() {
+                            None
+                        } else if entry.is_folder() {
+                            Some(AssetIcon::Folder)
+                        } else if is_markdown(Path::new(item.id.as_ref())) {
+                            Some(AssetIcon::FileText)
+                        } else {
+                            Some(AssetIcon::File)
+                        };
                         // Notes go without `.md`. An attachment keeps its
                         // extension, muted, so `photo.png` reads apart from
                         // a note named `photo`, and stays in sight when a
@@ -2721,11 +2727,29 @@ impl Workspace {
                                                     gpui_kit::component::Icon::new(chevron).xsmall()
                                                 }),
                                             ))
+                                            .children(kind_icon.map(|icon| {
+                                                icon_slot()
+                                                    .text_color(if selected {
+                                                        muted
+                                                    } else {
+                                                        faint
+                                                    })
+                                                    .child(
+                                                        gpui_kit::component::Icon::new(icon)
+                                                            .small(),
+                                                    )
+                                            }))
                                             .child(
                                                 div()
                                                     .flex()
                                                     .flex_1()
                                                     .min_w_0()
+                                                    // Name sits a little apart from
+                                                    // its icon, as a label from its
+                                                    // control.
+                                                    .when(kind_icon.is_some(), |row| {
+                                                        row.pl(rem * 0.125)
+                                                    })
                                                     .when(is_active, |row| {
                                                         row.font_weight(FontWeight::MEDIUM)
                                                     })
@@ -2781,14 +2805,7 @@ impl Workspace {
                                                             }))
                                                             .into_any_element(),
                                                     }),
-                                            )
-                                            .children(count.map(|count| {
-                                                div()
-                                                    .flex_none()
-                                                    .text_xs()
-                                                    .text_color(muted)
-                                                    .child(format_count(count))
-                                            })),
+                                            ),
                                     ),
                             )
                     })

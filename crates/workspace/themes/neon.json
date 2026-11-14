@@ -71,7 +71,7 @@
 
         "list.background": "#00000000",
         "list.hover.background": "#e2e3e7",
-        "list.active.background": "#1a1b2012",
+        "list.active.background": "#1a1b201c",
         "list.active.border": "#1a1b2000",
         "list.even.background": "#f8f8fa",
         "list.head.background": "#f6f6f8",
@@ -219,7 +219,7 @@
 
         "list.background": "#00000000",
         "list.hover.background": "#363c46",
-        "list.active.background": "#ffffff14",
+        "list.active.background": "#ffffff1f",
         "list.active.border": "#ffffff00",
         "list.even.background": "#2b3038",
         "list.head.background": "#2f343e",
