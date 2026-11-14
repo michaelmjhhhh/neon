@@ -20,6 +20,8 @@ pub use document::{
 };
 pub use events::{MarkdownEvent, events};
 pub use inline::{InlineLink, InlineRun, InlineStyle, InlineText};
-pub use outline::{Outline, OutlineHeading, TocEntry, indent_levels, is_toc_marker, slugify};
+pub use outline::{
+    Outline, OutlineHeading, TocEntry, indent_levels, is_toc_marker, percent_decoded, slugify,
+};
 pub use splice::BlockSplice;
 pub use word_count::{WordCounter, count_words};

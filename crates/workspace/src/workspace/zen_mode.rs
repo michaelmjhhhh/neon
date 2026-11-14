@@ -301,6 +301,13 @@ impl Workspace {
         self.zen.as_ref().map(|zen| zen.view)
     }
 
+    /// Whether the active document shows as source, in the editor, rather
+    /// than as its preview alone.
+    pub(super) fn shows_editor_now(&self) -> bool {
+        self.zen_view()
+            .map_or(self.layout.shows_editor(), |view| view == ZenView::Editor)
+    }
+
     /// Whether the active tab's preview is on screen.
     pub(super) fn preview_shown(&self) -> bool {
         !self.settings_open

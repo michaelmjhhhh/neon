@@ -477,23 +477,29 @@ impl MarkdownPreview {
     /// The source byte offset where the reader is: the start of the row at
     /// a reading line just below the viewport's top, as deep as the space
     /// above the first block, so a heading brought to the top is where the
-    /// reader is even when its section is short. Once the end is reached,
-    /// the last row in view, so a short last section counts as read. `None`
-    /// before anything is laid out.
+    /// reader is even when its section is short. Once scrolled to the end,
+    /// the last row in view, so a short last section counts as read; a
+    /// document that fits unscrolled reads from its top. `None` before
+    /// anything is laid out.
     pub fn reading_offset(&self) -> Option<usize> {
         let count = self.rows.len(&self.document);
         if count == 0 {
             return None;
         }
         let viewport = self.list_state.viewport_bounds();
-        let at_end = -self.list_state.scroll_px_offset_for_scrollbar().y
-            >= self.list_state.max_offset_for_scrollbar().y - px(1.);
+        let top = self.list_state.logical_scroll_top();
+        let scrolled = top.item_ix > 0 || top.offset_in_item > px(0.);
+        let at_end = scrolled
+            && self
+                .list_state
+                .bounds_for_item(count - 1)
+                .is_some_and(|last| last.bottom() <= viewport.bottom() + px(1.));
         let reading_line = if at_end {
             viewport.bottom() - px(1.)
         } else {
             viewport.top() + self.top_padding
         };
-        let first = self.list_state.logical_scroll_top().item_ix.min(count - 1);
+        let first = top.item_ix.min(count - 1);
         let mut found = None;
         for ix in first..count {
             let Some(bounds) = self.list_state.bounds_for_item(ix) else {

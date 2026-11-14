@@ -285,8 +285,9 @@ fn one_line(text: &str) -> Arc<str> {
         .into()
 }
 
-/// `text` with each `%XX` escape decoded; as written if that is not UTF-8.
-fn percent_decoded(text: &str) -> std::borrow::Cow<'_, str> {
+/// `text` with each `%XX` escape decoded, as in a link's target:
+/// `My%20Note` is `My Note`. As written if the result is not UTF-8.
+pub fn percent_decoded(text: &str) -> std::borrow::Cow<'_, str> {
     if !text.contains('%') {
         return text.into();
     }

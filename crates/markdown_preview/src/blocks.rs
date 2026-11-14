@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui_kit::assets::IconName as AssetIcon;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _};
+use gpui_kit::component::notification::Notification;
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _};
 use gpui_kit::{
     AnyElement, App, Bounds, ElementId, Entity, FontStyle, FontWeight, HighlightStyle, Hsla,
     InteractiveElement as _, InteractiveText, IntoElement, LineLayout, ObjectFit,
@@ -1082,7 +1083,7 @@ fn link_path(url: &str) -> Option<PathBuf> {
         .split(['#', '?'])
         .next()
         .filter(|path| !path.is_empty())?;
-    Some(PathBuf::from(percent_decoded(path).into_owned()))
+    Some(PathBuf::from(markdown::percent_decoded(path).into_owned()))
 }
 
 /// Resolve a document-relative path; absolute paths are kept.
@@ -1093,34 +1094,6 @@ fn resolve_path(url: &str, base_dir: Option<&Path>) -> Option<PathBuf> {
     } else {
         base_dir.map(|dir| dir.join(path))
     }
-}
-
-/// `text` with each `%XX` escape decoded; as written if that is not UTF-8.
-fn percent_decoded(text: &str) -> std::borrow::Cow<'_, str> {
-    if !text.contains('%') {
-        return text.into();
-    }
-    let bytes = text.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut ix = 0;
-    while ix < bytes.len() {
-        let hex = |offset: usize| {
-            bytes
-                .get(ix + offset)
-                .and_then(|&b| (b as char).to_digit(16))
-        };
-        match (bytes[ix], hex(1), hex(2)) {
-            (b'%', Some(high), Some(low)) => {
-                decoded.push((high * 16 + low) as u8);
-                ix += 3;
-            }
-            (byte, _, _) => {
-                decoded.push(byte);
-                ix += 1;
-            }
-        }
-    }
-    String::from_utf8(decoded).map_or(text.into(), Into::into)
 }
 
 fn resolve_image(url: &str, base_dir: Option<&Path>) -> Option<gpui_kit::ImageSource> {
@@ -1144,9 +1117,18 @@ fn open_link(
     cx: &mut App,
 ) {
     if let Some(fragment) = url.strip_prefix('#') {
-        preview
+        let found = preview
             .update(cx, |preview, cx| preview.reveal_heading(fragment, cx))
-            .ok();
+            .unwrap_or(true);
+        if !found && !fragment.is_empty() {
+            window.push_notification(
+                Notification::info(format!(
+                    "This note has no heading “{}”.",
+                    markdown::percent_decoded(fragment)
+                )),
+                cx,
+            );
+        }
         return;
     }
     if has_scheme(url) {

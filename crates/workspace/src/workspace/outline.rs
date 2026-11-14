@@ -25,8 +25,6 @@ use gpui_kit::{
 use markdown::Outline;
 
 use super::{Workspace, format_count, sidebar_empty_state};
-use crate::scroll_anchor::laid_out_rows;
-use crate::zen::ZenView;
 
 /// How long typing pauses before the headings are read again. Shorter than
 /// the preview's wait: the list is small and cheap to redraw.
@@ -247,15 +245,26 @@ impl OutlineView {
         self.task = None;
     }
 
+    /// Show `outline`. Typing above a heading moves it in the source but
+    /// not in the list, so the list redraws only when a heading's text or
+    /// level changes; the lit row moves, and the list scrolls to it, only
+    /// when the section changes, so a reader who scrolled the list keeps
+    /// their place while typing.
     fn apply(&mut self, outline: Outline, cx: &mut Context<Self>) {
         let first_read = !std::mem::replace(&mut self.read, true);
-        if *self.outline != outline {
+        let shown = |heading: &markdown::OutlineHeading| (heading.level(), heading.text().clone());
+        let changed = !self
+            .outline
+            .headings()
+            .iter()
+            .map(shown)
+            .eq(outline.headings().iter().map(shown));
+        if changed {
             self.depths =
                 markdown::indent_levels(outline.headings().iter().map(|h| h.level())).into();
-            self.outline = Arc::new(outline);
-            self.active = None;
-            cx.notify();
-        } else if first_read {
+        }
+        self.outline = Arc::new(outline);
+        if changed || first_read {
             cx.notify();
         }
         self.light_section(cx);
@@ -387,31 +396,25 @@ impl Workspace {
             return self.tab().preview.read(cx).reading_offset();
         }
         let editor = self.tab().editor.read(cx);
-        let text = editor.text();
-        let viewport_top = editor.input_bounds().top() - editor.text_bounds()?.top();
-        let viewport_bottom = viewport_top + editor.input_bounds().size.height;
-        let caret = editor.cursor();
-        let caret_row = text.offset_to_point(caret).row;
-        let mut first_visible = None;
-        for (row, top, bottom) in laid_out_rows(editor) {
-            if row == caret_row
-                && top >= viewport_top - gpui_kit::px(1.)
-                && bottom <= viewport_bottom + gpui_kit::px(1.)
-            {
-                return Some(caret);
-            }
-            if first_visible.is_none() && top >= viewport_top - gpui_kit::px(1.) {
-                first_visible = Some(row);
-            }
-        }
-        first_visible.map(|row| text.line_start_offset(row))
+        let rows = editor_rows_in_view(editor)?;
+        Some(
+            self.caret_in_view(cx)
+                .unwrap_or_else(|| editor.text().line_start_offset(rows.start)),
+        )
     }
 
-    /// Whether the active document shows as source, rather than as its
-    /// preview alone.
-    fn shows_editor_now(&self) -> bool {
-        self.zen_view()
-            .map_or(self.layout.shows_editor(), |view| view == ZenView::Editor)
+    /// The caret, if it shows in the editor's last layout. Cheap enough for
+    /// every caret move: it reads the layout's rows rather than measuring
+    /// any. A caret off screen, as right after a jump before the editor
+    /// scrolls, leaves the lit row to the next sample.
+    pub(super) fn caret_in_view(&self, cx: &App) -> Option<usize> {
+        if !self.shows_editor_now() {
+            return None;
+        }
+        let editor = self.tab().editor.read(cx);
+        let caret = editor.cursor();
+        let row = editor.text().offset_to_point(caret).row;
+        editor_rows_in_view(editor)?.contains(&row).then_some(caret)
     }
 
     fn go_to_outline_heading(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -440,7 +443,7 @@ impl Workspace {
                 self.go_to_source_offset(start, window, cx);
             }
             None => {
-                let heading = percent_decoded_lossy(fragment);
+                let heading = markdown::percent_decoded(fragment);
                 let message = match self.tab().document.path() {
                     Some(path) => {
                         format!("“{}” has no heading “{heading}”.", super::file_name(path))
@@ -500,23 +503,12 @@ impl Workspace {
     }
 }
 
-/// `%20`-style escapes decoded for a message, as written if not UTF-8.
-fn percent_decoded_lossy(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut ix = 0;
-    while ix < bytes.len() {
-        let hex = |at: usize| bytes.get(at).and_then(|&b| (b as char).to_digit(16));
-        match (bytes[ix], hex(ix + 1), hex(ix + 2)) {
-            (b'%', Some(high), Some(low)) => {
-                decoded.push((high * 16 + low) as u8);
-                ix += 3;
-            }
-            (byte, _, _) => {
-                decoded.push(byte);
-                ix += 1;
-            }
-        }
-    }
-    String::from_utf8(decoded).unwrap_or_else(|_| text.to_string())
+/// The buffer rows the editor's last layout shows, at least partly. The
+/// layout lays out one row past the bottom edge; that row is left out.
+fn editor_rows_in_view(
+    editor: &gpui_kit::component::input::EditorState,
+) -> Option<std::ops::Range<usize>> {
+    let rows = editor.visible_row_range()?;
+    let end = rows.end.saturating_sub(1).max(rows.start + 1);
+    (!rows.is_empty()).then_some(rows.start..end)
 }

@@ -566,10 +566,7 @@ impl Workspace {
     pub fn focus_content(&self, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings_open {
             self.settings.read(cx).focus_handle(cx).focus(window, cx);
-        } else if self
-            .zen_view()
-            .map_or(self.layout.shows_editor(), |view| view == ZenView::Editor)
-        {
+        } else if self.shows_editor_now() {
             self.tab()
                 .editor
                 .update(cx, |editor, cx| editor.focus(window, cx));
@@ -798,10 +795,11 @@ impl Workspace {
         self.tab_mut().revealed_cursor = Some(cursor);
         let text = editor.read(cx).text().clone();
         self.update_slash_menu(&editor, &text, cursor, false, cx);
-        if self.outline_shown() {
-            let position = self.outline_position(cx);
+        if self.outline_shown()
+            && let Some(caret) = self.caret_in_view(cx)
+        {
             self.outline
-                .update(cx, |outline, cx| outline.set_position(position, cx));
+                .update(cx, |outline, cx| outline.set_position(Some(caret), cx));
         }
         self.zen_follow_cursor(cx);
         self.glide_zen_caret(window, cx);
