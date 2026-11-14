@@ -29,6 +29,12 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Added
+
+- Linting: rules for trailing spaces, blank lines, headings, list markers and numbering, emphasis, code fences, table alignment, ellipses and spacing between Chinese and English mark issues in the editor; Edit › Fix Lint Issues (⌥⇧F) fixes them in one undoable step.
+- Saving can fix spacing issues (Settings › Editor › Linting). Fixes never touch code, math, HTML or link targets, and a rule whose fix would change how the note reads is left alone.
+- A `.neonlint.toml` in a folder sets the lint rules for the notes in it and below, including file patterns to ignore, per-file overrides and custom find-and-replace patterns; `lint.toml` beside Neon's settings applies everywhere.
+
 ## [0.20.0] - 2026-11-14
 
 ### Changed

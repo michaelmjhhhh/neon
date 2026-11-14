@@ -28,6 +28,11 @@ pub(crate) struct Settings {
     /// The layout new windows open in: Editor, Split or Preview.
     #[serde(deserialize_with = "or_default")]
     pub(crate) default_layout: LayoutMode,
+    /// Whether the editor marks lint issues. Off by default, as is fixing
+    /// on save: a folder's `.neonlint.toml` can turn either on for its notes.
+    pub(crate) lint_issues: bool,
+    /// Whether saving fixes the issues rules fix on save.
+    pub(crate) lint_on_save: bool,
 }
 
 /// A choice's default when the file names one this version does not know,
@@ -68,6 +73,13 @@ pub fn load(cx: &mut App) {
     let settings: Settings = read(&path);
     theme::restore_appearance(settings.appearance, cx);
     cx.set_global(SettingsFile { path, settings });
+}
+
+/// The global lint configuration, beside the settings; `None` until
+/// [`load`] runs, so tests never read the user's file.
+pub(crate) fn lint_config_path(cx: &App) -> Option<PathBuf> {
+    let file = cx.try_global::<SettingsFile>()?;
+    Some(file.path.parent()?.join("lint.toml"))
 }
 
 /// The settings new windows start from.
@@ -159,6 +171,8 @@ mod tests {
             line_numbers: true,
             readable_line_length: true,
             default_layout: LayoutMode::Preview,
+            lint_issues: true,
+            lint_on_save: true,
         };
         write(&path, &settings).unwrap();
         assert_eq!(read::<Settings>(&path), settings);

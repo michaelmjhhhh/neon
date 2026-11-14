@@ -59,6 +59,7 @@ use crate::zen::{Zen, ZenView};
 mod attachments;
 mod changes;
 mod history;
+mod lint;
 mod outline;
 mod panes;
 mod search;
@@ -112,6 +113,7 @@ gpui_kit::actions!(
         ToggleLineNumbers,
         ToggleBold,
         ToggleItalic,
+        FixLintIssues,
         Save,
         SaveAs,
         ExportHtml,
@@ -312,6 +314,8 @@ pub struct Workspace {
     line_numbers: bool,
     /// Whether text keeps to a readable line length or fills the pane.
     readable_line_length: bool,
+    /// The saved setting for marking lint issues, to notice it change.
+    lint_issues: bool,
     /// The digits the line-number gutter had room for when the editor's
     /// column was last measured.
     gutter_digits: Cell<usize>,
@@ -438,9 +442,13 @@ impl Workspace {
             }),
             // Saved from this window's settings or another's.
             crate::settings_file::observe(cx, |this, cx| {
-                let readable = crate::settings_file::saved(cx).readable_line_length;
-                if this.readable_line_length != readable {
-                    this.set_readable_line_length(readable, cx);
+                let saved = crate::settings_file::saved(cx);
+                if this.readable_line_length != saved.readable_line_length {
+                    this.set_readable_line_length(saved.readable_line_length, cx);
+                }
+                if this.lint_issues != saved.lint_issues {
+                    this.lint_issues = saved.lint_issues;
+                    this.relint(cx);
                 }
             }),
             cx.observe_window_appearance(window, |_, window, cx| {
@@ -510,6 +518,7 @@ impl Workspace {
             ],
             line_numbers,
             readable_line_length,
+            lint_issues: saved.lint_issues,
             gutter_digits: Cell::new(0),
             settings_open: false,
             settings,
@@ -718,6 +727,8 @@ impl Workspace {
         let tab = self.tab_mut();
         tab.document = path.map(DocumentFile::saved).unwrap_or_default();
         tab.revealed_cursor = None;
+        tab.text_version += 1;
+        self.lint_visible_tabs(cx);
         self.remember_session(cx);
         self.sync_tree_selection(cx);
         self.update_window_title(window);
@@ -741,6 +752,8 @@ impl Workspace {
         let tab = &mut self.tabs[ix];
         let was_dirty = tab.document.is_dirty();
         tab.document.record_edit();
+        self.text_changed(ix, cx);
+        let tab = &mut self.tabs[ix];
         // Cloning the rope is O(1); the preview flattens it off the UI thread.
         let source = editor.read(cx).text().clone();
         tab.preview
@@ -1168,16 +1181,34 @@ impl Workspace {
             }
             replaced_tab = Some(other.id);
         }
-        let revision = self.tab().document.edit_revision();
-        let text = self.tab().editor.read(cx).text().clone();
-        let write = cx.background_spawn({
-            let path = path.clone();
-            async move {
-                std::fs::write(&path, text.to_string())?;
-                std::fs::canonicalize(path)
-            }
-        });
+        let fix = self.fix_before_save(tab_id, cx);
+        let version = self.tab().text_version;
         self.save_task = Some(cx.spawn_in(window, async move |this, cx| {
+            if let Some(fix) = fix {
+                let fixed = fix.await;
+                this.update_in(cx, |this, window, cx| {
+                    this.apply_save_fix(tab_id, version, fixed, window, cx)
+                })
+                .ok();
+            }
+            // Read in an update of its own, once the fix's edit is recorded,
+            // so the save marks the fixed text saved.
+            let read = this.update(cx, |this, cx| {
+                let tab = this.tabs.iter().find(|tab| tab.id == tab_id)?;
+                let text = tab.editor.read(cx).text().clone();
+                Some((tab.document.edit_revision(), text))
+            });
+            let Ok(Some((revision, text))) = read else {
+                this.update(cx, |this, _| this.save_task = None).ok();
+                return;
+            };
+            let write = cx.background_spawn({
+                let path = path.clone();
+                async move {
+                    std::fs::write(&path, text.to_string())?;
+                    std::fs::canonicalize(path)
+                }
+            });
             let result = write.await;
             this.update_in(cx, |this, window, cx| {
                 this.save_task = None;
@@ -3783,6 +3814,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ToggleItalic, window, cx| {
                 this.toggle_style(Style::Italic, window, cx);
             }))
+            .on_action(cx.listener(Self::fix_lint_issues))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::save_as))
             .on_action(cx.listener(|this, _: &ExportHtml, window, cx| {

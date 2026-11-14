@@ -32,6 +32,7 @@ Neon is built on [GPUI](https://github.com/zed-industries/zed/tree/main/crates/g
 - **Lists that continue themselves.** Enter starts the next bullet, number or task; Tab and Shift+Tab indent and outdent the item.
 - **Slash commands.** Type `/` on an empty line to insert a list, task list, code block, link, image or table. Add a size or language: `/table 4x5`, `/bullet 5`, `/code rust`.
 - **Find and replace** in a compact bar at the editor's corner.
+- **Linting.** Rules for spacing, headings, lists, emphasis, tables and Chinese–English spacing mark issues in the editor; <kbd>⌥</kbd> <kbd>⇧</kbd> <kbd>F</kbd> fixes them in one undoable step, and saving can fix spacing. A `.neonlint.toml` sets the rules for a folder and everything in it. See [Linting](docs/linting.md).
 
 **Reading**
 
@@ -90,7 +91,7 @@ gh attestation verify Neon-<version>-macos.dmg --repo michaelmjhhhh/neon
 | Close tab | <kbd>⌘</kbd> <kbd>W</kbd> | Find | <kbd>⌘</kbd> <kbd>F</kbd> |
 | Close window | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>W</kbd> | Find and replace | <kbd>⌥</kbd> <kbd>⌘</kbd> <kbd>F</kbd> |
 | Files / Changes in sidebar | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>E</kbd> / <kbd>⌃</kbd> <kbd>⇧</kbd> <kbd>G</kbd> | Indent / outdent list item | <kbd>Tab</kbd> / <kbd>⇧</kbd> <kbd>Tab</kbd> |
-| Search in folder | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>F</kbd> | | |
+| Search in folder | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>F</kbd> | Fix lint issues | <kbd>⌥</kbd> <kbd>⇧</kbd> <kbd>F</kbd> |
 | Outline in sidebar | <kbd>⌃</kbd> <kbd>⌘</kbd> <kbd>1</kbd> | | |
 | Commit, in the message | <kbd>⌘</kbd> <kbd>↩</kbd> | | |
 
