@@ -29,6 +29,8 @@ Groups, in this order:
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-14
+
 ### Changed
 
 - Full screen rounds the window's corners instead of filling the screen edge to edge.
