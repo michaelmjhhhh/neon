@@ -29,6 +29,8 @@ Groups, in this order:
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-14
+
 ### Added
 
 - Outline in the sidebar (⌃⌘1, or View › Outline): the document's headings, indented by level. Click one to put the caret on it and bring it to the top; the row of the section you are writing or reading is lit as you go.
