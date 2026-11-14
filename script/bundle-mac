@@ -195,7 +195,17 @@ staging=$(mktemp -d)
 trap 'rm -rf "$staging"' EXIT
 cp -R "$app" "$staging/"
 ln -s /Applications "$staging/Applications"
-hdiutil create -quiet -volname "Neon" -srcfolder "$staging" -ov -format UDZO "$dist/$dmg_name"
+# hdiutil fails now and then with "Resource busy" on CI runners, often while
+# the helper from the previous run's image still holds the old DMG.
+for attempt in 1 2 3 4 5; do
+    rm -f "$dist/$dmg_name"
+    hdiutil create -volname "Neon" -srcfolder "$staging" -format UDZO "$dist/$dmg_name" && break
+    if [ "$attempt" -eq 5 ]; then
+        exit 1
+    fi
+    echo "hdiutil create failed (attempt $attempt), retrying in 10s" >&2
+    sleep 10
+done
 
 if [ "$identity" != "-" ]; then
     codesign --force --timestamp --sign "$identity" "$dist/$dmg_name"
@@ -218,8 +228,18 @@ if [ ${#notary_args[@]} -gt 0 ]; then
         fi
         exit 1
     fi
-    xcrun stapler staple -q "$dist/$dmg_name"
-    xcrun stapler staple -q "$app"
+    # Apple's ticket servers can lag a few minutes behind "Accepted", and
+    # stapler fails until the ticket is published there.
+    staple() {
+        for attempt in 1 2 3 4 5 6; do
+            xcrun stapler staple "$1" && return 0
+            echo "stapling $1 failed (attempt $attempt), retrying in 30s" >&2
+            sleep 30
+        done
+        return 1
+    }
+    staple "$dist/$dmg_name"
+    staple "$app"
     spctl --assess --type execute "$app"
     spctl --assess --type open --context context:primary-signature "$dist/$dmg_name"
 fi
