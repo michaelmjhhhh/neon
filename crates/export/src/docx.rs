@@ -2,9 +2,12 @@
 //! styles, so they show in the navigation pane, real numbered and bulleted
 //! lists, tables, and embedded local images, all in the preview's fonts.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use anyhow::{Context as _, Result};
 use docx_rs as w;
-use markdown::{CalloutTone, MarkdownEvent, Property};
+use markdown::{CalloutTone, MarkdownEvent, Outline, Property, TocEntry};
 use pulldown_cmark::{Alignment, Event, Tag, TagEnd};
 
 use crate::html::collect_alt;
@@ -80,9 +83,17 @@ pub fn render_docx(source: &ExportSource, style: &ExportStyle) -> Result<Vec<u8>
                 writer.callouts.pop();
             }
             MarkdownEvent::FrontMatter(properties) => writer.properties(&properties),
+            MarkdownEvent::TableOfContents(entries) => writer.contents(&entries),
         }
     }
     writer.finish()
+}
+
+/// The hidden bookmark at the heading with outline index `ix`, which links
+/// to the heading point at. A leading underscore hides it from Word's
+/// bookmark list, as Word does for the targets of its own contents.
+fn heading_bookmark(ix: usize) -> String {
+    format!("_Toc{ix}")
 }
 
 struct Writer<'a> {
@@ -101,6 +112,12 @@ struct Writer<'a> {
     /// Inline content is the innermost callout's title.
     callout_title: bool,
     heading: Option<usize>,
+    /// The document's headings, to link to them by anchor.
+    outline: Outline,
+    /// Each heading's anchor, with its index in `outline`.
+    anchors: HashMap<Arc<str>, usize>,
+    /// The bookmark the open heading is marked with.
+    heading_bookmark: Option<usize>,
     /// The text of the code or HTML block being read.
     verbatim: Option<(&'static str, String)>,
     quote_depth: usize,
@@ -151,6 +168,13 @@ impl<'a> Writer<'a> {
         for definition in styles(style) {
             docx = docx.add_style(definition);
         }
+        let outline = Outline::parse(source.markdown);
+        let anchors = outline
+            .headings()
+            .iter()
+            .enumerate()
+            .map(|(ix, heading)| (heading.anchor().clone(), ix))
+            .collect();
         Self {
             source,
             style,
@@ -164,6 +188,9 @@ impl<'a> Writer<'a> {
             callouts: Vec::new(),
             callout_title: false,
             heading: None,
+            outline,
+            anchors,
+            heading_bookmark: None,
             verbatim: None,
             quote_depth: 0,
             lists: Vec::new(),
@@ -225,9 +252,17 @@ impl<'a> Writer<'a> {
     fn start(&mut self, tag: Tag) {
         match tag {
             Tag::Paragraph => self.finish_paragraph(),
-            Tag::Heading { level, .. } => {
+            Tag::Heading { level, id, .. } => {
                 self.finish_paragraph();
                 self.heading = Some(level as usize);
+                // Marked so a contents entry or an anchor link can go to it.
+                self.heading_bookmark = id.and_then(|id| self.anchors.get(&*id).copied());
+                if let Some(ix) = self.heading_bookmark {
+                    let paragraph = self
+                        .new_paragraph()
+                        .add_bookmark_start(ix, heading_bookmark(ix));
+                    self.paragraph = Some(paragraph);
+                }
             }
             Tag::BlockQuote(_) => {
                 self.finish_paragraph();
@@ -284,13 +319,17 @@ impl<'a> Writer<'a> {
             Tag::Strikethrough => self.strike += 1,
             Tag::Link { dest_url, .. } => {
                 self.paragraph();
-                // In-page anchors have no target in the Word document.
-                if !dest_url.starts_with('#') {
-                    self.link = Some(w::Hyperlink::new(
+                // An in-page anchor goes to its heading's bookmark; one that
+                // names no heading has no target in the Word document.
+                self.link = match dest_url.strip_prefix('#') {
+                    Some(fragment) => self.outline.find(fragment).map(|ix| {
+                        w::Hyperlink::new(heading_bookmark(ix), w::HyperlinkType::Anchor)
+                    }),
+                    None => Some(w::Hyperlink::new(
                         encode_uri(&dest_url),
                         w::HyperlinkType::External,
-                    ));
-                }
+                    )),
+                };
             }
             _ => {}
         }
@@ -300,6 +339,21 @@ impl<'a> Writer<'a> {
         match tag {
             TagEnd::Paragraph => self.finish_paragraph(),
             TagEnd::Heading(_) => {
+                if let Some(ix) = self.heading_bookmark.take() {
+                    // A link in the heading ends first, inside the mark.
+                    if let Some(link) = self.link.take() {
+                        let paragraph = self
+                            .paragraph
+                            .take()
+                            .unwrap_or_else(|| self.new_paragraph());
+                        self.paragraph = Some(paragraph.add_hyperlink(link));
+                    }
+                    let paragraph = self
+                        .paragraph
+                        .take()
+                        .unwrap_or_else(|| self.new_paragraph());
+                    self.paragraph = Some(paragraph.add_bookmark_end(ix));
+                }
                 self.finish_paragraph();
                 self.heading = None;
             }
@@ -563,6 +617,38 @@ impl<'a> Writer<'a> {
         let text = text.strip_suffix('\n').unwrap_or(text);
         let paragraph = self.new_paragraph().style(style).add_run(lines_run(text));
         self.push_paragraph(paragraph);
+    }
+
+    /// The headings in place of `[TOC]`, as in the preview: a quiet title,
+    /// then each heading as a link to it, stepped in under the heading it
+    /// belongs to. Nothing when the document has no headings.
+    fn contents(&mut self, entries: &[TocEntry]) {
+        self.finish_paragraph();
+        if entries.is_empty() {
+            return;
+        }
+        let title = self
+            .new_paragraph()
+            .keep_next(true)
+            .add_run(self.run("Contents").bold().color(SECONDARY_COLOR));
+        self.push_paragraph(title);
+        let depths = markdown::indent_levels(entries.iter().map(TocEntry::level));
+        for (entry, depth) in entries.iter().zip(depths) {
+            let mut paragraph = self.new_paragraph();
+            if depth > 0 {
+                paragraph = paragraph.indent(Some(LIST_INDENT * depth as i32), None, None, None);
+            }
+            let run = self.run(entry.text()).style(HYPERLINK);
+            paragraph = match self.anchors.get(entry.anchor()) {
+                Some(&ix) => paragraph.add_hyperlink(
+                    w::Hyperlink::new(heading_bookmark(ix), w::HyperlinkType::Anchor).add_run(run),
+                ),
+                None => paragraph.add_run(run),
+            };
+            self.push_paragraph(paragraph);
+        }
+        // The text after the contents keeps its distance, as after a list.
+        self.after_list = true;
     }
 
     /// Front matter as the preview shows it: a quiet table of properties
@@ -1006,6 +1092,31 @@ mod tests {
         let styles = part(&export("Text", &ExportStyle::default()), "word/styles.xml");
         assert!(styles.contains("w:ascii=\"Helvetica Neue\""));
         assert!(styles.contains("w:ascii=\"Menlo\""));
+    }
+
+    #[test]
+    fn contents_and_anchor_links_go_to_bookmarked_headings() {
+        let docx = export(
+            "[TOC]\n\n# Intro\n\nSee [setup](#set-up) and [nowhere](#missing).\n\n## Set up\n",
+            &ExportStyle::default(),
+        );
+        let document = part(&docx, "word/document.xml");
+        assert!(document.contains("w:name=\"_Toc0\""), "{document}");
+        assert!(document.contains("w:name=\"_Toc1\""), "{document}");
+        // The contents links each heading; the anchor link finds the second.
+        assert_eq!(
+            document.matches("w:anchor=\"_Toc0\"").count(),
+            1,
+            "{document}"
+        );
+        assert_eq!(
+            document.matches("w:anchor=\"_Toc1\"").count(),
+            2,
+            "{document}"
+        );
+        assert!(document.contains(">Contents<"));
+        // A link to no heading keeps its text, unlinked.
+        assert!(document.contains(">nowhere<"));
     }
 
     #[test]

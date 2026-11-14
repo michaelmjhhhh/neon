@@ -47,7 +47,9 @@ pub use workspace::{
     ShowEditor, ShowPreview, ShowSplit, SplitLeft, SplitRight, ToggleBold, ToggleItalic,
     ToggleLineNumbers, ToggleSidebar, ToggleTheme, ToggleZen, Workspace, ZoomIn, ZoomOut,
 };
-pub use workspace::{Push, ShowChanges, ShowFiles, ShowHistory, ShowSearch, StageAll, UnstageAll};
+pub use workspace::{
+    Push, ShowChanges, ShowFiles, ShowHistory, ShowOutline, ShowSearch, StageAll, UnstageAll,
+};
 
 const KEY_CONTEXT: &str = "Workspace";
 /// The sidebar's file tree while it has focus. Its Copy and Paste act on
@@ -74,6 +76,7 @@ gpui_kit::assets::icon_assets!(
         Quote,
         Regex,
         ScanText,
+        TableOfContents,
         WholeWord,
     ]
 );
@@ -171,6 +174,8 @@ pub fn init(cx: &mut App) {
         // Files and Changes in the sidebar, with VS Code's shortcuts on macOS.
         KeyBinding::new("secondary-shift-e", ShowFiles, Some(KEY_CONTEXT)),
         KeyBinding::new("ctrl-shift-g", ShowChanges, Some(KEY_CONTEXT)),
+        // The document's headings, with Typora's shortcut for its outline.
+        KeyBinding::new("ctrl-secondary-1", ShowOutline, Some(KEY_CONTEXT)),
         // Search in the folder takes ⌘⇧F, as in VS Code, Zed and Xcode, and
         // Find and Replace moves to ⌥⌘F, as in TextEdit and Pages. Both
         // bind in the field's context too: the editor binds ⌘⇧F to Replace

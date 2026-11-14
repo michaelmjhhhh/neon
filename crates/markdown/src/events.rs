@@ -17,6 +17,7 @@ use crate::document::{
     quote_kind_name, wiki_target,
 };
 use crate::inline::{highlight_markers, is_in, literal_prefix};
+use crate::outline::{Outline, TocEntry, is_toc_marker};
 
 /// One step through a document.
 #[derive(Clone, Debug, PartialEq)]
@@ -40,11 +41,21 @@ pub enum MarkdownEvent<'a> {
     /// Front matter, read as properties, in place of its metadata block.
     /// Front matter without keys stays a YAML code block.
     FrontMatter(Vec<Property>),
+    /// The document's headings, in place of a top-level paragraph of just
+    /// `[TOC]`. Each heading's start tag carries its entry's anchor as its
+    /// id, so an entry can link to it.
+    TableOfContents(Arc<[TocEntry]>),
 }
 
 /// The events of `source`, read as [`crate::MarkdownDocument::parse`] reads
-/// it.
+/// it. Each heading's start tag carries the anchor
+/// [`crate::Outline`] gives it as its id.
 pub fn events(source: &str) -> Vec<MarkdownEvent<'_>> {
+    let outline = Outline::parse(source);
+    let mut contents: Option<Arc<[TocEntry]>> = None;
+    // Block quotes, lists and footnotes open around the current event: a
+    // `[TOC]` paragraph inside one stays text, as in the preview.
+    let mut containers = 0usize;
     let mut raw: VecDeque<_> = Parser::new_ext(source, PARSER_OPTIONS)
         .into_offset_iter()
         .collect();
@@ -69,7 +80,41 @@ pub fn events(source: &str) -> Vec<MarkdownEvent<'_>> {
             continue;
         }
         writer.flush_inline();
+        match &event {
+            Event::Start(
+                Tag::BlockQuote(_) | Tag::List(_) | Tag::Item | Tag::FootnoteDefinition(_),
+            ) => containers += 1,
+            Event::End(
+                TagEnd::BlockQuote(_) | TagEnd::List(_) | TagEnd::Item | TagEnd::FootnoteDefinition,
+            ) => containers = containers.saturating_sub(1),
+            _ => {}
+        }
         match event {
+            Event::Start(Tag::Paragraph)
+                if containers == 0 && is_toc_marker(&source[range.clone()]) =>
+            {
+                skip_paragraph(&mut raw);
+                let entries = contents.get_or_insert_with(|| TocEntry::all(&outline));
+                writer.emit(MarkdownEvent::TableOfContents(entries.clone()));
+            }
+            Event::Start(Tag::Heading {
+                level,
+                id: None,
+                classes,
+                attrs,
+            }) => {
+                let id = outline
+                    .headings()
+                    .binary_search_by_key(&range.start, |heading| heading.source_range().start)
+                    .ok()
+                    .map(|ix| CowStr::from(outline.headings()[ix].anchor().to_string()));
+                writer.push(Event::Start(Tag::Heading {
+                    level,
+                    id,
+                    classes,
+                    attrs,
+                }));
+            }
             Event::Start(Tag::CodeBlock(_) | Tag::HtmlBlock) => {
                 writer.verbatim = true;
                 writer.push(event);
@@ -128,6 +173,20 @@ pub fn events(source: &str) -> Vec<MarkdownEvent<'_>> {
     writer.flush_inline();
     writer.flush_text();
     writer.out
+}
+
+/// Drop the events of a paragraph whose start was just taken from `raw`,
+/// through its end.
+fn skip_paragraph(raw: &mut VecDeque<(Event<'_>, Range<usize>)>) {
+    let mut depth = 0usize;
+    while let Some((event, _)) = raw.pop_front() {
+        match event {
+            Event::Start(_) => depth += 1,
+            Event::End(TagEnd::Paragraph) if depth == 0 => break,
+            Event::End(_) => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
 }
 
 /// An inline event, and how many of its first bytes are literal.
@@ -485,9 +544,41 @@ mod tests {
                         out.push_str(&format!("[{}={}]", property.key(), property.value()));
                     }
                 }
+                MarkdownEvent::TableOfContents(entries) => {
+                    out.push_str("<toc");
+                    for entry in entries.iter() {
+                        out.push_str(&format!(" {}#{}", entry.level(), entry.anchor()));
+                    }
+                    out.push('>');
+                }
             }
         }
         out
+    }
+
+    #[test]
+    fn headings_carry_their_anchor_as_their_id() {
+        let ids: Vec<_> = events("# Notes\n\n#\n\n> ## Notes\n")
+            .into_iter()
+            .filter_map(|event| match event {
+                MarkdownEvent::Event(Event::Start(Tag::Heading { id, .. })) => {
+                    Some(id.map(|id| id.to_string()))
+                }
+                _ => None,
+            })
+            .collect();
+        // An empty heading has no anchor.
+        assert_eq!(ids, [Some("notes".into()), None, Some("notes-1".into())]);
+    }
+
+    #[test]
+    fn a_top_level_toc_paragraph_lists_the_headings() {
+        assert!(trace("[toc]\n\n# A **b**\n\n### C\n").starts_with("<toc 1#a-b 3#c>"));
+        // Inside a list it stays text; GitLab's marker works too.
+        assert_eq!(
+            trace("- [TOC]\n\n[[_TOC_]]\n"),
+            "Start(List(None))Start(Item)[TOC]End(Item)End(List(false))<toc>"
+        );
     }
 
     #[test]

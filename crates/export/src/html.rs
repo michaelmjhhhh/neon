@@ -4,7 +4,7 @@
 use std::fmt::Write as _;
 
 use base64::Engine as _;
-use markdown::{CalloutTone, MarkdownEvent, Property};
+use markdown::{CalloutTone, MarkdownEvent, Property, TocEntry};
 use pulldown_cmark::{CowStr, Event, Tag, TagEnd};
 
 use crate::{
@@ -69,6 +69,9 @@ impl<'a> Iterator for Events<'a, '_> {
             MarkdownEvent::FrontMatter(properties) => {
                 return Some(Event::Html(properties_table(&properties).into()));
             }
+            MarkdownEvent::TableOfContents(entries) => {
+                return Some(Event::Html(contents(&entries).into()));
+            }
         };
         Some(match event {
             // The preview shows HTML as its source rather than rendering it.
@@ -110,6 +113,44 @@ fn properties_table(properties: &[Property]) -> String {
     }
     table.push_str("</tbody>\n</table>\n");
     table
+}
+
+/// The headings in place of `[TOC]`, as nested lists of links to their
+/// ids, stepped in as the preview steps them. Nothing when the document has
+/// no headings.
+fn contents(entries: &[TocEntry]) -> String {
+    if entries.is_empty() {
+        return String::new();
+    }
+    let mut html = String::from("<nav class=\"toc\">\n<p class=\"toc-title\">Contents</p>\n<ul>\n");
+    let depths = markdown::indent_levels(entries.iter().map(TocEntry::level));
+    let mut open = 0usize;
+    for (ix, (entry, depth)) in entries.iter().zip(depths).enumerate() {
+        if ix > 0 {
+            if depth > open {
+                // `indent_levels` steps in one level at a time.
+                html.push_str("\n<ul>\n");
+            } else {
+                html.push_str("</li>\n");
+                for _ in depth..open {
+                    html.push_str("</ul>\n</li>\n");
+                }
+            }
+        }
+        let _ = write!(
+            html,
+            "<li><a href=\"#{}\">{}</a>",
+            escape_html(entry.anchor()),
+            escape_html(entry.text())
+        );
+        open = depth;
+    }
+    html.push_str("</li>\n");
+    for _ in 0..open {
+        html.push_str("</ul>\n</li>\n");
+    }
+    html.push_str("</ul>\n</nav>\n");
+    html
 }
 
 impl Events<'_, '_> {
@@ -213,6 +254,12 @@ table.properties {{ width: 100%; margin: 0 0 1.5em; border-bottom: 1px solid #e3
 table.properties th, table.properties td {{ padding: 0 0 0.25em; border: 0; background: none; text-align: left; vertical-align: top; }}
 table.properties th {{ width: 7rem; padding-right: 1rem; font-weight: 400; color: #5c5f68; overflow-wrap: anywhere; }}
 table.properties tr:last-child > * {{ padding-bottom: 1em; }}
+nav.toc {{ margin: 0 0 1.5em; }}
+nav.toc .toc-title {{ margin: 0 0 0.25em; font-size: 0.875em; font-weight: 600; color: #5c5f68; }}
+nav.toc ul {{ margin: 0; padding-left: 1.25em; list-style: none; }}
+nav.toc > ul {{ padding-left: 0; }}
+nav.toc li + li, nav.toc li > ul {{ margin-top: 0.15em; }}
+nav.toc a {{ text-decoration: none; }}
 @media print {{
   main {{ max-width: none; padding: 0; }}
   pre, blockquote, tr, img, .callout {{ break-inside: avoid; }}
@@ -332,12 +379,41 @@ mod tests {
     }
 
     #[test]
+    fn a_toc_lists_the_headings_as_nested_links() {
+        let html = export(
+            "[TOC]\n\n# Intro\n\n### Deep\n\n## Notes & <tips>\n\n# Intro\n",
+            &ExportStyle::default(),
+        );
+        let start = html.find("<nav class=\"toc\">").expect("a contents block");
+        let end = html[start..].find("</nav>").unwrap() + start;
+        assert_eq!(
+            &html[start..end],
+            "<nav class=\"toc\">\n<p class=\"toc-title\">Contents</p>\n<ul>\n\
+             <li><a href=\"#intro\">Intro</a>\n<ul>\n\
+             <li><a href=\"#deep\">Deep</a></li>\n\
+             <li><a href=\"#notes--tips\">Notes &amp; &lt;tips&gt;</a></li>\n\
+             </ul>\n</li>\n\
+             <li><a href=\"#intro-1\">Intro</a></li>\n</ul>\n"
+        );
+        assert!(html.contains("<h1 id=\"intro\">Intro</h1>"));
+        assert!(html.contains("<h3 id=\"deep\">Deep</h3>"));
+        assert!(html.contains("<h1 id=\"intro-1\">Intro</h1>"));
+    }
+
+    #[test]
+    fn a_toc_without_headings_leaves_nothing() {
+        let html = export("[TOC]\n\nJust text.\n", &ExportStyle::default());
+        assert!(!html.contains("<nav class=\"toc\">"));
+        assert!(!html.contains("[TOC]"));
+    }
+
+    #[test]
     fn renders_the_markdown_the_preview_supports() {
         let markdown = "---\ntitle: x\n---\n\n# Title\n\n- [x] done\n- [ ] todo\n\n| a | b |\n|---|--:|\n| 1 | 2 |\n\n~~gone~~ and a note[^1].\n\n[^1]: The note.\n";
         let html = export(markdown, &ExportStyle::default());
         assert!(html.contains("<table class=\"properties\">"));
         assert!(html.contains("<tr><th scope=\"row\">title</th><td>x</td></tr>"));
-        assert!(html.contains("<h1>Title</h1>"));
+        assert!(html.contains("<h1 id=\"title\">Title</h1>"));
         assert!(html.contains("<span class=\"task done\">\u{2611}</span> done"));
         assert!(html.contains("<span class=\"task\">\u{2610}</span> todo"));
         assert!(html.contains("<td style=\"text-align: right\">2</td>"));

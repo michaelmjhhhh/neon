@@ -61,13 +61,17 @@ use crate::zen::{Zen, ZenView};
 mod attachments;
 mod changes;
 mod history;
+mod outline;
 mod panes;
 mod search;
 mod tabs;
 mod zen_mode;
 use changes::{Changes, SidebarView};
-pub use changes::{Commit, Push, ShowChanges, ShowFiles, ShowHistory, StageAll, UnstageAll};
+pub use changes::{
+    Commit, Push, ShowChanges, ShowFiles, ShowHistory, ShowOutline, StageAll, UnstageAll,
+};
 use history::History;
+use outline::OutlineView;
 use panes::{DraggedFile, PaneSplit, Side};
 use search::Search;
 pub use search::{SelectNextMatch, SelectPreviousMatch, ShowSearch};
@@ -142,6 +146,14 @@ pub(crate) const SHEET_HEADER_REMS: f32 = 2.5;
 const SPLIT_PANE_MIN_REMS: f32 = 20.;
 /// The sidebar's default width, in rems.
 pub(crate) const SIDEBAR_WIDTH_REMS: f32 = 15.;
+/// The sidebar's narrowest and widest, in rems. It is wider than the
+/// narrowest when its top row needs more; see
+/// [`Workspace::sidebar_min_width`].
+const SIDEBAR_MIN_WIDTH_REMS: f32 = 12.;
+const SIDEBAR_MAX_WIDTH_REMS: f32 = 22.;
+/// The space between the sidebar's top-row controls and what is beside
+/// them: the window controls on one side, the sheet on the other.
+const SIDEBAR_CONTROLS_INSET_REMS: f32 = 0.5;
 /// The editor's widest measure when it has the sheet to itself, in
 /// characters of the editor font: room for prose and most code, short
 /// enough that the eye finds the next line, as Obsidian's readable line
@@ -270,6 +282,12 @@ pub struct Workspace {
     history: History,
     /// Text found in the folder's files; see [`search`].
     search: Search,
+    /// The active document's headings; see [`outline`].
+    outline: Entity<OutlineView>,
+    /// The width the sidebar's view switch and toggle last laid out at.
+    sidebar_controls_width: Rc<Cell<Pixels>>,
+    /// A heading a link to another note named, shown once the note is read.
+    pending_heading: Option<String>,
     /// The sidebar and sheet widths, and the split between editor and
     /// preview. Owned here so they outlive the frames that do not show them:
     /// hiding the sidebar or leaving Split does not reset them.
@@ -350,6 +368,10 @@ impl Workspace {
         let changes = Changes::new(window, cx);
         let history = History::new(cx);
         let search = Search::new(window, cx);
+        let outline = cx.new({
+            let workspace = cx.weak_entity();
+            |_| OutlineView::new(workspace)
+        });
         let settings = cx.new(|cx| SettingsView::new(typography.clone(), window, cx));
         let sidebar = cx.new({
             let workspace = cx.weak_entity();
@@ -466,6 +488,9 @@ impl Workspace {
             changes,
             history,
             search,
+            outline,
+            sidebar_controls_width: Rc::default(),
+            pending_heading: None,
             panes: cx.new(|_| ResizableState::default()),
             split: cx.new(|_| ResizableState::default()),
             pane_sizes: cx.new(|_| ResizableState::default()),
@@ -623,6 +648,7 @@ impl Workspace {
                         }
                     }
                     Err(error) => {
+                        this.pending_heading = None;
                         this.remember_session(cx);
                         let name = file_name(&path);
                         window.push_notification(
@@ -635,6 +661,7 @@ impl Workspace {
                 // is selected if this read showed its file, and forgotten
                 // otherwise.
                 this.reveal_pending_search_match(window, cx);
+                this.reveal_pending_heading(window, cx);
                 cx.notify();
             })
             .ok();
@@ -675,6 +702,7 @@ impl Workspace {
         let source = self.tab().editor.read(cx).text().clone();
         self.word_count
             .update(cx, |count, cx| count.set_source(source.clone(), cx));
+        self.update_outline(true, cx);
         self.count_selection(cx);
         let base_dir = path.as_deref().and_then(Path::parent).map(Arc::from);
         self.tab()
@@ -734,6 +762,7 @@ impl Workspace {
         }
         self.word_count
             .update(cx, |count, cx| count.set_source(source, cx));
+        self.update_outline(false, cx);
         self.count_selection(cx);
         self.zen_follow_cursor(cx);
         self.hide_zen_chrome(cx);
@@ -769,6 +798,11 @@ impl Workspace {
         self.tab_mut().revealed_cursor = Some(cursor);
         let text = editor.read(cx).text().clone();
         self.update_slash_menu(&editor, &text, cursor, false, cx);
+        if self.outline_shown() {
+            let position = self.outline_position(cx);
+            self.outline
+                .update(cx, |outline, cx| outline.set_position(position, cx));
+        }
         self.zen_follow_cursor(cx);
         self.glide_zen_caret(window, cx);
         self.draw_soon(window, cx);
@@ -1233,8 +1267,9 @@ impl Workspace {
         }
         // A relative path is a link from an unsaved document: it names no
         // file yet, only a note to look for.
+        let heading = action.heading.clone();
         if action.path.is_absolute() && action.path.is_file() {
-            self.open_linked_note(action.path.clone(), window, cx);
+            self.open_linked_note(action.path.clone(), heading, window, cx);
             return;
         }
         let name = file_name(&action.link);
@@ -1247,7 +1282,7 @@ impl Workspace {
         cx.spawn_in(window, async move |this, cx| {
             let found = search.await;
             this.update_in(cx, |this, window, cx| match found {
-                Some(path) => this.open_linked_note(path, window, cx),
+                Some(path) => this.open_linked_note(path, heading, window, cx),
                 None => Self::report_missing_note(&name, window, cx),
             })
             .ok();
@@ -1257,13 +1292,21 @@ impl Workspace {
 
     /// Show a linked note: a note already open comes forward; otherwise it
     /// replaces this tab, or opens in a new one when this tab has edits to
-    /// keep.
-    fn open_linked_note(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    /// keep. Then show the `heading` the link named, if any.
+    fn open_linked_note(
+        &mut self,
+        path: PathBuf,
+        heading: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.is_busy() {
             return;
         }
+        self.pending_heading = heading;
         if let Some(ix) = self.tab_index_of_path(&path) {
             self.activate_tab(ix, window, cx);
+            self.reveal_pending_heading(window, cx);
             return;
         }
         if self.tab().document.is_dirty() {
@@ -2246,6 +2289,7 @@ impl Workspace {
         // Changes and History replace the folder's header and tree.
         let git_view = match self.sidebar_view {
             SidebarView::Files => None,
+            SidebarView::Outline => Some(self.outline.clone().into_any_element()),
             SidebarView::Search => Some(self.render_search(window, cx)),
             _ if !self.has_repository() => None,
             SidebarView::Changes => Some(self.render_changes(window, cx)),
@@ -2273,12 +2317,19 @@ impl Workspace {
                     div()
                         .flex()
                         .flex_1()
-                        .items_center()
                         .justify_end()
-                        .gap_1()
-                        .pr_2()
-                        .child(switch)
-                        .child(sidebar_toggle(true, cx)),
+                        .pr(window.rem_size() * SIDEBAR_CONTROLS_INSET_REMS)
+                        .child(
+                            div()
+                                .relative()
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap_1()
+                                .child(switch)
+                                .child(sidebar_toggle(true, cx))
+                                .child(self.measure_sidebar_controls(cx)),
+                        ),
                 ),
         );
         if let Some(view) = git_view {
@@ -3212,6 +3263,40 @@ impl Workspace {
             )
     }
 
+    /// Records the width of the sidebar's switch and toggle as they lay
+    /// out, so the sidebar never gets narrower than they need; see
+    /// [`Self::sidebar_min_width`]. A change redraws the panes with the new
+    /// minimum.
+    fn measure_sidebar_controls(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
+        let measured = self.sidebar_controls_width.clone();
+        let workspace = cx.weak_entity();
+        gpui_kit::canvas(
+            move |bounds, _, cx| {
+                if measured.replace(bounds.size.width) != bounds.size.width {
+                    // Not while laying out: the panes take it next frame.
+                    cx.defer(move |cx| {
+                        workspace.update(cx, |_, cx| cx.notify()).ok();
+                    });
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0()
+    }
+
+    /// The narrowest the sidebar gets: its usual minimum, or wider when its
+    /// view switch and toggle need more room beside the window controls, as
+    /// with every view of a folder in a Git repository.
+    fn sidebar_min_width(&self, window: &Window) -> Pixels {
+        let rem = window.rem_size();
+        let controls = WINDOW_CONTROLS_END
+            + rem * SIDEBAR_CONTROLS_INSET_REMS
+            + self.sidebar_controls_width.get()
+            + rem * SIDEBAR_CONTROLS_INSET_REMS;
+        controls.max(rem * SIDEBAR_MIN_WIDTH_REMS)
+    }
+
     /// The folder sidebar beside the document sheet. Without the sidebar the
     /// sheet stands alone, and the group's sizes wait untouched for its
     /// return: a group with one panel would forget the sidebar's width.
@@ -3225,7 +3310,10 @@ impl Workspace {
             .child(
                 resizable_panel()
                     .size(window.rem_size() * SIDEBAR_WIDTH_REMS)
-                    .size_range(window.rem_size() * 12. ..window.rem_size() * 22.)
+                    .size_range({
+                        let min = self.sidebar_min_width(window);
+                        min..(window.rem_size() * SIDEBAR_MAX_WIDTH_REMS).max(min)
+                    })
                     .child(
                         self.sidebar
                             .clone()
@@ -3555,6 +3643,13 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Every change to what the sidebar shows redraws this view, so the
+        // Outline view learns here whether it is on screen.
+        if self.outline.read(cx).is_shown() != self.outline_shown() {
+            cx.defer_in(window, |this, window, cx| {
+                this.sync_outline_shown(window, cx)
+            });
+        }
         let content = if self.settings_open {
             self.settings.clone().into_any_element()
         } else if self.zen.is_some() {
@@ -3658,6 +3753,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::close_settings))
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::show_files))
+            .on_action(cx.listener(Self::show_outline))
             .on_action(cx.listener(Self::show_changes))
             .on_action(cx.listener(Self::show_history))
             .on_action(cx.listener(Self::show_search))
@@ -3770,7 +3866,11 @@ fn quiet_resize_handle() -> ResizeHandleRenderer {
 
 /// A sidebar placeholder that names what is missing and offers the action
 /// that fills it.
-fn sidebar_empty_state(icon: IconName, title: &'static str, description: &'static str) -> Empty {
+fn sidebar_empty_state(
+    icon: impl Into<gpui_kit::component::Icon>,
+    title: &'static str,
+    description: &'static str,
+) -> Empty {
     Empty::new()
         .flex_none()
         .justify_start()
@@ -3781,7 +3881,7 @@ fn sidebar_empty_state(icon: IconName, title: &'static str, description: &'stati
                 .media(
                     EmptyMedia::new()
                         .with_variant(EmptyMediaVariant::Icon)
-                        .child(gpui_kit::component::Icon::new(icon).small()),
+                        .child(icon.into().small()),
                 )
                 .title(EmptyTitle::new().child(title))
                 .description(EmptyDescription::new().child(description)),

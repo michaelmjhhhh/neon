@@ -14,15 +14,16 @@ use gpui_kit::{
     AnyElement, App, Bounds, ElementId, Entity, FontStyle, FontWeight, HighlightStyle, Hsla,
     InteractiveElement as _, InteractiveText, IntoElement, LineLayout, ObjectFit,
     ParentElement as _, Pixels, SharedString, StatefulInteractiveElement as _, StrikethroughStyle,
-    Styled as _, StyledImage as _, StyledText, TextAlign, TextLayout, UnderlineStyle, WrapBoundary,
-    WrappedLineLayout, canvas, div, fill, img, point, prelude::FluentBuilder as _, px, relative,
-    rems, size,
+    Styled as _, StyledImage as _, StyledText, TextAlign, TextLayout, UnderlineStyle, WeakEntity,
+    WrapBoundary, WrappedLineLayout, canvas, div, fill, img, point, prelude::FluentBuilder as _,
+    px, relative, rems, size,
 };
 use markdown::{
     Block, BlockKind, Callout, CalloutTone, CodeBlock, ColumnAlignment, Heading, Image,
-    InlineStyle, InlineText, MarkdownList, Property, Table,
+    InlineStyle, InlineText, MarkdownList, Property, Table, TocEntry,
 };
 
+use crate::MarkdownPreview;
 use crate::code_highlight::CodeHighlights;
 use crate::image_cache::PreviewImageCache;
 
@@ -37,6 +38,10 @@ const BODY_LINE_HEIGHT: f32 = 1.7;
 /// The narrowest a table column gets before the table scrolls sideways.
 const TABLE_CELL_MIN_REMS: f32 = 6.;
 
+/// How far each level of a contents block steps in, in rems: about the
+/// width of a list marker's lane, so nested entries line up like a list.
+const TOC_INDENT_REMS: f32 = 1.25;
+
 /// How blocks are set: their typeface and scale, and the column they sit in.
 pub(crate) struct BlockLayout {
     pub(crate) font_family: SharedString,
@@ -50,6 +55,8 @@ pub(crate) struct BlockLayout {
     pub(crate) readable_line_length: bool,
     /// Syntax colors for code blocks.
     pub(crate) code_highlights: Arc<CodeHighlights>,
+    /// The preview the blocks are in, which a link to a heading scrolls.
+    pub(crate) preview: WeakEntity<MarkdownPreview>,
 }
 
 pub(crate) fn render_block(
@@ -68,9 +75,10 @@ pub(crate) fn render_block(
         column_insets,
         readable_line_length,
         code_highlights,
+        preview,
     } = layout;
     let (font_scale, column_insets) = (*font_scale, *column_insets);
-    let mut renderer = BlockRenderer::new(base_dir, image_cache, code_highlights, cx);
+    let mut renderer = BlockRenderer::new(base_dir, image_cache, code_highlights, preview, cx);
     renderer.font_scale = font_scale;
     renderer.palette.inline_code_font_family = inline_code_family.clone();
     let (content, continues_list) = match (block.kind(), list_items) {
@@ -157,6 +165,7 @@ struct BlockRenderer<'a> {
     base_dir: Option<&'a Arc<Path>>,
     image_cache: &'a Entity<PreviewImageCache>,
     code_highlights: &'a CodeHighlights,
+    preview: &'a WeakEntity<MarkdownPreview>,
     palette: Palette,
     /// Counter for element ids inside the block. The block's content is
     /// immutable, so the same content always yields the same ids.
@@ -169,6 +178,7 @@ impl<'a> BlockRenderer<'a> {
         base_dir: Option<&'a Arc<Path>>,
         image_cache: &'a Entity<PreviewImageCache>,
         code_highlights: &'a CodeHighlights,
+        preview: &'a WeakEntity<MarkdownPreview>,
         cx: &App,
     ) -> Self {
         let theme = cx.theme();
@@ -177,6 +187,7 @@ impl<'a> BlockRenderer<'a> {
             base_dir,
             image_cache,
             code_highlights,
+            preview,
             palette: Palette {
                 foreground: theme.foreground,
                 muted: theme.muted,
@@ -225,6 +236,7 @@ impl<'a> BlockRenderer<'a> {
             BlockKind::Table(table) => self.render_table(table),
             BlockKind::Footnote { label, children } => self.render_footnote(label, children),
             BlockKind::Html(html) => self.render_html(html),
+            BlockKind::TableOfContents(entries) => self.render_contents(entries),
             BlockKind::Rule => div()
                 .w_full()
                 .my_4()
@@ -343,9 +355,10 @@ impl<'a> BlockRenderer<'a> {
             let ranges = text.links().iter().map(|link| link.range()).collect();
             let urls: Vec<Arc<str>> = text.links().iter().map(|link| link.url().clone()).collect();
             let base_dir = self.base_dir.cloned();
+            let preview = self.preview.clone();
             InteractiveText::new(self.next_id("inline"), styled)
                 .on_click(ranges, move |ix, window, cx| {
-                    open_link(&urls[ix], base_dir.as_deref(), window, cx);
+                    open_link(&urls[ix], base_dir.as_deref(), &preview, window, cx);
                 })
                 .into_any_element()
         };
@@ -735,6 +748,63 @@ impl<'a> BlockRenderer<'a> {
             .into_any_element()
     }
 
+    /// The document's headings in place of `[TOC]`, each a link to its
+    /// heading, stepped in under the heading it belongs to.
+    fn render_contents(&mut self, entries: &[TocEntry]) -> AnyElement {
+        let palette = &self.palette;
+        let label = div()
+            .text_size(rems(0.875 * self.font_scale))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(palette.muted_foreground)
+            .child("Contents");
+        if entries.is_empty() {
+            return div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(label)
+                .child(
+                    div()
+                        .text_color(palette.muted_foreground)
+                        .child("Headings you add appear here."),
+                )
+                .into_any_element();
+        }
+        let depths = markdown::indent_levels(entries.iter().map(TocEntry::level));
+        // Entries read as text, like a book's contents; each lights up as
+        // a link under the pointer. A block of link color would shout.
+        let (link, foreground) = (palette.link, palette.foreground);
+        let rows: Vec<_> = entries
+            .iter()
+            .zip(depths)
+            .map(|(entry, depth)| {
+                let anchor = entry.anchor().clone();
+                let preview = self.preview.clone();
+                div()
+                    .id(self.next_id("contents-entry"))
+                    .pl(rems(TOC_INDENT_REMS * self.font_scale * depth as f32))
+                    .text_color(foreground)
+                    .cursor_pointer()
+                    .hover(move |style| style.text_color(link))
+                    .on_click(move |_, _, cx| {
+                        preview
+                            .update(cx, |preview, cx| preview.reveal_heading(&anchor, cx))
+                            .ok();
+                    })
+                    .child(SharedString::from(entry.text().clone()))
+                    .into_any_element()
+            })
+            .collect();
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .line_height(relative(BODY_LINE_HEIGHT))
+            .child(label)
+            .child(div().flex().flex_col().children(rows))
+            .into_any_element()
+    }
+
     fn render_html(&mut self, html: &Arc<str>) -> AnyElement {
         div()
             .font_family(self.palette.mono_font_family.clone())
@@ -1065,9 +1135,18 @@ fn resolve_image(url: &str, base_dir: Option<&Path>) -> Option<gpui_kit::ImageSo
 
 /// Open a link the way a browser would: web and mail targets go to the
 /// system, another note opens in Neon, other files open in their own app, and
-/// in-page anchors do nothing.
-fn open_link(url: &str, base_dir: Option<&Path>, window: &mut gpui_kit::Window, cx: &mut App) {
-    if url.starts_with('#') {
+/// an in-page anchor scrolls the preview to its heading.
+fn open_link(
+    url: &str,
+    base_dir: Option<&Path>,
+    preview: &WeakEntity<MarkdownPreview>,
+    window: &mut gpui_kit::Window,
+    cx: &mut App,
+) {
+    if let Some(fragment) = url.strip_prefix('#') {
+        preview
+            .update(cx, |preview, cx| preview.reveal_heading(fragment, cx))
+            .ok();
         return;
     }
     if has_scheme(url) {
@@ -1081,7 +1160,18 @@ fn open_link(url: &str, base_dir: Option<&Path>, window: &mut gpui_kit::Window, 
         // An unsaved document has no folder of its own; the window looks
         // for the note in the folder it shows.
         let path = resolve_path(url, base_dir).unwrap_or_else(|| link.clone());
-        window.dispatch_action(Box::new(crate::OpenLinkedFile { path, link }), cx);
+        let heading = url
+            .split_once('#')
+            .map(|(_, fragment)| fragment.to_string())
+            .filter(|fragment| !fragment.is_empty());
+        window.dispatch_action(
+            Box::new(crate::OpenLinkedFile {
+                path,
+                link,
+                heading,
+            }),
+            cx,
+        );
     } else if let Some(path) = resolve_path(url, base_dir) {
         cx.open_with_system(&path);
     }

@@ -50,6 +50,9 @@ pub struct OpenLinkedFile {
     /// window can look for the note elsewhere in its folder, as Obsidian
     /// resolves `[[Note]]` by name.
     pub link: std::path::PathBuf,
+    /// The heading the link names after its `#`, as in `Note.md#setup` or
+    /// `[[Note#Setup]]`, to show once the note is open.
+    pub heading: Option<String>,
 }
 
 /// How far beyond the viewport blocks are laid out ahead of scrolling, so fast
@@ -438,6 +441,73 @@ impl MarkdownPreview {
         if (before.item_ix, before.offset_in_item) != (after.item_ix, after.offset_in_item) {
             cx.notify();
         }
+    }
+
+    /// Scroll so the row rendered from the source byte `offset` starts at
+    /// the top of the viewport, as for a heading picked in an outline. While
+    /// newer source waits to be parsed, the row is found again once it is.
+    pub fn scroll_to_offset(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.source_anchor = None;
+        match self.rows.row_for_offset(offset, &self.document) {
+            Some(item_ix) => {
+                self.list_state.scroll_to(ListOffset {
+                    item_ix,
+                    offset_in_item: px(0.),
+                });
+                self.pending_reveal_offset = self.is_parsing().then_some(offset);
+            }
+            None => self.pending_reveal_offset = Some(offset),
+        }
+        cx.notify();
+    }
+
+    /// Scroll to the heading a link's `fragment` names, such as
+    /// `getting-started` for `[Setup](#getting-started)`; see
+    /// [`markdown::Outline::find`]. Returns whether there is one.
+    pub fn reveal_heading(&mut self, fragment: &str, cx: &mut Context<Self>) -> bool {
+        let outline = self.document.outline();
+        let Some(ix) = outline.find(fragment) else {
+            return false;
+        };
+        let offset = outline.headings()[ix].source_range().start;
+        self.scroll_to_offset(offset, cx);
+        true
+    }
+
+    /// The source byte offset where the reader is: the start of the row at
+    /// a reading line just below the viewport's top, as deep as the space
+    /// above the first block, so a heading brought to the top is where the
+    /// reader is even when its section is short. Once the end is reached,
+    /// the last row in view, so a short last section counts as read. `None`
+    /// before anything is laid out.
+    pub fn reading_offset(&self) -> Option<usize> {
+        let count = self.rows.len(&self.document);
+        if count == 0 {
+            return None;
+        }
+        let viewport = self.list_state.viewport_bounds();
+        let at_end = -self.list_state.scroll_px_offset_for_scrollbar().y
+            >= self.list_state.max_offset_for_scrollbar().y - px(1.);
+        let reading_line = if at_end {
+            viewport.bottom() - px(1.)
+        } else {
+            viewport.top() + self.top_padding
+        };
+        let first = self.list_state.logical_scroll_top().item_ix.min(count - 1);
+        let mut found = None;
+        for ix in first..count {
+            let Some(bounds) = self.list_state.bounds_for_item(ix) else {
+                break;
+            };
+            if bounds.top() > reading_line {
+                break;
+            }
+            found = Some(ix);
+            if bounds.bottom() > reading_line {
+                break;
+            }
+        }
+        Some(self.rows.source_range(found?, &self.document).start)
     }
 
     /// Scroll so the source at `anchor.line` sits `anchor.y` below the
@@ -853,6 +923,7 @@ impl Render for MarkdownPreview {
             column_insets: self.column_insets,
             readable_line_length: self.readable_line_length,
             code_highlights: self.code_highlights.clone(),
+            preview: cx.weak_entity(),
         };
         let base_dir = self.base_dir.clone();
         let is_empty = document.blocks().is_empty() && !self.is_parsing();

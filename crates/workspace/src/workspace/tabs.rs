@@ -247,6 +247,7 @@ impl Workspace {
         let source = editor.read(cx).text().clone();
         self.word_count
             .update(cx, |count, cx| count.set_source(source, cx));
+        self.update_outline(true, cx);
         self.count_selection(cx);
         self.scroll_metrics
             .update(cx, |metrics, cx| metrics.set_panes(editor, preview, cx));

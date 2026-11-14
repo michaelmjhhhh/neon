@@ -36,6 +36,7 @@ Neon is built on [GPUI](https://github.com/zed-industries/zed/tree/main/crates/g
 **Reading**
 
 - **Live preview** in Charter, a book face, of headings, links, nested and numbered lists, task lists, block quotes, code, tables with alignment, images and footnotes.
+- **Outline and table of contents.** The sidebar lists the document's headings and lights the section you are in; click one to go there. Write `[TOC]` for a table of contents in the preview and the exports, and link to any heading with `#anchor` or `[[Note#Heading]]`.
 - **Obsidian-style notes:** callouts (`> [!tip]`), `==highlights==`, front matter as properties, and `[[wikilinks]]` that open the linked note in Neon.
 - **Three layouts:** Editor, Split and Preview. In Split, the preview follows the cursor; in Editor, the text sits in a centered column of readable width.
 - **Zen Mode.** The document alone, full screen, in a centered column. The paragraph you are writing stays bright while the rest fades, and the line you type on stays at the middle of the screen.
@@ -90,6 +91,7 @@ gh attestation verify Neon-<version>-macos.dmg --repo michaelmjhhhh/neon
 | Close window | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>W</kbd> | Find and replace | <kbd>⌥</kbd> <kbd>⌘</kbd> <kbd>F</kbd> |
 | Files / Changes in sidebar | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>E</kbd> / <kbd>⌃</kbd> <kbd>⇧</kbd> <kbd>G</kbd> | Indent / outdent list item | <kbd>Tab</kbd> / <kbd>⇧</kbd> <kbd>Tab</kbd> |
 | Search in folder | <kbd>⌘</kbd> <kbd>⇧</kbd> <kbd>F</kbd> | | |
+| Outline in sidebar | <kbd>⌃</kbd> <kbd>⌘</kbd> <kbd>1</kbd> | | |
 | Commit, in the message | <kbd>⌘</kbd> <kbd>↩</kbd> | | |
 
 <kbd>⌘</kbd> <kbd>}</kbd> and <kbd>⌘</kbd> <kbd>{</kbd> also switch tabs. In the search field, <kbd>↩</kbd> or <kbd>↓</kbd> opens the next match and <kbd>⇧</kbd> <kbd>↩</kbd> or <kbd>↑</kbd> the previous one. In the preview, <kbd>Space</kbd> and <kbd>⇧</kbd> <kbd>Space</kbd> page down and up, and <kbd>⌘</kbd> <kbd>↑</kbd> <kbd>↓</kbd> jump to the top and bottom.
