@@ -35,6 +35,12 @@ Groups, in this order:
 - Write `[TOC]` (or `[[_TOC_]]`) on a line of its own for a table of contents in the preview, in HTML, PDF and Word exports. Each entry goes to its heading and updates as headings change.
 - Links to a heading work: `[Setup](#getting-started)` with GitHub's anchors, `[[#Heading]]`, and `[[Note#Heading]]` or `note.md#setup`, which open the note at that heading; a link to a heading that isn't there says so. Headings in exported HTML carry the same anchors, and Word exports link them too.
 
+### Changed
+
+- Sidebar: each row shows a folder or note icon, so notes read apart from folders at a glance.
+- Sidebar: the selected row is a deeper gray than the row under the pointer, so the two no longer look the same.
+- Sidebar: folders no longer show a file count beside their name; the folder's total stays in the sidebar header.
+
 ### Fixed
 
 - The sidebar no longer gets narrower than its view switch and its hide button need, so they stay clear of the window controls and the document. A folder in a Git repository, with all five views, widens the sidebar a little.
