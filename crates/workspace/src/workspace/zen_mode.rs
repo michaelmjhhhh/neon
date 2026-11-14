@@ -5,7 +5,7 @@ use std::time::Instant;
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::RopeExt as _;
-use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, TitleBar};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, TitleBar};
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, App, Context, EntityInputHandler as _,
     InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
@@ -570,21 +570,16 @@ impl Workspace {
     }
 }
 
-/// The header's Zen control. It rides at the end of the layout switch's
-/// track, so it takes the frame of one of that switch's small icon segments:
-/// GPUI Kit draws those 18 px tall, 1.25 times as wide, with corners 2 px
-/// inside the track's. Its icon keeps the unselected segments' color.
+/// The header's Zen control: a small icon button like the layouts beside it,
+/// in their unselected color.
 pub(super) fn enter_zen_button(cx: &Context<Workspace>) -> Button {
-    let segment_height = px(18.);
-    Button::new("enter-zen")
-        .small()
-        .ghost()
-        .icon(Icon::new(AssetIcon::ScanText))
-        .h(segment_height)
-        .w(segment_height * 1.25)
-        .rounded(cx.theme().radius - px(2.))
-        .text_color(cx.theme().tab_foreground)
-        .accessibility_label("Enter Zen Mode")
-        .tooltip_with_action("Enter Zen Mode", &ToggleZen, Some(KEY_CONTEXT))
-        .on_click(cx.listener(|this, _, window, cx| this.enter_zen(window, cx)))
+    super::header_icon_button(
+        "enter-zen",
+        AssetIcon::ScanText,
+        "Enter Zen Mode",
+        &ToggleZen,
+        false,
+        cx,
+    )
+    .on_click(cx.listener(|this, _, window, cx| this.enter_zen(window, cx)))
 }

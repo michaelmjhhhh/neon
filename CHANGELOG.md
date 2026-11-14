@@ -40,6 +40,8 @@ Groups, in this order:
 - Sidebar: each row shows a folder or note icon, so notes read apart from folders at a glance.
 - Sidebar: the selected row is a deeper gray than the row under the pointer, so the two no longer look the same.
 - Sidebar: folders no longer show a file count beside their name; the folder's total stays in the sidebar header.
+- Document header: the layout switch is a row of quiet icon buttons instead of a filled gray track; only the current layout is shaded, so the switch no longer outweighs the file name.
+- Status bar: reading progress shows as a percentage only; the thin meter beside it is gone.
 
 ### Fixed
 

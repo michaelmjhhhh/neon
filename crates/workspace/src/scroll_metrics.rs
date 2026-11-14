@@ -2,11 +2,9 @@ use std::time::Duration;
 #[cfg(feature = "diagnostics")]
 use std::time::Instant;
 
-use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::input::{EditorState, RopeExt as _};
 use gpui_kit::{
     Context, Entity, IntoElement, ParentElement as _, Render, Styled as _, Task, Window, div, px,
-    relative,
 };
 use markdown_preview::MarkdownPreview;
 
@@ -137,39 +135,18 @@ impl ScrollMetrics {
 }
 
 impl Render for ScrollMetrics {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         #[cfg(feature = "diagnostics")]
         let fps = self
             .fps
             .map_or_else(|| "— FPS".to_string(), |fps| format!("{fps} FPS"));
-        // The meter reads as reading progress, not zoom. The number keeps a
-        // slot as wide as "100%", so the meter stays put while it changes.
+        // The number keeps a slot as wide as "100%", so the word count
+        // beside it stays put while it changes.
         let progress = div()
+            .min_w_8()
             .flex()
-            .items_center()
-            .gap_1p5()
-            .child(
-                div()
-                    .min_w_8()
-                    .flex()
-                    .justify_end()
-                    .child(format!("{}%", self.viewed_percent)),
-            )
-            .child(
-                div()
-                    .w_8()
-                    .h_0p5()
-                    .rounded_full()
-                    .overflow_hidden()
-                    .bg(theme.border)
-                    .child(
-                        div()
-                            .h_full()
-                            .w(relative(f32::from(self.viewed_percent) / 100.))
-                            .bg(theme.muted_foreground),
-                    ),
-            );
+            .justify_end()
+            .child(format!("{}%", self.viewed_percent));
         let metrics = div().flex().items_center().gap_4();
         #[cfg(feature = "diagnostics")]
         let metrics = metrics.child(div().min_w_16().child(fps));

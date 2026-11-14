@@ -31,11 +31,9 @@ use gpui_kit::component::resizable::{
 };
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::status_bar::StatusBar;
-use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::tree::{Tree, TreeEntry, TreeEvent, TreeState};
 use gpui_kit::component::{ActiveTheme as _, TitleBar, WindowExt as _};
-use gpui_kit::component::{Disableable as _, IconName, Sizable as _};
+use gpui_kit::component::{Disableable as _, Icon, IconName, Selectable as _, Sizable as _};
 use gpui_kit::{
     Anchor, AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable, FontFeatures,
     FontWeight, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
@@ -190,6 +188,15 @@ impl LayoutMode {
             Self::Editor => AssetIcon::PenLine,
             Self::Split => AssetIcon::Columns2,
             Self::Preview => AssetIcon::BookOpen,
+        }
+    }
+
+    /// The layout's button in the sheet header.
+    fn id(self) -> &'static str {
+        match self {
+            Self::Editor => "layout-editor",
+            Self::Split => "layout-split",
+            Self::Preview => "layout-preview",
         }
     }
 
@@ -3083,10 +3090,6 @@ impl Workspace {
     /// Save, then the view controls, then Settings.
     fn render_sheet_header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let selected = LayoutMode::ALL
-            .iter()
-            .position(|mode| *mode == self.layout)
-            .unwrap_or_default();
         let is_dirty = self.tab().document.is_dirty();
         // Without the sidebar, the window controls sit on this header, so its
         // content starts after them. They do not follow the rem size.
@@ -3213,8 +3216,8 @@ impl Workspace {
                     }),
             )
             .child(
-                // Three groups, separated more widely than their members:
-                // the document command, how to view it, and the app.
+                // Save stands apart from the icon row: it acts on the
+                // document, the icons on the view and the app.
                 div()
                     .flex()
                     .flex_none()
@@ -3222,58 +3225,49 @@ impl Workspace {
                     .gap_3()
                     .children(save_button)
                     .child(
-                        // How to view the document is one object: the three
-                        // layouts, then Zen in the same track. A hairline sets
-                        // Zen apart, since it is a command, not a fourth choice.
-                        TabBar::new("layout")
-                            .segmented()
-                            .small()
+                        // The layouts, Zen and Settings share one row at one
+                        // spacing, so the icons fall on an even rhythm. Quiet
+                        // icon buttons, not a filled track: only the current
+                        // layout carries a fill and full contrast, so the row
+                        // never outweighs the title. The gap keeps a hovered
+                        // neighbor's fill from merging with the current one.
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
                             .children(LayoutMode::ALL.map(|mode| {
-                                // Icons keep the switch compact; the tooltip
-                                // names each mode and its shortcut.
-                                Tab::new()
-                                    .icon(mode.icon())
-                                    .aria_label(mode.label())
-                                    .tooltip(move |window, cx| {
-                                        Tooltip::new(mode.label())
-                                            .action(mode.action(), Some(KEY_CONTEXT))
-                                            .build(window, cx)
-                                    })
+                                let current = mode == self.layout;
+                                header_icon_button(
+                                    mode.id(),
+                                    mode.icon(),
+                                    mode.label(),
+                                    mode.action(),
+                                    current,
+                                    cx,
+                                )
+                                .toggled(current)
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        this.show_layout(mode, window, cx);
+                                    },
+                                ))
                             }))
-                            .selected_index(selected)
-                            .on_click(cx.listener(|this, ix: &usize, window, cx| {
-                                if let Some(mode) = LayoutMode::ALL.get(*ix) {
-                                    this.show_layout(*mode, window, cx);
-                                }
-                            }))
-                            // No spacer after the layouts: the hairline sits
-                            // as far from Preview as from Zen, the bar's tab
-                            // gap plus this padding on one side, the gap on
-                            // the other.
-                            .last_empty_space(div())
-                            .suffix(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .pl_0p5()
-                                    .gap_1()
-                                    .child(div().w_px().h_3().bg(theme.input))
-                                    .child(zen_mode::enter_zen_button(cx)),
+                            .child(zen_mode::enter_zen_button(cx))
+                            .child(
+                                header_icon_button(
+                                    "settings",
+                                    IconName::Settings,
+                                    "Settings…",
+                                    &OpenSettings,
+                                    false,
+                                    cx,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        this.open_settings(&OpenSettings, window, cx)
+                                    },
+                                )),
                             ),
-                    )
-                    .child(
-                        // The app's setting is the least used control here, so
-                        // it recedes to the unselected layouts' color.
-                        Button::new("settings")
-                            .small()
-                            .ghost()
-                            .icon(IconName::Settings)
-                            .text_color(theme.muted_foreground)
-                            .accessibility_label("Settings…")
-                            .tooltip_with_action("Settings…", &OpenSettings, Some(KEY_CONTEXT))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_settings(&OpenSettings, window, cx)
-                            })),
                     ),
             )
     }
@@ -3820,6 +3814,28 @@ impl Render for Workspace {
             .text_color(theme.foreground)
             .child(content)
     }
+}
+
+/// One of the sheet header's icon buttons: quiet, in the muted color unless
+/// `current` marks it as the layout in use.
+fn header_icon_button(
+    id: &'static str,
+    icon: impl Into<Icon>,
+    label: &'static str,
+    action: &dyn gpui_kit::Action,
+    current: bool,
+    cx: &Context<Workspace>,
+) -> Button {
+    Button::new(id)
+        .small()
+        .ghost()
+        .icon(icon)
+        .selected(current)
+        .when(!current, |this| {
+            this.text_color(cx.theme().muted_foreground)
+        })
+        .accessibility_label(label)
+        .tooltip_with_action(label, action, Some(KEY_CONTEXT))
 }
 
 /// The sidebar's show/hide control. It sits at the sidebar's top trailing
