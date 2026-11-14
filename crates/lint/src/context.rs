@@ -150,6 +150,10 @@ pub(crate) struct Context<'a> {
     pub lines: Lines,
     /// The document's line ending, for inserted lines.
     pub newline: &'static str,
+    /// Whether some line ends with a carriage return alone, as in files
+    /// from classic Mac OS. [`Lines`] only splits at line feeds, so rules
+    /// that work line by line leave such a file alone.
+    pub lone_cr: bool,
     /// Ranges no fix may touch, sorted and merged.
     pub protected: Vec<Range<usize>>,
     pub blocks: Vec<Block>,
@@ -238,12 +242,26 @@ impl<'a> Context<'a> {
             ..
         } = builder;
         protected.sort_unstable_by_key(|range| range.start);
-        let protected = merge(protected);
+        let mut protected = merge(protected);
+        // Obsidian's `%% comments %%` are hidden; their text is not the
+        // note's.
+        if source.contains("%%") {
+            protected.extend(obsidian_comments(source, &protected));
+            protected.sort_unstable_by_key(|range| range.start);
+            protected = merge(protected);
+        }
+        let bytes = source.as_bytes();
+        let lone_cr = source.contains('\r')
+            && bytes
+                .iter()
+                .enumerate()
+                .any(|(ix, byte)| *byte == b'\r' && bytes.get(ix + 1) != Some(&b'\n'));
         let suppressions = Suppressions::from_comments(source, &lines, &comments);
         Self {
             source,
             lines,
             newline,
+            lone_cr,
             protected,
             blocks,
             headings,
@@ -274,6 +292,31 @@ impl<'a> Context<'a> {
             protected.start < range.end
         }
     }
+}
+
+/// The ranges of `%% … %%` comments outside the `protected` ranges, which
+/// are sorted and merged: code may hold `%%` of its own.
+fn obsidian_comments(source: &str, protected: &[Range<usize>]) -> Vec<Range<usize>> {
+    let inside = |offset: usize| {
+        let ix = protected.partition_point(|range| range.end <= offset);
+        protected.get(ix).is_some_and(|range| range.start <= offset)
+    };
+    let mut comments = Vec::new();
+    let mut open = None;
+    for (ix, _) in source.match_indices("%%") {
+        if inside(ix) {
+            continue;
+        }
+        match open.take() {
+            None => open = Some(ix),
+            Some(start) => comments.push(start..ix + 2),
+        }
+    }
+    // An unclosed comment runs to the end, as in Obsidian.
+    if let Some(start) = open {
+        comments.push(start..source.len());
+    }
+    comments
 }
 
 fn merge(ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {

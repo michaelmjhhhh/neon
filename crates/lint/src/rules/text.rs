@@ -149,7 +149,15 @@ mod tests {
             fixed("proper-ellipsis", "", "Wait... what\n"),
             "Wait… what\n"
         );
-        for kept in ["a.... b\n", "`a...`\n", "$x...y$\n", "```\n...\n```\n"] {
+        for kept in [
+            "a.... b\n",
+            "`a...`\n",
+            "$x...y$\n",
+            "```\n...\n```\n",
+            "%% hidden... %%\n",
+            "a %% hidden...\nstill hidden... %% b\n",
+            "%% unclosed...\n",
+        ] {
             assert_eq!(fixed("proper-ellipsis", "", kept), kept);
         }
     }

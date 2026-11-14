@@ -23,8 +23,9 @@ use super::{FixLintIssues, Workspace};
 /// outline's wait: an issue that appears mid-word is noise.
 const LINT_DELAY: Duration = Duration::from_millis(500);
 
-/// At most this many issues are marked, so a note full of them stays as
-/// quick to edit as any other. Fixing still fixes them all.
+/// At most this many issues are marked, those nearest the caret, so a note
+/// full of them stays as quick to edit as any other. Fixing still fixes them
+/// all.
 const MAX_ISSUES: usize = 1000;
 
 /// Finds each note's configuration, shared by every window so files are
@@ -56,11 +57,21 @@ struct Issue {
     line: u32,
 }
 
-/// The issues `config` finds in `source`, at most [`MAX_ISSUES`].
-fn issues(source: &str, config: &Config) -> Vec<Issue> {
-    let findings = lint::lint(source, config);
+/// The issues `config` finds in `source`: at most [`MAX_ISSUES`], those
+/// nearest the caret, where the writer is looking.
+fn issues(source: &str, config: &Config, caret: usize) -> Vec<Issue> {
+    let mut findings = lint::lint(source, config);
     if findings.is_empty() {
         return Vec::new();
+    }
+    if findings.len() > MAX_ISSUES {
+        // Findings are in source order: take a run around the caret.
+        let at = findings.partition_point(|finding| finding.range.start < caret);
+        let start = at
+            .saturating_sub(MAX_ISSUES / 2)
+            .min(findings.len() - MAX_ISSUES);
+        findings.drain(..start);
+        findings.truncate(MAX_ISSUES);
     }
     // Starts come in order; ends nearly so. Each has its own reader, so
     // neither goes back to its line's start for every issue.
@@ -68,7 +79,6 @@ fn issues(source: &str, config: &Config) -> Vec<Issue> {
     let ends = lint::Positions::new(source);
     findings
         .into_iter()
-        .take(MAX_ISSUES)
         .map(|finding| {
             let (line, column) = starts.at(finding.range.start);
             let (end_line, end_column) = ends.at(finding.range.end);
@@ -187,6 +197,7 @@ impl Workspace {
         tab.linted_version = Some(version);
         let editor = tab.editor.clone();
         let text: Rope = editor.read(cx).text().clone();
+        let caret = editor.read(cx).cursor();
         tab.lint_task = Some(cx.spawn(async move |this, cx| {
             if wait {
                 cx.background_executor().timer(LINT_DELAY).await;
@@ -197,7 +208,7 @@ impl Workspace {
                     if config.is_empty() || !config.show_issues().unwrap_or(show_by_default) {
                         return Vec::new();
                     }
-                    issues(&text.to_string(), &config)
+                    issues(&text.to_string(), &config, caret)
                 })
                 .await;
             this.update(cx, |this, cx| {

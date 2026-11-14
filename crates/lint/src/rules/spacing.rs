@@ -6,6 +6,9 @@ use crate::Edit;
 use crate::context::{BlockKind, Context};
 
 pub(super) fn trailing_spaces(cx: &Context<'_>, _: &Options, sink: &mut Sink<'_, '_>) {
+    if cx.lone_cr {
+        return;
+    }
     let source = cx.source;
     let mut breaks = cx.hard_breaks.iter().peekable();
     for line in 0..cx.lines.count() {
@@ -63,6 +66,9 @@ pub(super) fn consecutive_blank_lines(
     options: &Options,
     sink: &mut Sink<'_, '_>,
 ) {
+    if cx.lone_cr {
+        return;
+    }
     let max = match options {
         Options::Max(max) => *max,
         _ => 1,
@@ -112,6 +118,9 @@ pub(super) fn consecutive_blank_lines(
 }
 
 pub(super) fn final_newline(cx: &Context<'_>, _: &Options, sink: &mut Sink<'_, '_>) {
+    if cx.lone_cr {
+        return;
+    }
     let source = cx.source;
     let Some(last) = (0..cx.lines.count())
         .rev()
@@ -121,7 +130,8 @@ pub(super) fn final_newline(cx: &Context<'_>, _: &Options, sink: &mut Sink<'_, '
     };
     let content = cx.lines.content(source, last);
     let tail = content.end..source.len();
-    if &source[tail.clone()] == cx.newline
+    // Either line ending will do: a file may mix them.
+    if matches!(&source[tail.clone()], "\n" | "\r\n")
         || cx.is_protected(&tail)
         || (tail.is_empty() && cx.ends_in_verbatim)
     {
@@ -166,6 +176,9 @@ pub(super) fn around_rules(cx: &Context<'_>, _: &Options, sink: &mut Sink<'_, '_
 /// lists and quotes are left alone: a blank line there needs the
 /// container's markers.
 fn around(cx: &Context<'_>, sink: &mut Sink<'_, '_>, kind: BlockKind, name: &str) {
+    if cx.lone_cr {
+        return;
+    }
     let source = cx.source;
     let lines = &cx.lines;
     for (ix, block) in cx.blocks.iter().enumerate() {
@@ -256,6 +269,10 @@ mod tests {
         assert_eq!(fixed("final-newline", "", "a"), "a\n");
         assert_eq!(fixed("final-newline", "", "a\n\n\n"), "a\n");
         assert_eq!(fixed("final-newline", "", "a\r\n\r\n"), "a\r\n");
+        // The last line keeps its own ending in a file that mixes them.
+        assert_eq!(fixed("final-newline", "", "a\nb\r\n"), "a\nb\r\n");
+        // Lines ended by a carriage return alone are left as they are.
+        assert_eq!(fixed("final-newline", "", "a\rb"), "a\rb");
         assert_eq!(fixed("final-newline", "", ""), "");
         assert_eq!(fixed("final-newline", "", "a  "), "a  \n");
         // A line ending would join code that runs to the end of the file.

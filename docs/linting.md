@@ -6,7 +6,7 @@ Marking issues and fixing on save are both off until you turn them on, in **Sett
 
 ## What fixes never do
 
-- Change code blocks, inline code, math, HTML, front matter or link targets.
+- Change code blocks, inline code, math, HTML, front matter, `%% comments %%` or link targets.
 - Change how the note reads. Each fix is checked by parsing the note again: if its blocks, lists, emphasis, code or links would come out different, that fix is left out, the rule's other fixes still apply, and the notification names the rule. For example, changing a `*` bullet to `-` would join its list to a `-` list right above it, so that bullet is left alone.
 - Take more than one undo. The whole fix is one change.
 

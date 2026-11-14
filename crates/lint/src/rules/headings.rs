@@ -9,8 +9,9 @@ pub(super) fn trailing_hashes(cx: &Context<'_>, _: &Options, sink: &mut Sink<'_,
     for heading in &cx.headings {
         let start = heading.range.start;
         let line = cx.lines.of(start);
-        let end = cx.lines.content(source, line).end;
-        let text = &source[start..end];
+        // Within the heading, whatever ends its line.
+        let end = cx.lines.content(source, line).end.min(heading.range.end);
+        let text = source[start..end].trim_end_matches(['\r', '\n']);
         // Setext headings are underlined instead.
         if !text.starts_with('#') {
             continue;
@@ -129,7 +130,13 @@ mod tests {
             fixed("heading-trailing-hashes", "", "> ## Q #\n"),
             "> ## Q\n"
         );
-        for kept in ["# C#\n", "# #\n", "# Title \\#\n", "Title\n===\n"] {
+        for kept in [
+            "# C#\n",
+            "# #\n",
+            "# Title \\#\n",
+            "Title\n===\n",
+            "# A\rtext #",
+        ] {
             assert_eq!(fixed("heading-trailing-hashes", "", kept), kept);
         }
     }
