@@ -5,7 +5,7 @@ use std::time::Instant;
 use gpui_kit::assets::IconName as AssetIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::RopeExt as _;
-use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, TitleBar};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, TitleBar};
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, App, Context, EntityInputHandler as _,
     InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
@@ -573,12 +573,13 @@ impl Workspace {
 /// The header's Zen control: a small icon button like the layouts beside it,
 /// in their unselected color.
 pub(super) fn enter_zen_button(cx: &Context<Workspace>) -> Button {
-    Button::new("enter-zen")
-        .small()
-        .ghost()
-        .icon(Icon::new(AssetIcon::ScanText))
-        .text_color(cx.theme().muted_foreground)
-        .accessibility_label("Enter Zen Mode")
-        .tooltip_with_action("Enter Zen Mode", &ToggleZen, Some(KEY_CONTEXT))
-        .on_click(cx.listener(|this, _, window, cx| this.enter_zen(window, cx)))
+    super::header_icon_button(
+        "enter-zen",
+        AssetIcon::ScanText,
+        "Enter Zen Mode",
+        &ToggleZen,
+        false,
+        cx,
+    )
+    .on_click(cx.listener(|this, _, window, cx| this.enter_zen(window, cx)))
 }

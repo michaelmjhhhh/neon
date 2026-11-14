@@ -33,7 +33,7 @@ use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tree::{Tree, TreeEntry, TreeEvent, TreeState};
 use gpui_kit::component::{ActiveTheme as _, TitleBar, WindowExt as _};
-use gpui_kit::component::{Disableable as _, IconName, Selectable as _, Sizable as _};
+use gpui_kit::component::{Disableable as _, Icon, IconName, Selectable as _, Sizable as _};
 use gpui_kit::{
     Anchor, AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable, FontFeatures,
     FontWeight, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
@@ -188,6 +188,15 @@ impl LayoutMode {
             Self::Editor => AssetIcon::PenLine,
             Self::Split => AssetIcon::Columns2,
             Self::Preview => AssetIcon::BookOpen,
+        }
+    }
+
+    /// The layout's button in the sheet header.
+    fn id(self) -> &'static str {
+        match self {
+            Self::Editor => "layout-editor",
+            Self::Split => "layout-split",
+            Self::Preview => "layout-preview",
         }
     }
 
@@ -3220,48 +3229,44 @@ impl Workspace {
                         // spacing, so the icons fall on an even rhythm. Quiet
                         // icon buttons, not a filled track: only the current
                         // layout carries a fill and full contrast, so the row
-                        // never outweighs the title.
+                        // never outweighs the title. The gap keeps a hovered
+                        // neighbor's fill from merging with the current one.
                         div()
                             .flex()
                             .items_center()
-                            .gap_0p5()
+                            .gap_1()
                             .children(LayoutMode::ALL.map(|mode| {
                                 let current = mode == self.layout;
-                                Button::new(mode.label())
-                                    .small()
-                                    .ghost()
-                                    .icon(mode.icon())
-                                    .selected(current)
-                                    .toggled(current)
-                                    .when(!current, |this| {
-                                        this.text_color(theme.muted_foreground)
-                                    })
-                                    .accessibility_label(mode.label())
-                                    .tooltip_with_action(
-                                        mode.label(),
-                                        mode.action(),
-                                        Some(KEY_CONTEXT),
-                                    )
-                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                header_icon_button(
+                                    mode.id(),
+                                    mode.icon(),
+                                    mode.label(),
+                                    mode.action(),
+                                    current,
+                                    cx,
+                                )
+                                .toggled(current)
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
                                         this.show_layout(mode, window, cx);
-                                    }))
+                                    },
+                                ))
                             }))
                             .child(zen_mode::enter_zen_button(cx))
                             .child(
-                                Button::new("settings")
-                                    .small()
-                                    .ghost()
-                                    .icon(IconName::Settings)
-                                    .text_color(theme.muted_foreground)
-                                    .accessibility_label("Settings…")
-                                    .tooltip_with_action(
-                                        "Settings…",
-                                        &OpenSettings,
-                                        Some(KEY_CONTEXT),
-                                    )
-                                    .on_click(cx.listener(|this, _, window, cx| {
+                                header_icon_button(
+                                    "settings",
+                                    IconName::Settings,
+                                    "Settings…",
+                                    &OpenSettings,
+                                    false,
+                                    cx,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
                                         this.open_settings(&OpenSettings, window, cx)
-                                    })),
+                                    },
+                                )),
                             ),
                     ),
             )
@@ -3809,6 +3814,28 @@ impl Render for Workspace {
             .text_color(theme.foreground)
             .child(content)
     }
+}
+
+/// One of the sheet header's icon buttons: quiet, in the muted color unless
+/// `current` marks it as the layout in use.
+fn header_icon_button(
+    id: &'static str,
+    icon: impl Into<Icon>,
+    label: &'static str,
+    action: &dyn gpui_kit::Action,
+    current: bool,
+    cx: &Context<Workspace>,
+) -> Button {
+    Button::new(id)
+        .small()
+        .ghost()
+        .icon(icon)
+        .selected(current)
+        .when(!current, |this| {
+            this.text_color(cx.theme().muted_foreground)
+        })
+        .accessibility_label(label)
+        .tooltip_with_action(label, action, Some(KEY_CONTEXT))
 }
 
 /// The sidebar's show/hide control. It sits at the sidebar's top trailing
