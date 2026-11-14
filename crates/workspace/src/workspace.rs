@@ -161,6 +161,9 @@ const EDITOR_MEASURE_CHARS: f32 = 80.;
 /// the window's leading edge: three 16 px controls from 20 px, their gaps,
 /// and a small clearance. Platform geometry: it does not follow the rem size.
 const WINDOW_CONTROLS_END: Pixels = gpui_kit::px(88.);
+/// The radius of the window's corners in full screen. Platform geometry: it
+/// does not follow the rem size.
+const FULLSCREEN_CORNER_RADIUS: Pixels = gpui_kit::px(20.);
 
 /// Which panes the window shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -3809,11 +3812,61 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(Self::close_window))
             .on_action(cx.listener(Self::quit))
+            .relative()
             .size_full()
             .bg(theme.sidebar)
             .text_color(theme.foreground)
             .child(content)
+            .when(window.is_fullscreen(), |this| {
+                this.children(fullscreen_corners())
+            })
     }
+}
+
+/// Black corners over the window's own in full screen, where macOS draws the
+/// window square, so it reads as a rounded pane on the screen's black.
+///
+/// GPUI clips only to rectangles, so each corner is painted over the content
+/// instead of clipped from it. A corner is a box laid one radius outside the
+/// window on two sides, bordered one radius thick on those sides and rounded
+/// by twice the radius between them. The border then sits outside the
+/// window, and its inner edge is an arc of one radius inside it. The box is
+/// four radii wide because GPUI caps a radius at half the box. The corners
+/// take no mouse events, so clicks reach what is under them.
+fn fullscreen_corners() -> [gpui_kit::Div; 4] {
+    let radius = FULLSCREEN_CORNER_RADIUS;
+    let corner = || {
+        div()
+            .absolute()
+            .size(radius * 4.)
+            .border_color(gpui_kit::black())
+    };
+    [
+        corner()
+            .top(-radius)
+            .left(-radius)
+            .border_t(radius)
+            .border_l(radius)
+            .rounded_tl(radius * 2.),
+        corner()
+            .top(-radius)
+            .right(-radius)
+            .border_t(radius)
+            .border_r(radius)
+            .rounded_tr(radius * 2.),
+        corner()
+            .bottom(-radius)
+            .right(-radius)
+            .border_b(radius)
+            .border_r(radius)
+            .rounded_br(radius * 2.),
+        corner()
+            .bottom(-radius)
+            .left(-radius)
+            .border_b(radius)
+            .border_l(radius)
+            .rounded_bl(radius * 2.),
+    ]
 }
 
 /// One of the sheet header's icon buttons: quiet, in the muted color unless
