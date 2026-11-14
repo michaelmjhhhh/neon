@@ -32,6 +32,7 @@ Groups, in this order:
 ### Changed
 
 - Full screen rounds the window's corners instead of filling the screen edge to edge.
+- Outline drops its heading count and hangs each section's subheadings from a thin guide line; top-level headings read heavier and deeper ones quieter.
 
 ## [0.19.0] - 2026-11-14
 

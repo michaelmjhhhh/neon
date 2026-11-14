@@ -24,7 +24,7 @@ use gpui_kit::{
 };
 use markdown::Outline;
 
-use super::{Workspace, format_count, sidebar_empty_state};
+use super::{Workspace, sidebar_empty_state};
 
 /// How long typing pauses before the headings are read again. Shorter than
 /// the preview's wait: the list is small and cheap to redraw.
@@ -293,17 +293,19 @@ impl Render for OutlineView {
             ));
         }
         let theme = cx.theme();
-        let muted = theme.muted_foreground;
-        let count = self.outline.headings().len();
-        let summary = match count {
-            1 => "1 heading".to_string(),
-            count => format!("{} headings", format_count(count)),
-        };
-        let rem = window.rem_size();
+        // Ancestor hairlines and the row radius match the Files tree, so the
+        // sidebar's two lists read as one.
+        let guide = theme.sidebar_border;
+        // The hairlines of the sections around the lit row are drawn
+        // stronger, so the reader sees which section they are in.
+        let lit_guide = theme.muted_foreground.opacity(0.5);
         let radius = theme.radius;
+        let count = self.outline.headings().len();
+        let rem = window.rem_size();
         let outline = self.outline.clone();
         let depths = self.depths.clone();
         let active = self.active;
+        let lit_spans = active.map_or_else(Vec::new, |ix| section_spans(&self.depths, ix));
         let workspace = self.workspace.clone();
         // Virtualized: a long manual can have thousands of headings.
         let list = uniform_list("outline-headings", count, move |range, _, cx| {
@@ -312,16 +314,34 @@ impl Render for OutlineView {
                 .map(|ix| {
                     let heading = &outline.headings()[ix];
                     let text = SharedString::from(heading.text().clone());
+                    let depth = depths[ix];
+                    let selected = active == Some(ix);
                     let workspace = workspace.clone();
+                    // One slot per ancestor, its hairline under the
+                    // ancestor's first letter, so a section's subheadings
+                    // hang from it.
+                    let guides = (0..depth).map(|level| {
+                        let lit = lit_spans.get(level).is_some_and(|span| span.contains(&ix));
+                        div()
+                            .flex_none()
+                            .w(rem * 0.875)
+                            .h_7()
+                            .pl(rem * 0.125)
+                            .child(div().w(gpui_kit::px(1.)).h_full().bg(if lit {
+                                lit_guide
+                            } else {
+                                guide
+                            }))
+                    });
                     let item = ListItem::new(("outline-heading", ix))
                         .h_7()
                         .px_0()
                         .py_0()
-                        .pl(rem * (0.5 + 0.75 * depths[ix] as f32))
+                        .pl(rem * 0.5)
                         .pr(rem * 0.5)
                         .rounded(radius)
                         .text_sm()
-                        .selected(active == Some(ix))
+                        .selected(selected)
                         .accessibility_label(text.clone())
                         .on_click(move |_, window, cx| {
                             workspace
@@ -330,14 +350,30 @@ impl Render for OutlineView {
                         })
                         .child(
                             div()
+                                .flex()
+                                .items_center()
+                                .w_full()
                                 .min_w_0()
-                                .truncate()
-                                .when(heading.level() == 1, |this| {
-                                    this.font_weight(FontWeight::MEDIUM)
-                                })
-                                .when(heading.level() >= 5, |this| this.text_color(muted))
-                                .child(text),
+                                .children(guides)
+                                .child(
+                                    // Weight and contrast step down with
+                                    // depth: sections lead, details recede
+                                    // until their row is lit.
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .when(depth == 0, |this| {
+                                            this.font_weight(FontWeight::MEDIUM)
+                                        })
+                                        .when(depth >= 2 && !selected, |this| {
+                                            this.text_color(muted)
+                                        })
+                                        .child(text),
+                                ),
                         );
+                    // Each row is laid out at the list's width, so the inset
+                    // is padding around the row, not its margin.
                     div().px_2().child(item).into_any_element()
                 })
                 .collect::<Vec<AnyElement>>()
@@ -345,21 +381,28 @@ impl Render for OutlineView {
         .track_scroll(&self.scroll)
         .flex_1()
         .min_h_0();
-        container
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .h_7()
-                    .mx_2()
-                    .pl_1()
-                    .text_xs()
-                    .text_color(muted)
-                    .child(summary),
-            )
-            .child(list)
+        container.child(list)
     }
+}
+
+/// The rows inside each section that holds row `active`, by depth: the
+/// rows below the section's heading, up to the next heading at or above its
+/// depth. Depths step by one from parent to child, see
+/// [`markdown::indent_levels`].
+fn section_spans(depths: &[usize], active: usize) -> Vec<std::ops::Range<usize>> {
+    let mut spans = vec![0..0; depths[active] + 1];
+    let mut row = active;
+    for depth in (0..=depths[active]).rev() {
+        while depths[row] != depth {
+            row -= 1;
+        }
+        let end = depths[row + 1..]
+            .iter()
+            .position(|&below| below <= depth)
+            .map_or(depths.len(), |len| row + 1 + len);
+        spans[depth] = row + 1..end;
+    }
+    spans
 }
 
 impl Workspace {
