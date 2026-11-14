@@ -21,8 +21,8 @@ pub struct FixOutcome {
     pub text: String,
     /// How many findings were fixed.
     pub fixed: usize,
-    /// Rules whose fixes would have changed the document's structure, so
-    /// none of theirs were applied.
+    /// Rules with a fix that would have changed the document's structure,
+    /// so that fix was left out. Their other fixes were applied.
     pub rejected: Vec<RuleName>,
     /// The edits of each pass, as ranges in that pass's text and the
     /// length of what replaced them.
@@ -32,24 +32,28 @@ pub struct FixOutcome {
 impl FixOutcome {
     /// Where an offset in the original text is in the fixed text: shifted by
     /// the edits before it, and kept within an edit around it.
-    pub fn map_offset(&self, mut offset: usize) -> usize {
-        for pass in &self.passes {
-            let mut shifted = offset as isize;
-            for (range, new_len) in pass {
-                if range.end <= offset {
-                    shifted += *new_len as isize - range.len() as isize;
-                } else if range.start < offset {
-                    shifted = shifted - (offset - range.start) as isize
-                        + (offset - range.start).min(*new_len) as isize;
-                    break;
-                } else {
-                    break;
-                }
-            }
-            offset = shifted.max(0) as usize;
-        }
-        offset
+    pub fn map_offset(&self, offset: usize) -> usize {
+        self.passes
+            .iter()
+            .fold(offset, |offset, pass| shift(offset, pass))
     }
+}
+
+/// Where `offset` is after one pass of edits.
+fn shift(offset: usize, pass: &[(Range<usize>, usize)]) -> usize {
+    let mut shifted = offset as isize;
+    for (range, new_len) in pass {
+        if range.end <= offset {
+            shifted += *new_len as isize - range.len() as isize;
+        } else {
+            if range.start < offset {
+                shifted = shifted - (offset - range.start) as isize
+                    + (offset - range.start).min(*new_len) as isize;
+            }
+            break;
+        }
+    }
+    shifted.max(0) as usize
 }
 
 /// Passes before giving up on a document whose fixes keep finding more.
@@ -57,29 +61,34 @@ impl FixOutcome {
 /// blank line inserted between two blocks, takes two.
 const MAX_PASSES: usize = 8;
 
+/// Parses spent finding the fixes that break a document's structure, in
+/// one call. Rules are searched first, about eight parses for twenty rules,
+/// so the rules whose fixes are all fine are applied whole; what is left goes
+/// to finding the bad fixes within the others. Past this, the fixes still
+/// in doubt are left out.
+const SEARCH_BUDGET: usize = 24;
+
 /// `source` with its findings fixed, or `None` when there is nothing to fix.
 ///
 /// Each pass applies every fix that does not overlap another, then parses
-/// the result. If its structure differs from the original's, the pass is
-/// redone one rule at a time and the rules that break it are dropped.
+/// the result. If its structure differs from the original's, the fixes are
+/// halved until the ones that change it are found; those are left out, and
+/// the rest applied.
 pub fn fix(source: &str, config: &Config, mode: FixMode) -> Option<FixOutcome> {
     if config.is_ignored() {
         return None;
     }
-    let mut rejected: Vec<RuleName> = Vec::new();
-    let collect = |context: &Context<'_>, only: Option<&str>, rejected: &[RuleName]| {
-        let mut findings = rules::run(context, config, only);
+    let collect = |context: &Context<'_>| {
+        let mut findings = rules::run(context, config);
         findings.retain(|finding| {
-            !finding.fix.is_empty()
-                && (mode == FixMode::All || finding.fix_on_save)
-                && !rejected.contains(&finding.rule)
+            !finding.fix.is_empty() && (mode == FixMode::All || finding.fix_on_save)
         });
         findings
     };
 
     let (signature, mut findings) = {
-        let context = Context::parse(source);
-        (context.signature, collect(&context, None, &rejected))
+        let context = Context::parse_checked(source);
+        (context.signature, collect(&context))
     };
     if findings.is_empty() {
         return None;
@@ -87,46 +96,45 @@ pub fn fix(source: &str, config: &Config, mode: FixMode) -> Option<FixOutcome> {
     let mut text = source.to_string();
     let mut fixed = 0;
     let mut passes = Vec::new();
+    let mut budget = SEARCH_BUDGET;
     for _ in 0..MAX_PASSES {
-        let (edits, count) = select(&findings);
-        if edits.is_empty() {
+        let mut chosen = select(&findings);
+        if chosen.is_empty() {
             break;
         }
-        let candidate = apply(&text, &edits);
-        let next = {
-            let context = Context::parse(&candidate);
-            (context.signature == signature).then(|| collect(&context, None, &rejected))
-        };
-        if let Some(next) = next {
-            passes.push(lengths(&edits));
-            text = candidate;
-            fixed += count;
-            findings = next;
-            continue;
-        }
-        // Something in this pass changes the structure: find which rules.
-        let mut names: Vec<RuleName> = Vec::new();
-        for finding in &findings {
-            if !names.contains(&finding.rule) {
-                names.push(finding.rule.clone());
+        let mut edits = edits_of(&findings, &chosen);
+        let mut candidate = apply(&text, &edits);
+        let mut next = findings_if_kept(&candidate, signature, &collect);
+        if next.is_none() {
+            // Some fix in this pass changes the structure: find which, and
+            // leave it out. It is tried again next pass: it may only work
+            // once another has landed, as `**` inside `***` turning to `__`
+            // once the outer `*` is `_`.
+            let good = keep_structure(&text, signature, &findings, &chosen, &mut budget);
+            if good.is_empty() {
+                break;
+            }
+            chosen = good;
+            edits = edits_of(&findings, &chosen);
+            candidate = apply(&text, &edits);
+            // Fixes fine alone may still clash together; stop rather than
+            // guess.
+            next = findings_if_kept(&candidate, signature, &collect);
+            if next.is_none() {
+                break;
             }
         }
-        for name in names {
-            let own = collect(&Context::parse(&text), Some(name.as_str()), &rejected);
-            let (edits, count) = select(&own);
-            if edits.is_empty() {
-                continue;
-            }
-            let candidate = apply(&text, &edits);
-            if Context::parse(&candidate).signature == signature {
-                passes.push(lengths(&edits));
-                text = candidate;
-                fixed += count;
-            } else {
-                rejected.push(name);
-            }
+        passes.push(lengths(&edits));
+        text = candidate;
+        fixed += chosen.len();
+        findings = next.unwrap_or_default();
+    }
+    // What is left could not be fixed without changing the structure.
+    let mut rejected: Vec<RuleName> = Vec::new();
+    for finding in &findings {
+        if !rejected.contains(&finding.rule) {
+            rejected.push(finding.rule.clone());
         }
-        findings = collect(&Context::parse(&text), None, &rejected);
     }
     if fixed == 0 && rejected.is_empty() {
         return None;
@@ -139,32 +147,130 @@ pub fn fix(source: &str, config: &Config, mode: FixMode) -> Option<FixOutcome> {
     })
 }
 
-/// The edits of the findings that do not overlap an earlier finding's, in
-/// source order, and how many findings they fix. A finding's edits are
-/// taken together or not at all.
-fn select(findings: &[Finding]) -> (Vec<Edit>, usize) {
+/// The findings in `candidate`, from the same parse that checks it keeps
+/// the structure, or `None` if it does not.
+fn findings_if_kept(
+    candidate: &str,
+    signature: u64,
+    collect: &impl Fn(&Context<'_>) -> Vec<Finding>,
+) -> Option<Vec<Finding>> {
+    let context = Context::parse_checked(candidate);
+    (context.signature == signature).then(|| collect(&context))
+}
+
+/// Which of the `chosen` findings, whose fixes together change the
+/// structure of `text`, keep it: whole rules first, then single fixes
+/// within the rules that do not.
+fn keep_structure(
+    text: &str,
+    signature: u64,
+    findings: &[Finding],
+    chosen: &[usize],
+    budget: &mut usize,
+) -> Vec<usize> {
+    let mut rules: Vec<Vec<usize>> = Vec::new();
+    for &ix in chosen {
+        match rules
+            .iter_mut()
+            .find(|rule| findings[rule[0]].rule == findings[ix].rule)
+        {
+            Some(rule) => rule.push(ix),
+            None => rules.push(vec![ix]),
+        }
+    }
+    let mut good = Vec::new();
+    let mut bad_rules = Vec::new();
+    search(
+        text,
+        signature,
+        findings,
+        &rules,
+        budget,
+        &mut good,
+        &mut bad_rules,
+    );
+    for rule in bad_rules {
+        let singles: Vec<Vec<usize>> = rule.iter().map(|ix| vec![*ix]).collect();
+        search(
+            text,
+            signature,
+            findings,
+            &singles,
+            budget,
+            &mut good,
+            &mut Vec::new(),
+        );
+    }
+    good
+}
+
+/// Sort `groups` of findings, known together to change the structure of
+/// `text`, by halving: groups whose fixes keep it go to `good`, groups
+/// that break it alone, or are still in doubt when the budget runs out, to
+/// `bad`.
+fn search(
+    text: &str,
+    signature: u64,
+    findings: &[Finding],
+    groups: &[Vec<usize>],
+    budget: &mut usize,
+    good: &mut Vec<usize>,
+    bad: &mut Vec<Vec<usize>>,
+) {
+    if groups.len() < 2 {
+        bad.extend(groups.iter().cloned());
+        return;
+    }
+    let (left, right) = groups.split_at(groups.len() / 2);
+    for half in [left, right] {
+        if *budget == 0 {
+            bad.extend(half.iter().cloned());
+            continue;
+        }
+        *budget -= 1;
+        let members: Vec<usize> = half.iter().flatten().copied().collect();
+        let candidate = apply(text, &edits_of(findings, &members));
+        if Context::parse_checked(&candidate).signature == signature {
+            good.extend(members);
+        } else {
+            search(text, signature, findings, half, budget, good, bad);
+        }
+    }
+}
+
+/// The findings that do not overlap an earlier finding's, by index. A
+/// finding's edits are taken together or not at all.
+fn select(findings: &[Finding]) -> Vec<usize> {
     let mut accepted: Vec<Edit> = Vec::new();
-    let mut count = 0;
-    'findings: for finding in findings {
+    let mut chosen = Vec::new();
+    'findings: for (ix, finding) in findings.iter().enumerate() {
         for edit in &finding.fix {
             if conflicts(&accepted, edit) {
                 continue 'findings;
             }
         }
         for edit in &finding.fix {
-            let ix = accepted.partition_point(|other| {
+            let at = accepted.partition_point(|other| {
                 (other.range.start, other.range.end) <= (edit.range.start, edit.range.end)
             });
-            // Two rules may make the same edit, as a blank line one rule
-            // wants after a heading and another before a code block.
-            if ix > 0 && accepted[ix - 1] == *edit {
-                continue;
-            }
-            accepted.insert(ix, edit.clone());
+            accepted.insert(at, edit.clone());
         }
-        count += 1;
+        chosen.push(ix);
     }
-    (accepted, count)
+    chosen
+}
+
+/// The edits of the `chosen` findings, sorted, each once: two rules may make
+/// the same edit, as a blank line one wants after a heading and another
+/// before a code block.
+fn edits_of(findings: &[Finding], chosen: &[usize]) -> Vec<Edit> {
+    let mut edits: Vec<Edit> = chosen
+        .iter()
+        .flat_map(|ix| findings[*ix].fix.iter().cloned())
+        .collect();
+    edits.sort_by_key(|edit| (edit.range.start, edit.range.end));
+    edits.dedup();
+    edits
 }
 
 /// Whether `edit` overlaps an edit in `accepted`, which is sorted and

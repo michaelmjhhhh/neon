@@ -48,6 +48,19 @@ fn main() {
         lint(&source, &defaults).len(),
         lint(&source, &everything).len()
     );
+    let options = pulldown_cmark::Options::all();
+    time("parse alone (pulldown-cmark)", 20, || {
+        pulldown_cmark::Parser::new_ext(&clean, options)
+            .into_offset_iter()
+            .for_each(drop)
+    });
+    let outcome = fix(&source, &everything, FixMode::All).unwrap();
+    println!(
+        "fix all: fixed {}, left {} (rules left alone: {:?})",
+        outcome.fixed,
+        lint(&outcome.text, &everything).len(),
+        outcome.rejected
+    );
     time("lint, defaults", 20, || drop(lint(&source, &defaults)));
     time("lint, every rule", 20, || drop(lint(&source, &everything)));
     time("lint, clean note, defaults", 20, || {

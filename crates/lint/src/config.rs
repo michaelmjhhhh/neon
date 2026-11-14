@@ -374,8 +374,9 @@ fn compile(config: CustomConfig) -> Result<Option<Custom>, String> {
     let regex = RegexBuilder::new(&config.pattern)
         .case_insensitive(config.case_insensitive)
         .multi_line(true)
-        // Keeps a pathological pattern from taking memory without bound.
-        .size_limit(1 << 20)
+        // Keeps a pathological pattern from taking memory without bound,
+        // while leaving room for Unicode classes such as `\w{20}`.
+        .size_limit(8 << 20)
         .build()
         .map_err(|error| error.to_string())?;
     let expands = config

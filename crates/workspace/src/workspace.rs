@@ -462,6 +462,9 @@ impl Workspace {
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
                     this.remember_session(cx);
+                    // A .neonlint.toml edited in another app applies on
+                    // return.
+                    this.relint(cx);
                     // Commits made in Terminal meanwhile show up on return.
                     this.refresh_changes(cx);
                 }
@@ -1181,7 +1184,7 @@ impl Workspace {
             }
             replaced_tab = Some(other.id);
         }
-        let fix = self.fix_before_save(tab_id, cx);
+        let fix = self.fix_before_save(tab_id, &path, cx);
         let version = self.tab().text_version;
         self.save_task = Some(cx.spawn_in(window, async move |this, cx| {
             if let Some(fix) = fix {

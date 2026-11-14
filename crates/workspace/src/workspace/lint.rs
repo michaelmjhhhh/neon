@@ -62,13 +62,16 @@ fn issues(source: &str, config: &Config) -> Vec<Issue> {
     if findings.is_empty() {
         return Vec::new();
     }
-    let positions = lint::Positions::new(source);
+    // Starts come in order; ends nearly so. Each has its own reader, so
+    // neither goes back to its line's start for every issue.
+    let starts = lint::Positions::new(source);
+    let ends = lint::Positions::new(source);
     findings
         .into_iter()
         .take(MAX_ISSUES)
         .map(|finding| {
-            let (line, column) = positions.at(finding.range.start);
-            let (end_line, end_column) = positions.at(finding.range.end);
+            let (line, column) = starts.at(finding.range.start);
+            let (end_line, end_column) = ends.at(finding.range.end);
             let severity = match finding.level {
                 Level::Info | Level::Off => DiagnosticSeverity::Info,
                 Level::Warning => DiagnosticSeverity::Warning,
@@ -177,7 +180,7 @@ impl Workspace {
     /// Lint the tab at `ix`, after [`LINT_DELAY`] if `wait`, and mark its
     /// issues. A later edit replaces the task, so only the last lint lands.
     fn lint_tab(&mut self, ix: usize, wait: bool, cx: &mut Context<Self>) {
-        let show_by_default = crate::settings_file::saved(cx).lint_issues;
+        let (show_by_default, _) = crate::settings_file::lint_settings(cx);
         let (resolver, file, folder) = self.lint_inputs(ix, cx);
         let tab = &mut self.tabs[ix];
         let version = tab.text_version;
@@ -267,11 +270,14 @@ impl Workspace {
     pub(super) fn fix_before_save(
         &mut self,
         tab_id: u64,
+        path: &Path,
         cx: &mut Context<Self>,
     ) -> Option<gpui_kit::Task<Option<(String, FixOutcome)>>> {
         let ix = self.tabs.iter().position(|tab| tab.id == tab_id)?;
-        let fix_by_default = crate::settings_file::saved(cx).lint_on_save;
-        let (resolver, file, folder) = self.lint_inputs(ix, cx);
+        let (_, fix_by_default) = crate::settings_file::lint_settings(cx);
+        // Saved as a new file, the note takes the rules where it lands.
+        let (resolver, _, folder) = self.lint_inputs(ix, cx);
+        let file = Some(path.to_path_buf());
         let text: Rope = self.tabs[ix].editor.read(cx).text().clone();
         Some(cx.background_spawn(async move {
             let config = resolve(&resolver, file.as_deref(), folder.as_deref());

@@ -20,7 +20,8 @@ pub(super) fn trailing_spaces(cx: &Context<'_>, _: &Options, sink: &mut Sink<'_,
             continue;
         }
         while breaks.next_if(|hard| hard.start < spaces.start).is_some() {}
-        if breaks.peek().is_some_and(|hard| hard.start == spaces.start) {
+        // A break after a tab starts at the spaces that follow it.
+        if breaks.peek().is_some_and(|hard| hard.start < spaces.end) {
             // Two spaces end a line with a line break; keep exactly two.
             if &source[spaces.clone()] != "  " {
                 sink.report(
@@ -175,10 +176,13 @@ fn around(cx: &Context<'_>, sink: &mut Sink<'_, '_>, kind: BlockKind, name: &str
         let last = lines.of(block.range.end.saturating_sub(1).max(block.range.start));
         if first > 0 && !lines.is_blank(source, first - 1) {
             // Front matter may sit right above the first heading.
+            // A blank line would move a comment's next line off the block.
+            let after_comment =
+                source[lines.content(source, first - 1)].contains("lint-disable-next-line");
             let after_metadata = ix > 0
                 && cx.blocks[ix - 1].kind == BlockKind::Metadata
                 && lines.of(cx.blocks[ix - 1].range.end.saturating_sub(1)) == first - 1;
-            if !after_metadata {
+            if !after_metadata && !after_comment {
                 let at = lines.start(first);
                 sink.report(
                     lines.content(source, first),
@@ -216,6 +220,7 @@ mod tests {
         // The last line of a paragraph has no break to keep.
         assert_eq!(fixed("trailing-spaces", "", "a  \n\nb\n"), "a\n\nb\n");
         assert_eq!(fixed("trailing-spaces", "", "a \r\nb\r\n"), "a\r\nb\r\n");
+        assert_eq!(fixed("trailing-spaces", "", "a\t  \nb\n"), "a  \nb\n");
     }
 
     #[test]
@@ -286,6 +291,8 @@ mod tests {
             ),
             "a\n\n| a |\n|---|\n| 1 |\n\n# H\n"
         );
+        let comment = "<!-- neonlint-disable-next-line -->\n# H\n";
+        assert_eq!(fixed("blank-lines-around-headings", "", comment), comment);
         // Inside a list a blank line would need the list's indent.
         let nested = "- a\n  # H\n  b\n";
         assert!(findings("blank-lines-around-headings", "", nested).is_empty());

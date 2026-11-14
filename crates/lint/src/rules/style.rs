@@ -88,7 +88,9 @@ pub(super) fn fence(cx: &Context<'_>, options: &Options, sink: &mut Sink<'_, '_>
         let range = &fence.range;
         let first = lines.of(range.start);
         let opening = &source[range.start..lines.content(source, first).end];
-        let marker = opening.as_bytes()[0];
+        let Some(&marker) = opening.as_bytes().first() else {
+            continue;
+        };
         if !matches!(marker, b'`' | b'~') {
             continue;
         }
@@ -160,7 +162,9 @@ pub(super) fn fence_language(cx: &Context<'_>, options: &Options, sink: &mut Sin
     let source = cx.source;
     for fence in cx.fences.iter().filter(|fence| fence.info_empty) {
         let start = fence.range.start;
-        let marker = source.as_bytes()[start];
+        let Some(&marker) = source.as_bytes().get(start) else {
+            continue;
+        };
         let length = source[start..]
             .bytes()
             .take_while(|byte| *byte == marker)

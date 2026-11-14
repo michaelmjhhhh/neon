@@ -87,7 +87,7 @@ pub fn lint(source: &str, config: &Config) -> Vec<Finding> {
         return Vec::new();
     }
     let context = context::Context::parse(source);
-    rules::run(&context, config, None)
+    rules::run(&context, config)
 }
 
 /// Zero-based lines and columns, in characters, of byte offsets into a
@@ -95,6 +95,10 @@ pub fn lint(source: &str, config: &Config) -> Vec<Finding> {
 pub struct Positions<'a> {
     source: &'a str,
     lines: context::Lines,
+    /// The last offset asked for and its column, so offsets asked for in
+    /// order along one long line are counted from there, not from the
+    /// line's start.
+    last: std::cell::Cell<(usize, u32)>,
 }
 
 impl<'a> Positions<'a> {
@@ -102,16 +106,24 @@ impl<'a> Positions<'a> {
         Self {
             source,
             lines: context::Lines::new(source),
+            last: std::cell::Cell::new((0, 0)),
         }
     }
 
-    /// The line and column of `offset`, in time proportional to the length
-    /// of its line.
+    /// The line and column of `offset`.
     pub fn at(&self, offset: usize) -> (u32, u32) {
         let offset = floor_char_boundary(self.source, offset.min(self.source.len()));
         let line = self.lines.of(offset);
-        let column = self.source[self.lines.start(line)..offset].chars().count();
-        (line as u32, column as u32)
+        let line_start = self.lines.start(line);
+        let (last_offset, last_column) = self.last.get();
+        let (from, column) = if last_offset >= line_start && last_offset <= offset {
+            (last_offset, last_column)
+        } else {
+            (line_start, 0)
+        };
+        let column = column + self.source[from..offset].chars().count() as u32;
+        self.last.set((offset, column));
+        (line as u32, column)
     }
 }
 

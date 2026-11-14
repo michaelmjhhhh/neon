@@ -82,6 +82,15 @@ pub(crate) fn lint_config_path(cx: &App) -> Option<PathBuf> {
     Some(file.path.parent()?.join("lint.toml"))
 }
 
+/// Whether the editor marks lint issues and saving fixes them, without
+/// copying the rest of the settings, as typing asks on every pause.
+pub(crate) fn lint_settings(cx: &App) -> (bool, bool) {
+    cx.try_global::<SettingsFile>()
+        .map_or((false, false), |file| {
+            (file.settings.lint_issues, file.settings.lint_on_save)
+        })
+}
+
 /// The settings new windows start from.
 pub(crate) fn saved(cx: &App) -> Settings {
     cx.try_global::<SettingsFile>()

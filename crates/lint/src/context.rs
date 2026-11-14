@@ -168,12 +168,24 @@ pub(crate) struct Context<'a> {
     /// ending added at the end would change.
     pub ends_in_verbatim: bool,
     /// A hash of what fixes must keep: the tags, code, math, HTML and link
-    /// targets. Text and blank lines are left out.
+    /// targets. Text and blank lines are left out. Zero unless parsed with
+    /// [`Self::parse_checked`].
     pub signature: u64,
 }
 
 impl<'a> Context<'a> {
+    /// Parse `source` for linting.
     pub fn parse(source: &'a str) -> Self {
+        Self::parse_with(source, false)
+    }
+
+    /// Parse `source` and hash its structure into [`Self::signature`], so a
+    /// fix can be checked against it.
+    pub fn parse_checked(source: &'a str) -> Self {
+        Self::parse_with(source, true)
+    }
+
+    fn parse_with(source: &'a str, hashing: bool) -> Self {
         let lines = Lines::new(source);
         let newline = match source.find('\n') {
             Some(ix) if ix > 0 && source.as_bytes()[ix - 1] == b'\r' => "\r\n",
@@ -192,6 +204,7 @@ impl<'a> Context<'a> {
             tables: Vec::new(),
             comments: Vec::new(),
             ends_in_verbatim: false,
+            hashing,
             hasher: DefaultHasher::new(),
             depth: 0,
             verbatim: 0,
@@ -206,7 +219,7 @@ impl<'a> Context<'a> {
             builder.event(event, range);
         }
         for (_, definition) in parser.reference_definitions().iter() {
-            definition.dest.hash(&mut builder.hasher);
+            builder.mix(&definition.dest);
             builder.protected.push(definition.span.clone());
         }
         let Builder {
@@ -296,6 +309,8 @@ struct Builder<'a> {
     tables: Vec<Table>,
     comments: Vec<Range<usize>>,
     ends_in_verbatim: bool,
+    /// Whether to hash the structure; only fixes need it.
+    hashing: bool,
     hasher: DefaultHasher,
     /// How many tags are open.
     depth: usize,
@@ -313,6 +328,12 @@ struct Builder<'a> {
 }
 
 impl Builder<'_> {
+    fn mix(&mut self, value: impl Hash) {
+        if self.hashing {
+            value.hash(&mut self.hasher);
+        }
+    }
+
     fn event(&mut self, event: Event<'_>, range: Range<usize>) {
         if let Some(link) = self.links.last_mut()
             && !matches!(event, Event::End(TagEnd::Link | TagEnd::Image))
@@ -340,7 +361,7 @@ impl Builder<'_> {
             }
             Event::Text(text) => {
                 if self.verbatim > 0 {
-                    text.hash(&mut self.hasher);
+                    self.mix(&text);
                     self.ends_in_verbatim |= range.end == self.source.len();
                     // A fenced block's fences may change; its code may not.
                     self.protect(range);
@@ -355,11 +376,11 @@ impl Builder<'_> {
                 }
             }
             Event::Code(code) | Event::InlineMath(code) | Event::DisplayMath(code) => {
-                code.hash(&mut self.hasher);
+                self.mix(&code);
                 self.protect(range);
             }
             Event::Html(html) | Event::InlineHtml(html) => {
-                html.hash(&mut self.hasher);
+                self.mix(&html);
                 if self.verbatim > 0 {
                     self.ends_in_verbatim |= range.end == self.source.len();
                 }
@@ -369,21 +390,21 @@ impl Builder<'_> {
                 self.protect(range);
             }
             Event::FootnoteReference(label) => {
-                label.hash(&mut self.hasher);
+                self.mix(&label);
                 self.protect(range);
             }
             Event::TaskListMarker(checked) => {
-                checked.hash(&mut self.hasher);
+                self.mix(checked);
                 self.protect(range);
             }
             Event::HardBreak => {
-                1u8.hash(&mut self.hasher);
+                self.mix(1u8);
                 if self.source.as_bytes()[range.start] != b'\\' {
                     self.hard_breaks.push(range);
                 }
             }
             Event::Rule => {
-                2u8.hash(&mut self.hasher);
+                self.mix(2u8);
                 if self.depth == 0 {
                     self.blocks.push(Block {
                         kind: BlockKind::Rule,
@@ -396,12 +417,12 @@ impl Builder<'_> {
     }
 
     fn start(&mut self, tag: Tag<'_>, range: Range<usize>) {
-        b's'.hash(&mut self.hasher);
-        std::mem::discriminant(&tag).hash(&mut self.hasher);
+        self.mix(b's');
+        self.mix(std::mem::discriminant(&tag));
         let top_level = self.depth == 0;
         let kind = match &tag {
             Tag::Heading { level, .. } => {
-                (*level as u8).hash(&mut self.hasher);
+                self.mix(*level as u8);
                 self.open_heading = Some(self.headings.len());
                 self.headings.push(Heading {
                     level: heading_level(*level),
@@ -437,11 +458,11 @@ impl Builder<'_> {
                 }
             }
             Tag::BlockQuote(kind) => {
-                kind.map(|kind| kind as u8).hash(&mut self.hasher);
+                self.mix(kind.map(|kind| kind as u8));
                 BlockKind::BlockQuote
             }
             Tag::List(start) => {
-                start.hash(&mut self.hasher);
+                self.mix(start);
                 self.open_lists.push(self.lists.len());
                 self.lists.push(List {
                     start: *start,
@@ -457,7 +478,7 @@ impl Builder<'_> {
             }
             Tag::Table(alignments) => {
                 for alignment in alignments {
-                    (*alignment as u8).hash(&mut self.hasher);
+                    self.mix(*alignment as u8);
                 }
                 self.open_table = Some(self.tables.len());
                 self.tables.push(Table {
@@ -501,9 +522,9 @@ impl Builder<'_> {
                 title,
                 ..
             } => {
-                std::mem::discriminant(link_type).hash(&mut self.hasher);
-                dest_url.hash(&mut self.hasher);
-                title.hash(&mut self.hasher);
+                self.mix(std::mem::discriminant(link_type));
+                self.mix(dest_url);
+                self.mix(title);
                 let opaque = matches!(
                     link_type,
                     LinkType::WikiLink { .. } | LinkType::Autolink | LinkType::Email
@@ -520,7 +541,7 @@ impl Builder<'_> {
                 BlockKind::Other
             }
             Tag::FootnoteDefinition(label) => {
-                label.hash(&mut self.hasher);
+                self.mix(label);
                 BlockKind::Other
             }
             _ => BlockKind::Other,
@@ -531,8 +552,8 @@ impl Builder<'_> {
     }
 
     fn end(&mut self, end: TagEnd, range: Range<usize>) {
-        b'e'.hash(&mut self.hasher);
-        std::mem::discriminant(&end).hash(&mut self.hasher);
+        self.mix(b'e');
+        self.mix(std::mem::discriminant(&end));
         match end {
             TagEnd::Heading(_) => self.open_heading = None,
             TagEnd::CodeBlock | TagEnd::MetadataBlock(_) | TagEnd::HtmlBlock => {

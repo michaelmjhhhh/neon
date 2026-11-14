@@ -77,6 +77,9 @@ impl Sink<'_, '_> {
         {
             return;
         }
+        let Some(fix) = normalize(fix) else {
+            return;
+        };
         if fix
             .iter()
             .any(|edit| self.context.is_protected(&edit.range))
@@ -97,13 +100,29 @@ impl Sink<'_, '_> {
     }
 }
 
-/// Run `config`'s rules over `context`, or only the rule named `only`.
-pub(crate) fn run(context: &Context<'_>, config: &Config, only: Option<&str>) -> Vec<Finding> {
+/// A finding's edits sorted, with edits that touch joined into one, as two
+/// insertions at one place; `None` if two overlap, which no rule should
+/// make.
+fn normalize(mut edits: Vec<Edit>) -> Option<Vec<Edit>> {
+    edits.sort_by_key(|edit| (edit.range.start, edit.range.end));
+    let mut joined: Vec<Edit> = Vec::with_capacity(edits.len());
+    for edit in edits {
+        match joined.last_mut() {
+            Some(last) if last.range.end > edit.range.start => return None,
+            Some(last) if last.range.end == edit.range.start => {
+                last.range.end = edit.range.end;
+                last.text.push_str(&edit.text);
+            }
+            _ => joined.push(edit),
+        }
+    }
+    Some(joined)
+}
+
+/// Run `config`'s rules over `context`.
+pub(crate) fn run(context: &Context<'_>, config: &Config) -> Vec<Finding> {
     let mut findings = Vec::new();
     for rule in config.active_rules() {
-        if only.is_some_and(|only| only != rule.info.name) {
-            continue;
-        }
         let mut sink = Sink {
             context,
             rule,
@@ -112,9 +131,6 @@ pub(crate) fn run(context: &Context<'_>, config: &Config, only: Option<&str>) ->
         (rule.info.check)(context, &rule.options, &mut sink);
     }
     for custom in config.custom_rules() {
-        if only.is_some_and(|only| only != &*custom.name) {
-            continue;
-        }
         custom.check(context, &mut findings);
     }
     findings.sort_by_key(|finding| (finding.range.start, finding.range.end));

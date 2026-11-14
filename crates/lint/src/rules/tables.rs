@@ -86,6 +86,7 @@ fn align(cx: &Context<'_>, table: &Table) -> Option<Vec<Edit>> {
     let mut edits = Vec::new();
     for (line, cells) in &rows {
         let content = lines.content(source, *line);
+        let row_start = edits.len();
         let mut gap_start = content.start;
         let mut gap = String::from("| ");
         for (column, cell) in cells.iter().enumerate() {
@@ -103,6 +104,14 @@ fn align(cx: &Context<'_>, table: &Table) -> Option<Vec<Edit>> {
             gap_start = cell.end;
         }
         replace(source, &mut edits, gap_start..content.end, &gap);
+        // An empty cell's spaces can move from one gap to the next without
+        // changing the row; such edits would never settle.
+        let row_edits = &edits[row_start..];
+        if !row_edits.is_empty()
+            && rewritten(source, &content, row_edits) == source[content.clone()]
+        {
+            edits.truncate(row_start);
+        }
     }
     let mut row = String::from("|");
     for (column, width) in widths.iter().enumerate() {
@@ -131,6 +140,19 @@ fn replace(source: &str, edits: &mut Vec<Edit>, range: Range<usize>, text: &str)
     }
 }
 
+/// The text of `range` with `edits`, which lie inside it, applied.
+fn rewritten(source: &str, range: &Range<usize>, edits: &[Edit]) -> String {
+    let mut text = String::with_capacity(range.len());
+    let mut at = range.start;
+    for edit in edits {
+        text.push_str(&source[at..edit.range.start]);
+        text.push_str(&edit.text);
+        at = edit.range.end;
+    }
+    text.push_str(&source[at..range.end]);
+    text
+}
+
 fn trim(source: &str, cell: &Range<usize>) -> Range<usize> {
     let text = &source[cell.clone()];
     let start = cell.start + (text.len() - text.trim_start().len());
@@ -144,7 +166,7 @@ fn only(text: &str, allowed: &[char]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::rules::test_support::fixed;
+    use crate::rules::test_support::{findings, fixed};
 
     #[test]
     fn columns_line_up() {
@@ -182,6 +204,12 @@ mod tests {
     fn rows_with_extra_cells_are_left_alone() {
         let source = "| a |\n|---|\n| 1 | 2 |\n";
         assert_eq!(fixed("table-alignment", "", source), source);
+    }
+
+    #[test]
+    fn aligned_tables_with_empty_cells_settle() {
+        let aligned = "| a   | b   |\n| --- | --- |\n| 1   |     |\n";
+        assert!(findings("table-alignment", "", aligned).is_empty());
     }
 
     #[test]
