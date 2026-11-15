@@ -13,10 +13,10 @@ use markdown_preview::{
 };
 
 use crate::workspace::{
-    CloseSettings, CloseTab, CloseWindow, CopyEntry, CopyEntryPath, ExitZen, FocusLeftPane,
-    FocusRightPane, NewFile, NewFolder, NewTab, NextTab, Open, OpenFolder, OpenSettings,
-    PasteEntry, PreviousTab, Push, Quit, RenameEntry, ResetZoom, RevealEntry, Save, SaveAs,
-    SelectNextMatch, SelectPreviousMatch, ShowChanges, ShowEditor, ShowFiles, ShowOutline,
+    CloseSettings, CloseTab, CloseWindow, CopyEntry, CopyEntryPath, ExitZen, FixLintIssues,
+    FocusLeftPane, FocusRightPane, NewFile, NewFolder, NewTab, NextTab, Open, OpenFolder,
+    OpenSettings, PasteEntry, PreviousTab, Push, Quit, RenameEntry, ResetZoom, RevealEntry, Save,
+    SaveAs, SelectNextMatch, SelectPreviousMatch, ShowChanges, ShowEditor, ShowFiles, ShowOutline,
     ShowPreview, ShowSearch, ShowSplit, SplitLeft, SplitRight, ToggleBold, ToggleItalic,
     ToggleLineNumbers, ToggleSidebar, ToggleZen, TrashEntry, ViewEntry, ZoomIn, ZoomOut,
 };
@@ -84,6 +84,7 @@ fn rows(cx: &App) -> [(&'static str, Option<&'static str>, Vec<Row>); 9] {
                 ("Select all", a(&[&SelectAll])),
                 ("Bold", a(&[&ToggleBold])),
                 ("Italic", a(&[&ToggleItalic])),
+                ("Fix lint issues", a(&[&FixLintIssues])),
                 ("Find", a(&[&Search])),
                 ("Find and replace", a(&[&Replace])),
                 ("Indent", a(&[&IndentInline, &Indent])),

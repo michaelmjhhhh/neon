@@ -42,8 +42,8 @@ pub use settings_file::load as load_settings;
 pub use workspace::MemoryBench;
 pub use workspace::{
     CloseSettings, CloseTab, CloseWindow, Commit, ExitZen, ExportDocx, ExportHtml, ExportPdf,
-    FocusLeftPane, FocusRightPane, LayoutMode, NewFile, NewFolder, NewTab, NextTab, Open,
-    OpenFolder, OpenSettings, PreviousTab, Quit, RefreshFolder, ResetZoom, Save, SaveAs,
+    FixLintIssues, FocusLeftPane, FocusRightPane, LayoutMode, NewFile, NewFolder, NewTab, NextTab,
+    Open, OpenFolder, OpenSettings, PreviousTab, Quit, RefreshFolder, ResetZoom, Save, SaveAs,
     ShowEditor, ShowPreview, ShowSplit, SplitLeft, SplitRight, ToggleBold, ToggleItalic,
     ToggleLineNumbers, ToggleSidebar, ToggleTheme, ToggleZen, Workspace, ZoomIn, ZoomOut,
 };
@@ -223,6 +223,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-0", ResetZoom, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-b", ToggleBold, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-i", ToggleItalic, Some(KEY_CONTEXT)),
+        // As Format Document in VS Code.
+        KeyBinding::new("alt-shift-f", FixLintIssues, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-o", Open, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-s", Save, Some(KEY_CONTEXT)),
         KeyBinding::new("secondary-shift-s", SaveAs, Some(KEY_CONTEXT)),

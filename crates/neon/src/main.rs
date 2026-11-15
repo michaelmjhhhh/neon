@@ -13,12 +13,12 @@ use gpui_kit::{
 #[cfg(feature = "diagnostics")]
 use workspace::LatencyBench;
 use workspace::{
-    CloseTab, CloseWindow, ExportDocx, ExportHtml, ExportPdf, FocusLeftPane, FocusRightPane,
-    NewFile, NewFolder, NewTab, NextTab, Open, OpenFolder, OpenSettings, PreviousTab, Quit,
-    RefreshFolder, ResetZoom, Save, SaveAs, ShowChanges, ShowEditor, ShowFiles, ShowHistory,
-    ShowOutline, ShowPreview, ShowSearch, ShowSplit, SplitLeft, SplitRight, ToggleBold,
-    ToggleItalic, ToggleLineNumbers, ToggleSidebar, ToggleTheme, ToggleZen, Workspace, ZoomIn,
-    ZoomOut,
+    CloseTab, CloseWindow, ExportDocx, ExportHtml, ExportPdf, FixLintIssues, FocusLeftPane,
+    FocusRightPane, NewFile, NewFolder, NewTab, NextTab, Open, OpenFolder, OpenSettings,
+    PreviousTab, Quit, RefreshFolder, ResetZoom, Save, SaveAs, ShowChanges, ShowEditor, ShowFiles,
+    ShowHistory, ShowOutline, ShowPreview, ShowSearch, ShowSplit, SplitLeft, SplitRight,
+    ToggleBold, ToggleItalic, ToggleLineNumbers, ToggleSidebar, ToggleTheme, ToggleZen, Workspace,
+    ZoomIn, ZoomOut,
 };
 
 /// Every open document window, so files opened from Finder can reuse one.
@@ -295,6 +295,8 @@ fn set_menus(can_update: bool, cx: &mut App) {
             MenuItem::separator(),
             MenuItem::action("Bold", ToggleBold),
             MenuItem::action("Italic", ToggleItalic),
+            MenuItem::separator(),
+            MenuItem::action("Fix Lint Issues", FixLintIssues),
         ]),
         Menu::new("View").items([
             MenuItem::action("Editor", ShowEditor),

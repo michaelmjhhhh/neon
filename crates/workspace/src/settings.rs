@@ -76,6 +76,9 @@ pub(crate) struct SettingsView {
     /// The saved setting, not a window's temporary toggle.
     line_numbers: bool,
     readable_line_length: bool,
+    linting: bool,
+    lint_issues: bool,
+    lint_on_save: bool,
     /// The layout new windows open in.
     default_layout: LayoutMode,
     /// Filters the Shortcuts section by command name.
@@ -108,6 +111,9 @@ impl SettingsView {
             typography,
             line_numbers: saved.line_numbers,
             readable_line_length: saved.readable_line_length,
+            linting: saved.linting,
+            lint_issues: saved.lint_issues,
+            lint_on_save: saved.lint_on_save,
             default_layout: saved.default_layout,
             shortcut_query,
             shortcuts: shortcuts::all(cx),
@@ -123,6 +129,9 @@ impl SettingsView {
             let saved = settings_file::saved(cx);
             self.line_numbers = saved.line_numbers;
             self.readable_line_length = saved.readable_line_length;
+            self.linting = saved.linting;
+            self.lint_issues = saved.lint_issues;
+            self.lint_on_save = saved.lint_on_save;
             self.default_layout = saved.default_layout;
         }
         self.typography.update(cx, |typography, cx| {
@@ -395,6 +404,70 @@ impl SettingsView {
                     })),
             ),
         );
+        let linting = section(
+            "Linting",
+            Some(
+                "Rules come from a .neonlint.toml in the note’s folder or above it, \
+                 or from lint.toml beside Neon’s settings.",
+            ),
+            None,
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(switch_row(
+                    "Lint notes",
+                    Switch::new("linting")
+                        .checked(self.linting)
+                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            this.linting = *checked;
+                            settings_file::update(cx, |settings| settings.linting = *checked);
+                            cx.notify();
+                        })),
+                ))
+                // Off, nothing is linted, so the options below would do nothing.
+                .when(self.linting, |this| {
+                    this.child(switch_row(
+                        "Mark issues in the editor",
+                        Switch::new("lint-issues")
+                            .checked(self.lint_issues)
+                            .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                this.lint_issues = *checked;
+                                settings_file::update(cx, |settings| {
+                                    settings.lint_issues = *checked
+                                });
+                                cx.notify();
+                            })),
+                    ))
+                    .child(switch_row(
+                        "Fix spacing on save",
+                        Switch::new("lint-on-save")
+                            .checked(self.lint_on_save)
+                            .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                this.lint_on_save = *checked;
+                                settings_file::update(cx, |settings| {
+                                    settings.lint_on_save = *checked
+                                });
+                                cx.notify();
+                            })),
+                    ))
+                    .children(self.shortcut("Fix lint issues").map(|shortcut| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_4()
+                            .h_12()
+                            .px_4()
+                            .rounded(theme.radius_lg)
+                            .border_1()
+                            .border_color(theme.border)
+                            .bg(theme.sidebar.opacity(0.4))
+                            .child(div().text_sm().child("Fix lint issues in the note"))
+                            .child(shortcut_keys(shortcut))
+                    }))
+                }),
+        );
         div()
             .flex()
             .flex_col()
@@ -402,6 +475,16 @@ impl SettingsView {
             .child(default_view)
             .child(line_numbers)
             .child(line_length)
+            .child(linting)
+    }
+
+    /// The keys of the command the Shortcuts section names `label`, if it
+    /// has any.
+    fn shortcut(&self, label: &str) -> Option<&shortcuts::Shortcut> {
+        self.shortcuts
+            .iter()
+            .flat_map(|group| &group.shortcuts)
+            .find(|shortcut| shortcut.label == label)
     }
 
     /// A search field, then each group of commands as a card of rows with
@@ -454,13 +537,7 @@ impl SettingsView {
                             .px_4()
                             .when(ix > 0, |this| this.border_t_1().border_color(theme.border))
                             .child(div().min_w_0().truncate().text_sm().child(shortcut.label))
-                            .child(div().flex().flex_none().items_center().gap_1().children(
-                                shortcut.keys.iter().map(|chord| {
-                                    div().flex().items_center().gap_0p5().children(
-                                        chord.iter().map(|key| Kbd::new(key.clone()).outline()),
-                                    )
-                                }),
-                            ))
+                            .child(shortcut_keys(shortcut))
                     });
                     section(
                         group.title,
@@ -589,6 +666,22 @@ impl SettingsView {
     }
 }
 
+/// Every key bound to `shortcut`, each drawn as outlined keycaps.
+fn shortcut_keys(shortcut: &shortcuts::Shortcut) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap_1()
+        .children(shortcut.keys.iter().map(|chord| {
+            div()
+                .flex()
+                .items_center()
+                .gap_0p5()
+                .children(chord.iter().map(|key| Kbd::new(key.clone()).outline()))
+        }))
+}
+
 /// A titled block of the column: a heading with an optional short description,
 /// an optional action at the trailing edge, then its content.
 fn section(
@@ -608,9 +701,12 @@ fn section(
                 .justify_between()
                 .gap_4()
                 .child(
+                    // Shrinks with the column, so a long description wraps.
                     div()
                         .flex()
                         .flex_col()
+                        .flex_1()
+                        .min_w_0()
                         .gap_0p5()
                         .child(
                             div()

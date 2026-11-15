@@ -44,6 +44,7 @@ tree-sitter = "0.26"
 workspace = { path = "crates/workspace" }
 markdown_preview = { path = "crates/markdown_preview" }
 export = { path = "crates/export" }
+lint = { path = "crates/lint" }
 pulldown-cmark = { version = "0.13", default-features = false }
 anyhow = "1"
 
