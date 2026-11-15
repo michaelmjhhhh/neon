@@ -405,7 +405,7 @@ impl SettingsView {
             "Linting",
             Some(
                 "Rules come from a .neonlint.toml in the note’s folder or above it, \
-                 or from lint.toml beside Neon’s settings. ⌥⇧F fixes the note.",
+                 or from lint.toml beside Neon’s settings.",
             ),
             None,
             div()
@@ -431,7 +431,22 @@ impl SettingsView {
                             settings_file::update(cx, |settings| settings.lint_on_save = *checked);
                             cx.notify();
                         })),
-                )),
+                ))
+                .children(self.shortcut("Fix lint issues").map(|shortcut| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_4()
+                        .h_12()
+                        .px_4()
+                        .rounded(theme.radius_lg)
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(theme.sidebar.opacity(0.4))
+                        .child(div().text_sm().child("Fix lint issues in the note"))
+                        .child(shortcut_keys(shortcut))
+                })),
         );
         div()
             .flex()
@@ -441,6 +456,15 @@ impl SettingsView {
             .child(line_numbers)
             .child(line_length)
             .child(linting)
+    }
+
+    /// The keys of the command the Shortcuts section names `label`, if it
+    /// has any.
+    fn shortcut(&self, label: &str) -> Option<&shortcuts::Shortcut> {
+        self.shortcuts
+            .iter()
+            .flat_map(|group| &group.shortcuts)
+            .find(|shortcut| shortcut.label == label)
     }
 
     /// A search field, then each group of commands as a card of rows with
@@ -493,13 +517,7 @@ impl SettingsView {
                             .px_4()
                             .when(ix > 0, |this| this.border_t_1().border_color(theme.border))
                             .child(div().min_w_0().truncate().text_sm().child(shortcut.label))
-                            .child(div().flex().flex_none().items_center().gap_1().children(
-                                shortcut.keys.iter().map(|chord| {
-                                    div().flex().items_center().gap_0p5().children(
-                                        chord.iter().map(|key| Kbd::new(key.clone()).outline()),
-                                    )
-                                }),
-                            ))
+                            .child(shortcut_keys(shortcut))
                     });
                     section(
                         group.title,
@@ -628,6 +646,22 @@ impl SettingsView {
     }
 }
 
+/// Every key bound to `shortcut`, each drawn as outlined keycaps.
+fn shortcut_keys(shortcut: &shortcuts::Shortcut) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap_1()
+        .children(shortcut.keys.iter().map(|chord| {
+            div()
+                .flex()
+                .items_center()
+                .gap_0p5()
+                .children(chord.iter().map(|key| Kbd::new(key.clone()).outline()))
+        }))
+}
+
 /// A titled block of the column: a heading with an optional short description,
 /// an optional action at the trailing edge, then its content.
 fn section(
@@ -647,9 +681,12 @@ fn section(
                 .justify_between()
                 .gap_4()
                 .child(
+                    // Shrinks with the column, so a long description wraps.
                     div()
                         .flex()
                         .flex_col()
+                        .flex_1()
+                        .min_w_0()
                         .gap_0p5()
                         .child(
                             div()
