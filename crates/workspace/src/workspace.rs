@@ -314,8 +314,8 @@ pub struct Workspace {
     line_numbers: bool,
     /// Whether text keeps to a readable line length or fills the pane.
     readable_line_length: bool,
-    /// The saved setting for marking lint issues, to notice it change.
-    lint_issues: bool,
+    /// The saved lint settings, to notice them change.
+    lint: crate::settings_file::LintSettings,
     /// The digits the line-number gutter had room for when the editor's
     /// column was last measured.
     gutter_digits: Cell<usize>,
@@ -446,8 +446,9 @@ impl Workspace {
                 if this.readable_line_length != saved.readable_line_length {
                     this.set_readable_line_length(saved.readable_line_length, cx);
                 }
-                if this.lint_issues != saved.lint_issues {
-                    this.lint_issues = saved.lint_issues;
+                let lint = crate::settings_file::lint_settings(cx);
+                if this.lint != lint {
+                    this.lint = lint;
                     this.relint(cx);
                 }
             }),
@@ -521,7 +522,7 @@ impl Workspace {
             ],
             line_numbers,
             readable_line_length,
-            lint_issues: saved.lint_issues,
+            lint: crate::settings_file::lint_settings(cx),
             gutter_digits: Cell::new(0),
             settings_open: false,
             settings,

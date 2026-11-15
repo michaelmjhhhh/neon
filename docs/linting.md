@@ -4,6 +4,8 @@ Neon checks notes against a set of Markdown rules. It can mark issues in the edi
 
 Marking issues and fixing on save are both off until you turn them on, in **Settings › Editor › Linting** or for one folder in its `.neonlint.toml`. Fixing on request always works.
 
+**Lint notes** in the same section turns linting off everywhere: no note is marked or fixed, on request or on save, whatever its folder's `.neonlint.toml` says.
+
 ## What fixes never do
 
 - Change code blocks, inline code, math, HTML, front matter, `%% comments %%` or link targets.

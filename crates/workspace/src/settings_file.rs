@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::theme::{self, Appearance};
 use crate::workspace::LayoutMode;
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Settings {
     #[serde(deserialize_with = "or_default")]
@@ -28,11 +28,30 @@ pub(crate) struct Settings {
     /// The layout new windows open in: Editor, Split or Preview.
     #[serde(deserialize_with = "or_default")]
     pub(crate) default_layout: LayoutMode,
+    /// Whether Neon lints notes at all. On by default; off, no note is
+    /// marked or fixed, whatever its folder's `.neonlint.toml` says.
+    pub(crate) linting: bool,
     /// Whether the editor marks lint issues. Off by default, as is fixing
     /// on save: a folder's `.neonlint.toml` can turn either on for its notes.
     pub(crate) lint_issues: bool,
     /// Whether saving fixes the issues rules fix on save.
     pub(crate) lint_on_save: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            appearance: Appearance::default(),
+            editor: PaneTypography::default(),
+            preview: PaneTypography::default(),
+            line_numbers: false,
+            readable_line_length: false,
+            default_layout: LayoutMode::default(),
+            linting: true,
+            lint_issues: false,
+            lint_on_save: false,
+        }
+    }
 }
 
 /// A choice's default when the file names one this version does not know,
@@ -82,13 +101,27 @@ pub(crate) fn lint_config_path(cx: &App) -> Option<PathBuf> {
     Some(file.path.parent()?.join("lint.toml"))
 }
 
-/// Whether the editor marks lint issues and saving fixes them, without
-/// copying the rest of the settings, as typing asks on every pause.
-pub(crate) fn lint_settings(cx: &App) -> (bool, bool) {
-    cx.try_global::<SettingsFile>()
-        .map_or((false, false), |file| {
-            (file.settings.lint_issues, file.settings.lint_on_save)
-        })
+/// The lint settings, read without copying the rest, as typing asks on
+/// every pause.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LintSettings {
+    /// Whether notes are linted at all.
+    pub(crate) enabled: bool,
+    /// Whether the editor marks issues, unless a folder says otherwise.
+    pub(crate) issues: bool,
+    /// Whether saving fixes them, unless a folder says otherwise.
+    pub(crate) on_save: bool,
+}
+
+pub(crate) fn lint_settings(cx: &App) -> LintSettings {
+    let settings = cx.try_global::<SettingsFile>().map(|file| &file.settings);
+    let default = Settings::default();
+    let settings = settings.unwrap_or(&default);
+    LintSettings {
+        enabled: settings.linting,
+        issues: settings.lint_issues,
+        on_save: settings.lint_on_save,
+    }
 }
 
 /// The settings new windows start from.
@@ -180,6 +213,7 @@ mod tests {
             line_numbers: true,
             readable_line_length: true,
             default_layout: LayoutMode::Preview,
+            linting: false,
             lint_issues: true,
             lint_on_save: true,
         };
@@ -197,6 +231,8 @@ mod tests {
         std::fs::write(&path, r#"{"preview": {"size": 20}}"#).unwrap();
         let settings: Settings = read(&path);
         assert_eq!(settings.preview.size, Some(20));
+        // Files saved before the setting existed keep linting on.
+        assert!(settings.linting);
         assert!(!settings.line_numbers);
         assert!(!settings.readable_line_length);
         assert_eq!(settings.default_layout, LayoutMode::Split);
