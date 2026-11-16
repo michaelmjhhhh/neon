@@ -13,7 +13,7 @@ use crate::session_file::Session;
 use crate::typography::Typography;
 use export::ExportFormat;
 use gpui_kit::assets::IconName as AssetIcon;
-use gpui_kit::base::{ResizeHandleRenderer, ResizeHandleState};
+use gpui_kit::base::{ResizeHandleRenderer, ResizeHandleState, motion};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::dialog::{DialogAction, DialogClose, DialogFooter};
 use gpui_kit::component::empty::{
@@ -63,7 +63,6 @@ mod lint;
 mod outline;
 mod panes;
 mod search;
-mod sidebar_reveal;
 mod tabs;
 mod zen_mode;
 use changes::{Changes, SidebarView};
@@ -75,7 +74,6 @@ use outline::OutlineView;
 use panes::{DraggedFile, PaneSplit, Side};
 use search::Search;
 pub use search::{SelectNextMatch, SelectPreviousMatch, ShowSearch};
-use sidebar_reveal::SidebarReveal;
 use tabs::DocumentTab;
 
 #[cfg(feature = "memory-bench")]
@@ -156,6 +154,11 @@ const SIDEBAR_MAX_WIDTH_REMS: f32 = 22.;
 /// The space between the sidebar's top-row controls and what is beside
 /// them: the window controls on one side, the sheet on the other.
 const SIDEBAR_CONTROLS_INSET_REMS: f32 = 0.5;
+/// How the sidebar slides open and closed: critically damped, so the sheet
+/// never pushes past its resting edge, and settled within about half a
+/// pixel of the sidebar.
+const SIDEBAR_SPRING: motion::Spring =
+    motion::Spring::new(Duration::from_millis(350)).with_epsilon(0.002);
 /// The editor's widest measure when it has the sheet to itself, in
 /// characters of the editor font: room for prose and most code, short
 /// enough that the eye finds the next line, as Obsidian's readable line
@@ -288,8 +291,9 @@ pub struct Workspace {
     /// How many Markdown files each listed folder holds, at any depth.
     folder_file_counts: Rc<HashMap<SharedString, usize>>,
     sidebar_visible: bool,
-    /// How far open the sidebar is while it slides; see [`sidebar_reveal`].
-    sidebar_reveal: SidebarReveal,
+    /// How far open the sidebar is this frame, from 0 to 1. It slides
+    /// toward `sidebar_visible` rather than jumping there.
+    sidebar_shown: f32,
     /// Whether the sidebar lists the folder's files or its Git changes.
     sidebar_view: SidebarView,
     /// The Git repository the folder is in, if any; see [`changes`].
@@ -510,7 +514,7 @@ impl Workspace {
             dragging_file: Cell::new(None),
             folder_file_counts: Rc::default(),
             sidebar_visible: true,
-            sidebar_reveal: SidebarReveal::new(true),
+            sidebar_shown: 1.,
             sidebar_view: SidebarView::default(),
             changes,
             history,
@@ -3352,21 +3356,27 @@ impl Workspace {
         let rem = window.rem_size();
         let min = self.sidebar_min_width(window);
         let max = (rem * SIDEBAR_MAX_WIDTH_REMS).max(min);
-        let width = self.panes.read(cx).sizes().first().copied();
-        width.unwrap_or(rem * SIDEBAR_WIDTH_REMS).max(min).min(max)
+        // The group fits its panels to its width as it lays out, so a window
+        // resized while the sidebar was hidden scales the width it returns
+        // at. The group spans the window.
+        let width = match self.panes.read(cx).sizes().as_slice() {
+            &[sidebar, sheet] if sidebar + sheet > Pixels::ZERO => {
+                sidebar * (window.viewport_size().width / (sidebar + sheet))
+            }
+            _ => rem * SIDEBAR_WIDTH_REMS,
+        };
+        width.max(min).min(max)
     }
 
-    /// How far open the sidebar is, from 0 to 1.
-    fn sidebar_shown(&self) -> f32 {
-        self.sidebar_reveal
-            .progress()
-            .unwrap_or(if self.sidebar_visible { 1. } else { 0. })
+    /// Whether the sidebar is on its way open or closed.
+    fn sidebar_sliding(&self) -> bool {
+        self.sidebar_shown != sidebar_target(self.sidebar_visible)
     }
 
     /// Where the sheet starts from the window's leading edge: after the
     /// sidebar, or one inset in without it.
     fn sheet_start(&self, window: &Window, cx: &App) -> Pixels {
-        let shown = self.sidebar_shown();
+        let shown = self.sidebar_shown;
         self.sidebar_width(window, cx) * shown + window.rem_size() * SHEET_INSET_REMS * (1. - shown)
     }
 
@@ -3374,8 +3384,8 @@ impl Workspace {
     /// sheet stands alone, and the group's sizes wait untouched for its
     /// return: a group with one panel would forget the sidebar's width.
     fn render_panes(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        if let Some(shown) = self.sidebar_reveal.progress() {
-            return self.render_sliding_panes(shown, window, cx);
+        if self.sidebar_sliding() {
+            return self.render_sliding_panes(window, cx);
         }
         if !self.sidebar_visible {
             return self.render_sheet(window, cx);
@@ -3404,18 +3414,14 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The sidebar part way open, `shown` of the way. It slides in from the
-    /// window's edge at its full width, cut off where it ends, so its rows
-    /// keep their layout, and fades as it goes. Its controls pass under the
-    /// window's rather than over them. The resize handle waits for it to
-    /// settle.
-    fn render_sliding_panes(
-        &self,
-        shown: f32,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    /// The sidebar part way open. It slides in from the window's edge at its
+    /// full width, cut off where it ends, so its rows keep their layout, and
+    /// fades as it goes. Its controls pass under the window's rather than
+    /// over them. On its way out it takes no clicks, and the resize handle
+    /// waits for it to settle.
+    fn render_sliding_panes(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let rem = window.rem_size();
+        let shown = self.sidebar_shown;
         let width = self.sidebar_width(window, cx);
         let theme = cx.theme();
         div()
@@ -3452,6 +3458,9 @@ impl Workspace {
                                 .h(rem * (2. * SHEET_INSET_REMS + SHEET_HEADER_REMS))
                                 .bg(theme.sidebar),
                         )
+                    })
+                    .when(!self.sidebar_visible, |this| {
+                        this.child(div().absolute().inset_0().occlude())
                     }),
             )
             .child(
@@ -3704,7 +3713,7 @@ impl Workspace {
             .min_w_0()
             .p(window.rem_size() * SHEET_INSET_REMS)
             // The sidebar's rows already end one inset short of its edge.
-            .pl(window.rem_size() * SHEET_INSET_REMS * (1. - self.sidebar_shown()))
+            .pl(window.rem_size() * SHEET_INSET_REMS * (1. - self.sidebar_shown))
             .child(
                 div()
                     .flex()
@@ -3787,9 +3796,15 @@ impl Render for Workspace {
             });
         }
         // Settings and Zen cover the sidebar, so it changes there unseen.
-        let animate = !self.settings_open && self.zen.is_none() && !cx.reduce_motion();
-        self.sidebar_reveal
-            .step(self.sidebar_visible, animate, window);
+        let travel = !self.settings_open && self.zen.is_none();
+        self.sidebar_shown = motion::spring(
+            "sidebar-shown",
+            sidebar_target(self.sidebar_visible),
+            SIDEBAR_SPRING.with_travel(travel),
+            window,
+            cx,
+        )
+        .clamp(0., 1.);
         let content = if self.settings_open {
             self.settings.clone().into_any_element()
         } else if self.zen.is_some() {
@@ -4067,6 +4082,11 @@ fn icon_slot() -> gpui_kit::Div {
 
 /// A resize handle that stays out of sight until hovered or dragged, for
 /// panes whose boundary is already drawn by a hairline or a gap.
+/// Where the sidebar's spring rests: 1 open, 0 closed.
+fn sidebar_target(visible: bool) -> f32 {
+    if visible { 1. } else { 0. }
+}
+
 fn quiet_resize_handle() -> ResizeHandleRenderer {
     Rc::new(|handle, window, cx| {
         if handle.state() == ResizeHandleState::Idle {
