@@ -29,6 +29,8 @@ Groups, in this order:
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-11-16
+
 ### Added
 
 - Linting: rules for trailing spaces, blank lines, headings, list markers and numbering, emphasis, code fences, table alignment, ellipses and spacing between Chinese and English mark issues in the editor; Edit › Fix Lint Issues (⌥⇧F) fixes them in one undoable step.
