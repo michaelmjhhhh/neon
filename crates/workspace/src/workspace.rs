@@ -35,8 +35,8 @@ use gpui_kit::component::tree::{Tree, TreeEntry, TreeEvent, TreeState};
 use gpui_kit::component::{ActiveTheme as _, TitleBar, WindowExt as _};
 use gpui_kit::component::{Disableable as _, Icon, IconName, Selectable as _, Sizable as _};
 use gpui_kit::{
-    Anchor, AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable, FontFeatures,
-    FontWeight, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
+    Anchor, AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable,
+    FontFeatures, FontWeight, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
     ParentElement as _, PathPromptOptions, Pixels, Render, ScrollHandle, SharedString,
     StatefulInteractiveElement as _, StyleRefinement, Styled as _, Subscription, Task, Window, div,
     prelude::FluentBuilder as _,
@@ -63,6 +63,7 @@ mod lint;
 mod outline;
 mod panes;
 mod search;
+mod sidebar_reveal;
 mod tabs;
 mod zen_mode;
 use changes::{Changes, SidebarView};
@@ -74,6 +75,7 @@ use outline::OutlineView;
 use panes::{DraggedFile, PaneSplit, Side};
 use search::Search;
 pub use search::{SelectNextMatch, SelectPreviousMatch, ShowSearch};
+use sidebar_reveal::SidebarReveal;
 use tabs::DocumentTab;
 
 #[cfg(feature = "memory-bench")]
@@ -286,6 +288,8 @@ pub struct Workspace {
     /// How many Markdown files each listed folder holds, at any depth.
     folder_file_counts: Rc<HashMap<SharedString, usize>>,
     sidebar_visible: bool,
+    /// How far open the sidebar is while it slides; see [`sidebar_reveal`].
+    sidebar_reveal: SidebarReveal,
     /// Whether the sidebar lists the folder's files or its Git changes.
     sidebar_view: SidebarView,
     /// The Git repository the folder is in, if any; see [`changes`].
@@ -506,6 +510,7 @@ impl Workspace {
             dragging_file: Cell::new(None),
             folder_file_counts: Rc::default(),
             sidebar_visible: true,
+            sidebar_reveal: SidebarReveal::new(true),
             sidebar_view: SidebarView::default(),
             changes,
             history,
@@ -3129,9 +3134,19 @@ impl Workspace {
     fn render_sheet_header(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let is_dirty = self.tab().document.is_dirty();
-        // Without the sidebar, the window controls sit on this header, so its
+        let rem = window.rem_size();
+        // With two or more documents open, tabs take the title's place and
+        // each marks its own unsaved edits.
+        let tabbed = self.tabs.len() > 1;
+        // The first tab's name lines up with the single title.
+        let leading = if tabbed { rem * 0.375 } else { rem };
+        // Where the sidebar leaves the window controls on this header, its
         // content starts after them. They do not follow the rem size.
-        let clears_window_controls = !self.sidebar_visible && !window.is_fullscreen();
+        let leading = if window.is_fullscreen() {
+            leading
+        } else {
+            leading.max(WINDOW_CONTROLS_END - self.sheet_start(window, cx))
+        };
         let save_label = if self.tab().document.path().is_some() {
             "Save"
         } else {
@@ -3152,10 +3167,6 @@ impl Workspace {
                 .disabled(self.is_busy())
                 .on_click(cx.listener(|this, _, window, cx| this.save(&Save, window, cx)))
         });
-        // With two or more documents open, tabs take the title's place and
-        // each marks its own unsaved edits.
-        let tabbed = self.tabs.len() > 1;
-
         // The single title, while no tabs take its place.
         let title = (!tabbed).then(|| {
             div()
@@ -3210,17 +3221,8 @@ impl Workspace {
         });
 
         TitleBar::new()
-            .h(window.rem_size() * SHEET_HEADER_REMS)
-            .map(|this| {
-                if clears_window_controls {
-                    this.pl(WINDOW_CONTROLS_END - window.rem_size() * SHEET_INSET_REMS)
-                } else if tabbed {
-                    // The first tab's name lines up with the single title.
-                    this.pl_1p5()
-                } else {
-                    this.pl_4()
-                }
-            })
+            .h(rem * SHEET_HEADER_REMS)
+            .pl(leading)
             .pr_2()
             // The sheet paints the surface, so its rounded corners stay clean.
             .bg(gpui_kit::transparent_black())
@@ -3344,10 +3346,37 @@ impl Workspace {
         controls.max(rem * SIDEBAR_MIN_WIDTH_REMS)
     }
 
+    /// The sidebar's width when open: the one it was left at, within its
+    /// bounds.
+    fn sidebar_width(&self, window: &Window, cx: &App) -> Pixels {
+        let rem = window.rem_size();
+        let min = self.sidebar_min_width(window);
+        let max = (rem * SIDEBAR_MAX_WIDTH_REMS).max(min);
+        let width = self.panes.read(cx).sizes().first().copied();
+        width.unwrap_or(rem * SIDEBAR_WIDTH_REMS).max(min).min(max)
+    }
+
+    /// How far open the sidebar is, from 0 to 1.
+    fn sidebar_shown(&self) -> f32 {
+        self.sidebar_reveal
+            .progress()
+            .unwrap_or(if self.sidebar_visible { 1. } else { 0. })
+    }
+
+    /// Where the sheet starts from the window's leading edge: after the
+    /// sidebar, or one inset in without it.
+    fn sheet_start(&self, window: &Window, cx: &App) -> Pixels {
+        let shown = self.sidebar_shown();
+        self.sidebar_width(window, cx) * shown + window.rem_size() * SHEET_INSET_REMS * (1. - shown)
+    }
+
     /// The folder sidebar beside the document sheet. Without the sidebar the
     /// sheet stands alone, and the group's sizes wait untouched for its
     /// return: a group with one panel would forget the sidebar's width.
     fn render_panes(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(shown) = self.sidebar_reveal.progress() {
+            return self.render_sliding_panes(shown, window, cx);
+        }
         if !self.sidebar_visible {
             return self.render_sheet(window, cx);
         }
@@ -3370,6 +3399,66 @@ impl Workspace {
             .child(
                 resizable_panel()
                     .size_range(window.rem_size() * 20. ..Pixels::MAX)
+                    .child(self.render_sheet(window, cx)),
+            )
+            .into_any_element()
+    }
+
+    /// The sidebar part way open, `shown` of the way. It slides in from the
+    /// window's edge at its full width, cut off where it ends, so its rows
+    /// keep their layout, and fades as it goes. Its controls pass under the
+    /// window's rather than over them. The resize handle waits for it to
+    /// settle.
+    fn render_sliding_panes(
+        &self,
+        shown: f32,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let rem = window.rem_size();
+        let width = self.sidebar_width(window, cx);
+        let theme = cx.theme();
+        div()
+            .flex()
+            .size_full()
+            .child(
+                div()
+                    .relative()
+                    .flex_none()
+                    .h_full()
+                    .w(width * shown)
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .h_full()
+                            .w(width)
+                            .opacity(shown)
+                            .child(
+                                self.sidebar
+                                    .clone()
+                                    .cached(StyleRefinement::default().size_full()),
+                            ),
+                    )
+                    .when(!window.is_fullscreen(), |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .w(WINDOW_CONTROLS_END)
+                                .h(rem * (2. * SHEET_INSET_REMS + SHEET_HEADER_REMS))
+                                .bg(theme.sidebar),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
                     .child(self.render_sheet(window, cx)),
             )
             .into_any_element()
@@ -3615,7 +3704,7 @@ impl Workspace {
             .min_w_0()
             .p(window.rem_size() * SHEET_INSET_REMS)
             // The sidebar's rows already end one inset short of its edge.
-            .when(self.sidebar_visible, |this| this.pl_0())
+            .pl(window.rem_size() * SHEET_INSET_REMS * (1. - self.sidebar_shown()))
             .child(
                 div()
                     .flex()
@@ -3697,6 +3786,10 @@ impl Render for Workspace {
                 this.sync_outline_shown(window, cx)
             });
         }
+        // Settings and Zen cover the sidebar, so it changes there unseen.
+        let animate = !self.settings_open && self.zen.is_none() && !cx.reduce_motion();
+        self.sidebar_reveal
+            .step(self.sidebar_visible, animate, window);
         let content = if self.settings_open {
             self.settings.clone().into_any_element()
         } else if self.zen.is_some() {

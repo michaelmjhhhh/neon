@@ -35,6 +35,10 @@ Groups, in this order:
 - Saving can fix spacing issues (Settings › Editor › Linting, which also shows the ⌥⇧F shortcut and turns linting off everywhere). Fixes never touch code, math, HTML, Obsidian comments or link targets, and a fix that would change how the note reads is left out.
 - A `.neonlint.toml` in a folder sets the lint rules for the notes in it and below, including file patterns to ignore, per-file overrides and custom find-and-replace patterns; `lint.toml` beside Neon's settings applies everywhere.
 
+### Changed
+
+- The sidebar slides open and closed instead of appearing at once; toggling it mid-way turns it around smoothly, and Reduce Motion keeps it instant.
+
 ## [0.20.0] - 2026-11-14
 
 ### Changed
