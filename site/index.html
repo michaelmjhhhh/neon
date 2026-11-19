@@ -1,0 +1,1187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Neon Markdown Editor</title>
+<meta name="description" content="A fast, native Markdown editor for macOS. Write on the left, read on the right, or go full screen with nothing but the text.">
+<link rel="canonical" href="https://michaelmjhhhh.github.io/neon/">
+<meta name="theme-color" content="#16171B">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="assets/favicon-64.png" sizes="64x64" type="image/png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<link rel="preload" href="assets/fonts/fraunces.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/bricolage-grotesque.woff2" as="font" type="font/woff2" crossorigin>
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Neon">
+<meta property="og:title" content="Neon, a fast, native Markdown editor for macOS">
+<meta property="og:description" content="Write on the left, read on the right, or go full screen with nothing but the text. Free and open source.">
+<meta property="og:url" content="https://michaelmjhhhh.github.io/neon/">
+<meta property="og:image" content="https://michaelmjhhhh.github.io/neon/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The Neon app icon beside the headline: The Markdown editor that keeps up with you.">
+<meta name="twitter:card" content="summary_large_image">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Neon",
+  "description": "A fast, native Markdown editor for macOS.",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "macOS 11 or later",
+  "softwareVersion": "0.21.0",
+  "license": "https://www.apache.org/licenses/LICENSE-2.0",
+  "downloadUrl": "https://github.com/michaelmjhhhh/neon/releases/latest",
+  "codeRepository": "https://github.com/michaelmjhhhh/neon",
+  "image": "https://michaelmjhhhh.github.io/neon/assets/icon-512.png",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
+<style>
+@font-face { font-family: "Fraunces"; src: url(assets/fonts/fraunces.woff2) format("woff2"); font-weight: 560; font-display: swap; }
+@font-face { font-family: "Bricolage Grotesque"; src: url(assets/fonts/bricolage-grotesque.woff2) format("woff2"); font-weight: 400 600; font-display: swap; }
+@font-face { font-family: "Charis SIL"; src: url(assets/fonts/charis-sil-400.woff2) format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Charis SIL"; src: url(assets/fonts/charis-sil-700.woff2) format("woff2"); font-weight: 700; font-display: swap; }
+/* Layout: a dark hero band with a centered headline and a full Neon window that hangs over
+   the band's edge; below it, light sections: a feature list that drives a second window,
+   a latency chart, a grid of smaller features, and install steps. */
+:root {
+  --bg: #FFFFFF;
+  --bg-tint: #FFF5EF;
+  --tour-hover: rgba(0, 0, 0, .03);
+  --ink: #18191D;
+  --ink-soft: #5B5E68;
+  --ink-faint: #6B6E78;
+  --line: #E6E7EA;
+  --line-strong: #C9CBD1;
+  --band: #16171B;
+  --band-ink: #F4F3F1;
+  --band-soft: #A3A5AD;
+
+  --win: #FFFFFF;
+  --win-side: #F4F4F6;
+  --win-bar: #ECECEF;
+  --win-line: #E1E2E6;
+  --win-current: #F6F6F8;
+  --win-shadow: 0 0 0 1px rgba(0, 0, 0, .08), 0 30px 80px -24px rgba(0, 0, 0, .55);
+
+  --accent: #FE581E;
+  --accent-2: #D14419;
+  --accent-3: #AA3415;
+  --accent-ink: #B33A12;
+  --accent-wash: rgba(254, 88, 30, .14);
+
+  --syn-mark: #E2541C;
+  --syn-head: #18191D;
+  --syn-code: #0E7490;
+  --syn-link: #2563EB;
+  --syn-hl: #B33A12;
+  --syn-dim: #6E717B;
+  --code-bg: #F2F2F4;
+  --kbd-bg: #FFFFFF;
+  --term: #16171B;
+  --term-ink: #E4E4E7;
+
+  --display: "Fraunces", "Iowan Old Style", Georgia, serif;
+  --sans: "Bricolage Grotesque", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --book: Charter, "Charis SIL", "Bitstream Charter", Georgia, serif;
+  --page: 74rem;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111215;
+    --bg-tint: #16171B;
+    --tour-hover: rgba(255, 255, 255, .03);
+    --ink: #ECECEE;
+    --ink-soft: #A0A3AC;
+    --ink-faint: #8A8D97;
+    --line: #25272D;
+    --line-strong: #3A3D45;
+    --band: #111215;
+    --win: #1C1D21;
+    --win-side: #17181B;
+    --win-bar: #222327;
+    --win-line: #2C2E33;
+    --win-current: #23252A;
+    --win-shadow: 0 0 0 1px rgba(255, 255, 255, .08), 0 30px 80px -24px rgba(0, 0, 0, .9);
+    --accent-ink: #FF7E4F;
+    --accent-wash: rgba(254, 88, 30, .15);
+    --syn-mark: #FF7A45;
+    --syn-head: #F2F2F3;
+    --syn-code: #7DD3C0;
+    --syn-link: #8AB4F8;
+    --syn-hl: #FFB08F;
+    --syn-dim: #858892;
+    --code-bg: #26282D;
+    --kbd-bg: #1C1D21;
+    --term: #1C1D21;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111215;
+  --bg-tint: #16171B;
+  --tour-hover: rgba(255, 255, 255, .03);
+  --ink: #ECECEE;
+  --ink-soft: #A0A3AC;
+  --ink-faint: #8A8D97;
+  --line: #25272D;
+  --line-strong: #3A3D45;
+  --band: #111215;
+  --win: #1C1D21;
+  --win-side: #17181B;
+  --win-bar: #222327;
+  --win-line: #2C2E33;
+  --win-current: #23252A;
+  --win-shadow: 0 0 0 1px rgba(255, 255, 255, .08), 0 30px 80px -24px rgba(0, 0, 0, .9);
+  --accent-ink: #FF7E4F;
+  --accent-wash: rgba(254, 88, 30, .15);
+  --syn-mark: #FF7A45;
+  --syn-head: #F2F2F3;
+  --syn-code: #7DD3C0;
+  --syn-link: #8AB4F8;
+  --syn-hl: #FFB08F;
+  --syn-dim: #858892;
+  --code-bg: #26282D;
+  --kbd-bg: #1C1D21;
+  --term: #1C1D21;
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 1.0625rem/1.6 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent-ink); text-underline-offset: .2em; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+code, kbd, pre, textarea { font-family: var(--mono); font-variant-ligatures: none; }
+h1, h2, h3 { text-wrap: balance; margin: 0; }
+p { margin: 0; }
+kbd {
+  font-size: .78em;
+  padding: .1em .42em;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--kbd-bg);
+  white-space: nowrap;
+}
+.wrap { max-width: var(--page); margin-inline: auto; padding-inline: max(16px, 4vw); }
+.display {
+  font-family: var(--display);
+  font-weight: 560;
+  letter-spacing: -.02em;
+}
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: .55em;
+  font: 600 1rem/1 var(--sans);
+  color: #16171B;
+  background: var(--accent);
+  text-decoration: none;
+  padding: .9em 1.35em;
+  border-radius: 8px;
+  transition: background-color .15s ease, transform .15s ease;
+}
+.btn:hover { background: #FF6A33; }
+.btn:active { transform: translateY(1px); }
+.btn svg { width: 1.05em; height: 1.05em; }
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: .5em;
+  font: 500 1rem/1 var(--sans);
+  color: var(--band-ink);
+  text-decoration: none;
+  padding: .9em 1.2em;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, .18);
+}
+.btn-ghost:hover { border-color: rgba(255, 255, 255, .4); }
+.btn-ghost svg { width: 1.1em; height: 1.1em; }
+
+/* Hero band */
+.hero {
+  position: relative;
+  color: var(--band-ink);
+  background: var(--band);
+  padding-bottom: 1px;
+}
+.hero::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 14rem;
+  background: var(--bg);
+}
+.top { padding-block: 1.25rem; position: relative; z-index: 2; }
+.top .wrap { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.brand { display: flex; align-items: center; gap: .6rem; color: var(--band-ink); text-decoration: none; font: 600 1.25rem/1 var(--sans); }
+.brand svg { width: 1.7rem; height: auto; }
+.top nav { display: flex; align-items: center; gap: 1.75rem; font-size: .9375rem; }
+.top nav a { color: var(--band-soft); text-decoration: none; }
+.top nav a:hover { color: var(--band-ink); }
+
+.intro { text-align: center; padding-block: 4.5rem 3.5rem; position: relative; z-index: 2; }
+.intro h1 { font-size: clamp(2.6rem, 1.4rem + 4.6vw, 5rem); line-height: 1.02; max-width: 15ch; margin-inline: auto; }
+.intro .sub { margin: 1.4rem auto 0; max-width: 36rem; font-size: clamp(1.0625rem, 1rem + .35vw, 1.25rem); line-height: 1.5; color: var(--band-soft); }
+.intro .actions { margin-top: 2.25rem; display: flex; flex-wrap: wrap; justify-content: center; gap: .75rem; }
+.intro .meta { margin-top: 1rem; font-size: .875rem; color: var(--band-soft); }
+
+/* App window */
+.window {
+  position: relative;
+  z-index: 2;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--win);
+  color: var(--ink);
+  box-shadow: var(--win-shadow);
+  font-size: .8125rem;
+  line-height: 1.4;
+}
+.bar {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  height: 2.6rem;
+  padding: 0 .75rem 0 1rem;
+  background: var(--win-bar);
+  border-bottom: 1px solid var(--win-line);
+}
+.lights { display: flex; gap: 8px; flex: none; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: #FF5F57; box-shadow: inset 0 0 0 .5px rgba(0, 0, 0, .15); }
+.lights i:nth-child(2) { background: #FEBC2E; }
+.lights i:nth-child(3) { background: #28C840; }
+.tabs { display: flex; gap: 2px; align-self: stretch; align-items: flex-end; min-width: 0; margin-left: .75rem; }
+.tab { display: flex; align-items: center; gap: .5rem; padding: 0 .9rem; height: calc(100% - 6px); border-radius: 7px 7px 0 0; color: var(--ink-soft); white-space: nowrap; }
+.tab.on { background: var(--win); color: var(--ink); box-shadow: 0 0 0 1px var(--win-line); clip-path: inset(-1px -1px 0 -1px); }
+.tab .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-faint); }
+.layouts { margin-left: auto; display: inline-flex; padding: 2px; border-radius: 7px; background: var(--win-side); border: 1px solid var(--win-line); flex: none; }
+.layouts button {
+  display: grid;
+  place-items: center;
+  width: 2.1rem;
+  height: 1.55rem;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.layouts button svg { width: 15px; height: 15px; }
+.layouts button[aria-pressed="true"] { background: var(--win); color: var(--ink); box-shadow: 0 1px 2px rgba(0, 0, 0, .14); }
+
+.body { display: grid; grid-template-columns: 13.5rem minmax(0, 1fr); height: var(--win-h, 35rem); }
+.window.no-side .body { grid-template-columns: minmax(0, 1fr); }
+.side { background: var(--win-side); border-right: 1px solid var(--win-line); padding: .9rem .6rem; overflow: auto; display: flex; flex-direction: column; gap: 1.1rem; }
+.side h4 { margin: 0 0 .35rem; padding: 0 .5rem; font: 600 .6875rem/1.2 var(--sans); color: var(--ink-faint); letter-spacing: .02em; }
+.tree, .outline { list-style: none; margin: 0; padding: 0; }
+.tree li, .outline button {
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+  padding: .28rem .5rem;
+  border-radius: 6px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tree li svg { width: 14px; height: 14px; flex: none; color: var(--ink-faint); }
+.tree li.in { padding-left: 1.6rem; }
+.tree li.on { background: var(--accent-wash); color: var(--ink); }
+.tree li.on svg { color: var(--accent-ink); }
+.outline button { width: 100%; font: inherit; background: none; border: 0; cursor: pointer; text-align: left; }
+.outline button:hover { color: var(--ink); }
+.outline button.l2 { padding-left: 1.25rem; }
+.outline button.l3 { padding-left: 2rem; }
+.outline button.on { color: var(--ink); font-weight: 600; }
+
+.panes { display: grid; grid-template-columns: 1fr 1fr; min-height: 0; }
+.window[data-layout="editor"] .panes, .window[data-layout="preview"] .panes { grid-template-columns: minmax(0, 1fr); }
+.window[data-layout="editor"] .preview, .window[data-layout="preview"] .editor { display: none; }
+.window[data-layout="editor"] .source { max-width: 44rem; margin-inline: auto; }
+.window[data-layout="preview"] .md { max-width: 40rem; margin-inline: auto; }
+
+.editor { min-width: 0; overflow: auto; padding-block: 1.25rem 3rem; }
+.source { position: relative; font: 400 .8125rem/1.7 var(--mono); color: var(--ink); --gutter: 3rem; --pad-r: 1.25rem; }
+.lines { margin: 0; font: inherit; }
+.line { display: grid; grid-template-columns: var(--gutter) minmax(0, 1fr); }
+.line.is-current { background: var(--win-current); }
+.line .n { text-align: right; padding-right: 1rem; color: var(--syn-dim); user-select: none; font-variant-numeric: tabular-nums; }
+.line.is-current .n { color: var(--ink-soft); }
+.line .t, .source textarea { white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; }
+.line .t { padding-right: var(--pad-r); }
+.source textarea {
+  position: absolute;
+  top: 0; bottom: 0;
+  left: var(--gutter);
+  width: calc(100% - var(--gutter) - var(--pad-r));
+  height: 100%;
+  margin: 0; padding: 0; border: 0; outline: 0;
+  resize: none; overflow: hidden;
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--accent);
+  font: inherit;
+}
+.source textarea::selection { background: var(--accent-wash); }
+.t-mk { color: var(--syn-mark); }
+.t-h { color: var(--syn-head); font-weight: 700; }
+.t-b { font-weight: 700; }
+.t-i { font-style: italic; }
+.t-c, .t-fence { color: var(--syn-code); }
+.t-hl { color: var(--syn-hl); }
+.t-l { color: var(--syn-link); }
+.t-dim { color: var(--syn-dim); }
+
+.preview { min-width: 0; overflow: auto; border-left: 1px solid var(--win-line); position: relative; container-type: inline-size; }
+.preview-inner { position: relative; padding: 1.75rem clamp(1.25rem, 7cqi, 2.75rem) 3rem; }
+.follow { position: absolute; left: .6rem; width: 3px; border-radius: 2px; background: var(--accent); top: 0; height: 0; opacity: 0; transition: top .2s ease, height .2s ease, opacity .2s; pointer-events: none; }
+.follow.on { opacity: 1; }
+
+.status { display: flex; justify-content: space-between; gap: 1rem; height: 1.75rem; align-items: center; padding: 0 .9rem; background: var(--win-bar); border-top: 1px solid var(--win-line); color: var(--ink-soft); font-size: .75rem; font-variant-numeric: tabular-nums; }
+
+/* Rendered Markdown, set in Charter like Neon's preview */
+.md { font: 400 1rem/1.6 var(--book); color: var(--ink); }
+.md > * { margin: 0 0 .9em; }
+.md > :last-child { margin-bottom: 0; }
+.md h1 { font-size: 1.95em; line-height: 1.15; font-weight: 700; margin-bottom: .5em; }
+.md h2 { font-size: 1.4em; line-height: 1.25; font-weight: 700; margin-top: 1.3em; }
+.md h3 { font-size: 1.15em; font-weight: 700; margin-top: 1.2em; }
+.md > :first-child { margin-top: 0; }
+.md strong { font-weight: 700; }
+.md code { font-size: .82em; background: var(--code-bg); padding: .12em .35em; border-radius: 4px; }
+.md pre { background: var(--code-bg); padding: .9em 1.1em; border-radius: 6px; overflow-x: auto; font-size: .82em; line-height: 1.6; }
+.md pre code { background: none; padding: 0; font-size: inherit; }
+.md mark { background: var(--accent-wash); color: inherit; padding: 0 .15em; border-radius: 3px; }
+.md ul, .md ol { padding-left: 1.4em; }
+.md li + li { margin-top: .25em; }
+.md ul.tasks { list-style: none; padding-left: 0; }
+.md .tasks li { display: grid; grid-template-columns: 1.6em minmax(0, 1fr); align-items: baseline; }
+.md .box { width: .95em; height: .95em; border: 1.5px solid var(--line-strong); border-radius: 4px; position: relative; top: .12em; }
+.md .done .box { background: var(--accent); border-color: var(--accent); }
+.md .done .box::after { content: ""; position: absolute; left: .27em; top: .07em; width: .25em; height: .5em; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.md .done > span:last-child { color: var(--ink-soft); }
+.md blockquote { margin-left: 0; padding-left: 1em; border-left: 3px solid var(--line); color: var(--ink-soft); }
+.md .callout { border-left: 3px solid var(--accent); background: var(--accent-wash); padding: .7em 1em; border-radius: 0 6px 6px 0; }
+.md .callout-title { font-weight: 700; color: var(--accent-ink); margin: 0 0 .2em; }
+.md .callout p { margin: 0; }
+.md hr { border: 0; border-top: 1px solid var(--line); }
+.md table { border-collapse: collapse; font-size: .92em; display: block; overflow-x: auto; }
+.md th, .md td { border: 1px solid var(--line); padding: .35em .75em; text-align: left; }
+.md th { font-weight: 700; background: var(--code-bg); }
+.md .wikilink { color: var(--accent-ink); text-decoration: underline dotted; }
+
+/* Sections */
+.section { padding-block: 7rem; }
+.section + .section { padding-top: 0; }
+.section { content-visibility: auto; contain-intrinsic-size: auto 800px; }
+.head { max-width: 44rem; }
+.head h2 { font-size: clamp(2rem, 1.4rem + 2vw, 3rem); line-height: 1.08; }
+.head p { margin-top: 1rem; font-size: 1.1875rem; line-height: 1.55; color: var(--ink-soft); }
+
+/* Feature tour */
+.tour { background: var(--bg-tint); padding-block: 6rem; margin-top: 5rem; }
+.tour-grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: 3rem; align-items: start; margin-top: 3.5rem; }
+.tour .window { --win-h: 25rem; box-shadow: 0 0 0 1px var(--line), 0 20px 50px -24px rgba(60, 30, 10, .35); }
+.tour-list { display: flex; flex-direction: column; gap: .25rem; }
+.tour-list button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 1rem 1.2rem;
+  cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease;
+}
+.tour-list button b { display: block; font-weight: 600; color: var(--ink); font-size: 1.0625rem; margin-bottom: .2rem; }
+.tour-list button:hover { background: var(--tour-hover); }
+.tour-list button[aria-selected="true"] { background: var(--win); border-color: var(--line); color: var(--ink-soft); }
+.tour-list code { font-size: .85em; }
+
+/* Speed */
+.speed { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 2rem 4rem; align-items: center; }
+.speed .facts { grid-column: 1 / -1; }
+.chart { margin: 0; }
+.chart-rows { display: grid; grid-template-columns: minmax(0, 1fr); }
+.chart-label { font-size: 1rem; font-weight: 500; padding-top: 1.1rem; }
+.chart-label span { display: block; font-weight: 400; color: var(--ink-soft); font-size: .875rem; font-variant-numeric: tabular-nums; }
+.track {
+  --frame: calc(16.67 / 20 * 100%);
+  position: relative;
+  height: 2.4rem;
+  border-left: 1px solid var(--line-strong);
+  background: linear-gradient(90deg, transparent calc(var(--frame) - 1px), var(--line-strong) calc(var(--frame) - 1px) var(--frame), transparent var(--frame)) no-repeat;
+}
+.track .bar, .track .whisker { position: absolute; top: 50%; left: 0; }
+.track .bar { height: 16px; margin-top: -8px; width: calc(var(--mean) / 20 * 100%); background: var(--accent); border-radius: 0 4px 4px 0; }
+.track .whisker {
+  left: calc(var(--mean) / 20 * 100%);
+  width: calc((var(--p99) - var(--mean)) / 20 * 100%);
+  height: 10px; margin-top: -5px;
+  border-right: 2px solid var(--accent-3);
+  background: linear-gradient(var(--accent-3), var(--accent-3)) center / 100% 2px no-repeat;
+}
+.axis { position: relative; height: 1.6rem; border-top: 1px solid var(--line-strong); font-size: .8125rem; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.axis span { position: absolute; top: .3rem; transform: translateX(-50%); white-space: nowrap; }
+.axis span:first-child { transform: none; }
+.axis span:last-child { transform: translateX(-100%); }
+.chart figcaption { margin-top: 1rem; font-size: .875rem; color: var(--ink-soft); }
+.key { display: inline-block; vertical-align: middle; margin: 0 .3em 0 .5em; }
+.key:first-of-type { margin-left: 0; }
+.key-mean { width: 1.1em; height: .6em; background: var(--accent); border-radius: 2px; }
+.key-p99 { width: 1.1em; height: .6em; border-right: 2px solid var(--accent-3); background: linear-gradient(var(--accent-3), var(--accent-3)) center / 100% 2px no-repeat; }
+.key-frame { width: 1px; height: 1em; background: var(--line-strong); }
+.facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2rem; margin-top: 2rem; padding-top: 2.5rem; border-top: 1px solid var(--line); }
+.facts b { display: block; font-family: var(--display); font-weight: 560; font-size: 1.6rem; line-height: 1.1; margin-bottom: .35rem; }
+.facts p { margin: 0; font-size: .9375rem; color: var(--ink-soft); line-height: 1.5; }
+
+/* Feature grid */
+.grid { margin-top: 3.5rem; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.grid > div { padding: 1.75rem 1.5rem 2rem; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.grid > div:nth-child(4n) { border-right: 0; }
+.grid > div:nth-last-child(-n + 4) { border-bottom: 0; }
+.grid svg { display: block; width: 30px; height: 30px; color: var(--accent); margin-bottom: 1.25rem; }
+.grid h3 { font-size: 1.125rem; font-weight: 600; margin-bottom: .45rem; }
+.grid p { font-size: .9375rem; line-height: 1.55; color: var(--ink-soft); }
+.grid code { font-size: .85em; }
+
+/* Install */
+.install { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 4rem; align-items: start; }
+.steps { margin: 2rem 0 0; padding: 0; list-style: none; counter-reset: step; display: grid; gap: 1.1rem; }
+.steps li { counter-increment: step; display: grid; grid-template-columns: 1.5rem minmax(0, 1fr); align-items: baseline; font-size: 1.0625rem; }
+.steps li::before { content: counter(step) "."; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.install .more { margin-top: 1.75rem; color: var(--ink-soft); }
+.cmds { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.5rem; min-width: 0; }
+.cmds p { font-size: .9375rem; color: var(--ink-soft); margin-bottom: .55rem; }
+.term { display: flex; align-items: flex-start; background: var(--term); color: var(--term-ink); border-radius: 10px; box-shadow: 0 0 0 1px var(--line); }
+.term pre { flex: 1; min-width: 0; margin: 0; padding: 1.1rem 1.2rem; overflow-x: auto; font-size: .8125rem; line-height: 1.75; }
+.term .p { color: var(--accent); user-select: none; }
+.copy { flex: none; margin: .7rem .7rem 0 0; font: 500 .8125rem/1 var(--sans); color: var(--term-ink); background: rgba(255, 255, 255, .06); border: 1px solid rgba(255, 255, 255, .14); border-radius: 6px; padding: .45em .75em; cursor: pointer; }
+.copy:hover { background: rgba(255, 255, 255, .12); }
+
+/* Closing */
+.closing { text-align: center; }
+.app-icon { display: block; width: 128px; height: 128px; margin: 0 auto 1.5rem; }
+.closing h2 { font-size: clamp(2rem, 1.4rem + 2vw, 3rem); line-height: 1.08; }
+.closing p { margin: 1rem auto 0; max-width: 32rem; color: var(--ink-soft); font-size: 1.125rem; }
+.closing .btn { margin-top: 2rem; }
+
+.foot { border-top: 1px solid var(--line); padding-block: 2.25rem; font-size: .9375rem; color: var(--ink-soft); }
+.foot .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 1rem 2rem; }
+.foot p { display: flex; align-items: center; gap: .6rem; }
+.foot svg { width: 1.1rem; height: auto; }
+.foot nav { display: flex; flex-wrap: wrap; gap: .5rem 1.5rem; }
+.foot a { color: var(--ink-soft); text-decoration: none; }
+.foot a:hover { color: var(--ink); }
+
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+@media (max-width: 64rem) {
+  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid > div:nth-child(4n) { border-right: 1px solid var(--line); }
+  .grid > div:nth-child(2n) { border-right: 0; }
+  .grid > div:nth-last-child(-n + 4) { border-bottom: 1px solid var(--line); }
+  .grid > div:nth-last-child(-n + 2) { border-bottom: 0; }
+  .tour-grid, .speed, .install { grid-template-columns: minmax(0, 1fr); gap: 2.5rem; }
+  .tour-list { flex-direction: row; order: -1; gap: .5rem; overflow-x: auto; margin-inline: calc(-1 * max(16px, 4vw)); padding: 2px max(16px, 4vw); scrollbar-width: none; }
+  .tour-list::-webkit-scrollbar { display: none; }
+  .tour-list button { flex: none; width: auto; border-color: var(--line-strong); border-radius: 999px; padding: .5rem 1rem; }
+  .tour-list button span { display: none; }
+  .tour-list button b { margin: 0; font-size: .9375rem; white-space: nowrap; }
+  .tour-list button[aria-selected="true"] { border-color: var(--ink); }
+}
+@media (max-width: 52rem) {
+  .hero .body { grid-template-columns: minmax(0, 1fr); }
+  .hero .side { display: none; }
+  .top nav a.opt { display: none; }
+}
+@media (max-width: 40rem) {
+  .section { padding-block: 4.5rem; }
+  .tour { padding-block: 4.5rem; margin-top: 3.5rem; }
+  .intro { padding-block: 3rem 2.5rem; }
+  .tabs .tab:not(.on) { display: none; }
+  .body, .tour .window .body { height: auto; }
+  .panes, .window[data-layout] .panes { grid-template-columns: minmax(0, 1fr); }
+  .window[data-layout="split"] .preview { border-left: 0; border-top: 1px solid var(--win-line); }
+  .editor, .preview { overflow: visible; }
+  .source { --gutter: 2.3rem; --pad-r: .9rem; }
+  .line .n { padding-right: .7rem; }
+  .grid { grid-template-columns: minmax(0, 1fr); }
+  .grid > div, .grid > div:nth-child(n) { border-right: 0; border-bottom: 1px solid var(--line); }
+  .grid > div:last-child { border-bottom: 0; }
+  .facts { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .follow, .btn, .tour-list button { transition: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <header class="top">
+    <div class="wrap">
+      <a class="brand" href="#" aria-label="Neon home">
+        <svg viewBox="240 220 545 576" aria-hidden="true">
+          <path fill="#FE581E" d="M245 771V226.2L703 624.4V247h16v412.5L261 261.3V771z"/>
+          <path fill="#D14419" d="M275 771V292l458 398.2V247h16v478.4L291 327.2V771z"/>
+          <path fill="#AA3415" d="M305 771V357.9l458 398.2V247h16v544.2L321 393V771z"/>
+        </svg>
+        Neon
+      </a>
+      <nav aria-label="Main">
+        <a class="opt" href="#features">Features</a>
+        <a class="opt" href="#speed">Speed</a>
+        <a href="#install">Install</a>
+        <a href="https://github.com/michaelmjhhhh/neon">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <section class="intro wrap">
+    <h1 class="display">The Markdown editor that keeps up with you</h1>
+    <p class="sub">Neon is a fast, native Markdown editor for macOS. Write on the left, read on the right, or go full screen with nothing but the text.</p>
+    <div class="actions">
+      <a class="btn" href="https://github.com/michaelmjhhhh/neon/releases/latest">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M7 1h2v8.6l3-3 1.4 1.4L8 13.4 2.6 8 4 6.6l3 3zM2 14h12v2H2z"/></svg>
+        Download for macOS
+      </a>
+      <a class="btn-ghost" href="https://github.com/michaelmjhhhh/neon">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38v-1.34c-2.23.48-2.7-1.07-2.7-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.72 1.22 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.65-.89-3.65-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 8 0z"/></svg>
+        View source
+      </a>
+    </div>
+    <p class="meta">Free and open source. Version 0.21.0 for macOS 11 or later, Apple Silicon and Intel.</p>
+  </section>
+
+  <div class="wrap">
+    <div class="window" id="hero-window" data-layout="split" aria-label="Neon demo">
+      <div class="bar">
+        <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+        <div class="tabs" aria-hidden="true">
+          <span class="tab on">welcome.md</span>
+          <span class="tab"><i class="dot"></i>ideas.md</span>
+        </div>
+        <div class="layouts" role="group" aria-label="Layout">
+          <button type="button" data-layout="editor" aria-pressed="false" aria-label="Editor" title="Editor  ⌘1"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M10.5 2.5l3 3L6 13H3v-3z"/></svg></button>
+          <button type="button" data-layout="split" aria-pressed="true" aria-label="Split" title="Split  ⌘2"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M8 3v10"/></svg></button>
+          <button type="button" data-layout="preview" aria-pressed="false" aria-label="Preview" title="Preview  ⌘3"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg></button>
+        </div>
+      </div>
+      <div class="body">
+        <aside class="side" aria-label="Sidebar">
+          <div>
+            <h4>Notes</h4>
+            <ul class="tree">
+              <li><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1.5 4.5v8h13v-7H7.5L6 4H1.5z"/></svg>journal</li>
+              <li class="in"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3.5 1.5h6l3 3v10h-9z"/></svg>2026-11-19.md</li>
+              <li><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1.5 4.5v8h13v-7H7.5L6 4H1.5z"/></svg>projects</li>
+              <li class="on"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3.5 1.5h6l3 3v10h-9z"/></svg>welcome.md</li>
+              <li><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3.5 1.5h6l3 3v10h-9z"/></svg>ideas.md</li>
+              <li><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3.5 1.5h6l3 3v10h-9z"/></svg>reading-list.md</li>
+            </ul>
+          </div>
+          <div>
+            <h4>Outline</h4>
+            <div class="outline"></div>
+          </div>
+        </aside>
+        <div class="panes">
+          <div class="editor">
+            <div class="source">
+              <div class="lines" aria-hidden="true"></div>
+              <label class="sr-only" for="src-hero">Markdown source</label>
+              <textarea id="src-hero" spellcheck="false" autocapitalize="off" autocomplete="off">
+# Welcome to Neon
+
+Neon draws with Metal, so a keystroke reaches the screen in ==1.6 ms==, even in a file thousands of lines long.
+
+## Try it
+
+- [x] Write on the left
+- [x] Read on the right
+- [ ] Edit this line, then press Enter
+
+> [!tip]
+> Type `/table 4x5` on an empty line to insert a table.
+
+## Layouts
+
+Press ⌘1, ⌘2 or ⌘3 for Editor, Split or Preview.</textarea>
+            </div>
+          </div>
+          <div class="preview">
+            <div class="preview-inner">
+              <div class="follow" aria-hidden="true"></div>
+              <div class="md"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="status">
+        <span data-pos>Ln 1, Col 1</span>
+        <span data-words>0 words</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<main>
+  <section class="tour" id="features">
+    <div class="wrap">
+      <div class="head">
+        <h2 class="display">Write in plain text, read it as a page</h2>
+        <p>Neon highlights your Markdown as you type and keeps a typeset preview beside it. Pick a feature to load an example, then edit it.</p>
+      </div>
+      <div class="tour-grid">
+        <div class="window no-side" id="tour-window" data-layout="split" role="tabpanel" aria-labelledby="tab-slash">
+          <div class="bar">
+            <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+            <div class="tabs" aria-hidden="true"><span class="tab on" id="tour-file">reading-list.md</span></div>
+            <div class="layouts" role="group" aria-label="Layout">
+              <button type="button" data-layout="editor" aria-pressed="false" aria-label="Editor"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M10.5 2.5l3 3L6 13H3v-3z"/></svg></button>
+              <button type="button" data-layout="split" aria-pressed="true" aria-label="Split"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M8 3v10"/></svg></button>
+              <button type="button" data-layout="preview" aria-pressed="false" aria-label="Preview"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/></svg></button>
+            </div>
+          </div>
+          <div class="body" style="--win-h: 25rem">
+            <div class="panes">
+              <div class="editor">
+                <div class="source">
+                  <div class="lines" aria-hidden="true"></div>
+                  <label class="sr-only" for="src-tour">Markdown source</label>
+                  <textarea id="src-tour" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+                </div>
+              </div>
+              <div class="preview">
+                <div class="preview-inner">
+                  <div class="follow" aria-hidden="true"></div>
+                  <div class="md"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="status">
+            <span data-pos>Ln 1, Col 1</span>
+            <span data-words>0 words</span>
+          </div>
+        </div>
+        <div class="tour-list" role="tablist" aria-label="Features">
+          <button type="button" role="tab" id="tab-slash" aria-controls="tour-window" aria-selected="true" tabindex="0" data-sample="slash"><b>Slash commands</b><span>Type <code>/</code> on an empty line to insert a list, task list, code block, link, image or table. <code>/table 4x5</code> sets the size.</span></button>
+          <button type="button" role="tab" id="tab-lists" aria-controls="tour-window" aria-selected="false" tabindex="-1" data-sample="lists"><b>Lists that continue themselves</b><span>Enter starts the next bullet, number or task. <kbd>Tab</kbd> and <kbd>⇧</kbd> <kbd>Tab</kbd> indent and outdent.</span></button>
+          <button type="button" role="tab" id="tab-notes" aria-controls="tour-window" aria-selected="false" tabindex="-1" data-sample="notes"><b>Obsidian-style notes</b><span>Callouts, <code>==highlights==</code>, front matter, and <code>[[wikilinks]]</code> that open the linked note.</span></button>
+          <button type="button" role="tab" id="tab-code" aria-controls="tour-window" aria-selected="false" tabindex="-1" data-sample="code"><b>Code blocks</b><span>Fenced code with syntax highlighting in the preview and in every export.</span></button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="speed">
+    <div class="wrap speed">
+      <div class="head">
+        <h2 class="display">Built so typing never waits</h2>
+        <p>Neon draws and submits each keystroke as soon as it handles it, without waiting for the next display refresh. Syntax highlighting reparses in the background, and only the editor redraws while you type.</p>
+      </div>
+      <figure class="chart">
+        <div class="chart-rows">
+          <div class="chart-label">Keystroke to frame submitted<span>Mean 1.6 ms, p99 5.2 ms</span></div>
+          <div class="track" style="--mean: 1.6; --p99: 5.2" role="img" aria-label="Mean 1.6 milliseconds, 99th percentile 5.2 milliseconds"><i class="bar"></i><i class="whisker"></i></div>
+          <div class="chart-label">Keystroke to the first refresh it can appear on<span>Mean 10.5 ms, p99 17.9 ms</span></div>
+          <div class="track" style="--mean: 10.5; --p99: 17.9" role="img" aria-label="Mean 10.5 milliseconds, 99th percentile 17.9 milliseconds"><i class="bar"></i><i class="whisker"></i></div>
+          <div class="axis" aria-hidden="true"><span style="left: 0">0</span><span style="left: 20%">4</span><span style="left: 40%">8</span><span style="left: 60%">12</span><span style="left: 80%">16</span><span style="left: 100%">20 ms</span></div>
+        </div>
+        <figcaption>Measured in an 8,600-line document on a 60 Hz display.<br><i class="key key-mean"></i>mean <i class="key key-p99"></i>99th percentile <i class="key key-frame"></i>one frame at 60 Hz</figcaption>
+      </figure>
+      <div class="facts">
+        <div><b>Metal</b><p>Drawn on the GPU with GPUI, the framework behind the Zed editor.</p></div>
+        <div><b>Native</b><p>Written in Rust with no web view. About 16 MB on Apple Silicon.</p></div>
+        <div><b>Large files</b><p>Parsing runs off the main thread, so long documents stay responsive.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap">
+      <div class="head">
+        <h2 class="display">Everything a folder of notes needs</h2>
+      </div>
+      <!-- Icons: Phosphor duotone, MIT license, https://phosphoricons.com -->
+      <div class="grid">
+        <div>
+          <svg aria-hidden="true" viewBox="0 0 256 256" fill="currentColor"><path d="M128,200c-15.37,0-40.77-.18-70-17.64S19.31,143,16.28,131.82A7.94,7.94,0,0,1,21.74,122a69.59,69.59,0,0,1,30.82-.64h0c-7.63-23.88-4-42.44-1-51.71A8.2,8.2,0,0,1,61,64.18C68.56,65.79,81.28,70,94.6,80.8v0A108.49,108.49,0,0,0,88,119.18C88,178,128,200,128,200Zm106.26-78a69.59,69.59,0,0,0-30.82-.64h0c7.63-23.88,4-42.44,1-51.71A8.2,8.2,0,0,0,195,64.18c-7.52,1.61-20.24,5.8-33.56,16.62v0A108.49,108.49,0,0,1,168,119.18C168,178,128,200,128,200c15.37,0,40.77-.18,70-17.64s38.69-39.34,41.72-50.54A7.94,7.94,0,0,0,234.26,122Z" opacity="0.2"/><path d="M245.83,121.63a15.53,15.53,0,0,0-9.52-7.33,73.51,73.51,0,0,0-22.17-2.22c4-19.85,1-35.55-2.06-44.86a16.15,16.15,0,0,0-18.79-10.88,85.53,85.53,0,0,0-28.55,12.12,94.58,94.58,0,0,0-27.11-33.25,16.05,16.05,0,0,0-19.26,0A94.48,94.48,0,0,0,91.26,68.46,85.53,85.53,0,0,0,62.71,56.34,16.15,16.15,0,0,0,43.92,67.22c-3,9.31-6,25-2.06,44.86a73.51,73.51,0,0,0-22.17,2.22,15.53,15.53,0,0,0-9.52,7.33,16,16,0,0,0-1.6,12.27c3.39,12.57,13.8,36.48,45.33,55.32S113.13,208,128.05,208s42.67,0,74-18.78c31.53-18.84,41.94-42.75,45.33-55.32A16,16,0,0,0,245.83,121.63ZM59.14,72.14a.2.2,0,0,1,.23-.15A70.43,70.43,0,0,1,85.18,83.66,118.65,118.65,0,0,0,80,119.17c0,18.74,3.77,34,9.11,46.28A123.59,123.59,0,0,1,69.57,140C51.55,108.62,55.3,84,59.14,72.14Zm3,103.35C35.47,159.57,26.82,140.05,24,129.7a59.82,59.82,0,0,1,22.5-1.17,129.08,129.08,0,0,0,9.15,19.41,142.28,142.28,0,0,0,34,39.56A114.92,114.92,0,0,1,62.1,175.49ZM128,190.4c-9.33-6.94-32-28.23-32-71.23C96,76.7,118.38,55.24,128,48c9.62,7.26,32,28.72,32,71.19C160,162.17,137.33,183.46,128,190.4ZM170.82,83.66A70.43,70.43,0,0,1,196.63,72a.2.2,0,0,1,.23.15C200.7,84,204.45,108.62,186.43,140a123.32,123.32,0,0,1-19.54,25.48c5.34-12.26,9.11-27.54,9.11-46.28A118.65,118.65,0,0,0,170.82,83.66ZM232,129.72c-2.77,10.25-11.4,29.81-38.09,45.77a114.92,114.92,0,0,1-27.55,12,142.28,142.28,0,0,0,34-39.56,129.08,129.08,0,0,0,9.15-19.41A59.69,59.69,0,0,1,232,129.71Z"/></svg>
+          <h3>Zen Mode</h3>
+          <p>The document alone, full screen. The paragraph you are writing stays bright while the rest fades. <kbd>⌃</kbd> <kbd>⌘</kbd> <kbd>Z</kbd></p>
+        </div>
+        <div>
+          <svg aria-hidden="true" viewBox="0 0 256 256" fill="currentColor"><path d="M104,32V64a8,8,0,0,1-8,8H64a8,8,0,0,1-8-8V32a8,8,0,0,1,8-8H96A8,8,0,0,1,104,32ZM208,96H176a8,8,0,0,0-8,8v32a8,8,0,0,0,8,8h32a8,8,0,0,0,8-8V104A8,8,0,0,0,208,96Zm0,88H176a8,8,0,0,0-8,8v32a8,8,0,0,0,8,8h32a8,8,0,0,0,8-8V192A8,8,0,0,0,208,184Z" opacity="0.2"/><path d="M176,152h32a16,16,0,0,0,16-16V104a16,16,0,0,0-16-16H176a16,16,0,0,0-16,16v8H88V80h8a16,16,0,0,0,16-16V32A16,16,0,0,0,96,16H64A16,16,0,0,0,48,32V64A16,16,0,0,0,64,80h8V192a24,24,0,0,0,24,24h64v8a16,16,0,0,0,16,16h32a16,16,0,0,0,16-16V192a16,16,0,0,0-16-16H176a16,16,0,0,0-16,16v8H96a8,8,0,0,1-8-8V128h72v8A16,16,0,0,0,176,152ZM64,32H96V64H64ZM176,192h32v32H176Zm0-88h32v32H176Z"/></svg>
+          <h3>Outline</h3>
+          <p>The sidebar lists your headings and lights the section you are in. Write <code>[TOC]</code> for a table of contents.</p>
+        </div>
+        <div>
+          <svg aria-hidden="true" viewBox="0 0 256 256" fill="currentColor"><path d="M192,112a80,80,0,1,1-80-80A80,80,0,0,1,192,112Z" opacity="0.2"/><path d="M229.66,218.34,179.6,168.28a88.21,88.21,0,1,0-11.32,11.31l50.06,50.07a8,8,0,0,0,11.32-11.32ZM40,112a72,72,0,1,1,72,72A72.08,72.08,0,0,1,40,112Z"/></svg>
+          <h3>Search the folder</h3>
+          <p>Match case, whole word and regular expressions, with unsaved edits included.</p>
+        </div>
+        <div>
+          <svg aria-hidden="true" viewBox="0 0 256 256" fill="currentColor"><path d="M224,64a24,24,0,1,1-24-24A24,24,0,0,1,224,64Z" opacity="0.2"/><path d="M232,64a32,32,0,1,0-40,31v17a8,8,0,0,1-8,8H96a23.84,23.84,0,0,0-8,1.38V95a32,32,0,1,0-16,0v66a32,32,0,1,0,16,0V144a8,8,0,0,1,8-8h88a24,24,0,0,0,24-24V95A32.06,32.06,0,0,0,232,64ZM64,64A16,16,0,1,1,80,80,16,16,0,0,1,64,64ZM96,192a16,16,0,1,1-16-16A16,16,0,0,1,96,192ZM200,80a16,16,0,1,1,16-16A16,16,0,0,1,200,80Z"/></svg>
+          <h3>Git in the sidebar</h3>
+          <p>See changes word by word, then stage, commit and push. Browse history as a branch graph.</p>
+        </div>
+        <div>
+          <svg aria-hidden="true" viewBox="0 0 256 256" fill="currentColor"><path d="M224,56V168a8,8,0,0,1-8,8H192V88a8,8,0,0,0-8-8H64V56a8,8,0,0,1,8-8H216A8,8,0,0,1,224,56Z" opacity="0.2"/><path d="M216,40H72A16,16,0,0,0,56,56V72H40A16,16,0,0,0,24,88V200a16,16,0,0,0,16,16H184a16,16,0,0,0,16-16V184h16a16,16,0,0,0,16-16V56A16,16,0,0,0,216,40ZM40,88H184v16H40ZM184,200H40V120H184v80Zm32-32H200V88a16,16,0,0,0-16-16H72V56H216Z"/></svg>
+          <h3>Tabs</h3>
+          <p>Each tab keeps its own edits, undo history and scroll position. Neon reopens your last folder at launch.</p>
+        </div>
+        <div>
+          <svg aria-hidden="true" viewBox="0 0 256 256" fill="currentColor"><path d="M208,104V216H48V104Z" opacity="0.2"/><path d="M216,112v96a16,16,0,0,1-16,16H56a16,16,0,0,1-16-16V112A16,16,0,0,1,56,96H80a8,8,0,0,1,0,16H56v96H200V112H176a8,8,0,0,1,0-16h24A16,16,0,0,1,216,112ZM93.66,69.66,120,43.31V136a8,8,0,0,0,16,0V43.31l26.34,26.35a8,8,0,0,0,11.32-11.32l-40-40a8,8,0,0,0-11.32,0l-40,40A8,8,0,0,0,93.66,69.66Z"/></svg>
+          <h3>Export</h3>
+          <p>HTML, PDF or Word, in the preview's font, with local images embedded.</p>
+        </div>
+        <div>
+          <svg aria-hidden="true" viewBox="0 0 256 256" fill="currentColor"><path d="M232,128c0,12.51-17.82,21.95-22.68,33.69-4.68,11.32,1.42,30.65-7.78,39.85s-28.53,3.1-39.85,7.78C150,214.18,140.5,232,128,232s-22-17.82-33.69-22.68c-11.32-4.68-30.65,1.42-39.85-7.78s-3.1-28.53-7.78-39.85C41.82,150,24,140.5,24,128s17.82-22,22.68-33.69C51.36,83,45.26,63.66,54.46,54.46S83,51.36,94.31,46.68C106.05,41.82,115.5,24,128,24S150,41.82,161.69,46.68c11.32,4.68,30.65-1.42,39.85,7.78s3.1,28.53,7.78,39.85C214.18,106.05,232,115.5,232,128Z" opacity="0.2"/><path d="M225.86,102.82c-3.77-3.94-7.67-8-9.14-11.57-1.36-3.27-1.44-8.69-1.52-13.94-.15-9.76-.31-20.82-8-28.51s-18.75-7.85-28.51-8c-5.25-.08-10.67-.16-13.94-1.52-3.56-1.47-7.63-5.37-11.57-9.14C146.28,23.51,138.44,16,128,16s-18.27,7.51-25.18,14.14c-3.94,3.77-8,7.67-11.57,9.14C88,40.64,82.56,40.72,77.31,40.8c-9.76.15-20.82.31-28.51,8S41,67.55,40.8,77.31c-.08,5.25-.16,10.67-1.52,13.94-1.47,3.56-5.37,7.63-9.14,11.57C23.51,109.72,16,117.56,16,128s7.51,18.27,14.14,25.18c3.77,3.94,7.67,8,9.14,11.57,1.36,3.27,1.44,8.69,1.52,13.94.15,9.76.31,20.82,8,28.51s18.75,7.85,28.51,8c5.25.08,10.67.16,13.94,1.52,3.56,1.47,7.63,5.37,11.57,9.14C109.72,232.49,117.56,240,128,240s18.27-7.51,25.18-14.14c3.94-3.77,8-7.67,11.57-9.14,3.27-1.36,8.69-1.44,13.94-1.52,9.76-.15,20.82-.31,28.51-8s7.85-18.75,8-28.51c.08-5.25.16-10.67,1.52-13.94,1.47-3.56,5.37-7.63,9.14-11.57C232.49,146.28,240,138.44,240,128S232.49,109.73,225.86,102.82Zm-11.55,39.29c-4.79,5-9.75,10.17-12.38,16.52-2.52,6.1-2.63,13.07-2.73,19.82-.1,7-.21,14.33-3.32,17.43s-10.39,3.22-17.43,3.32c-6.75.1-13.72.21-19.82,2.73-6.35,2.63-11.52,7.59-16.52,12.38S132,224,128,224s-9.15-4.92-14.11-9.69-10.17-9.75-16.52-12.38c-6.1-2.52-13.07-2.63-19.82-2.73-7-.1-14.33-.21-17.43-3.32s-3.22-10.39-3.32-17.43c-.1-6.75-.21-13.72-2.73-19.82-2.63-6.35-7.59-11.52-12.38-16.52S32,132,32,128s4.92-9.15,9.69-14.11,9.75-10.17,12.38-16.52c2.52-6.1,2.63-13.07,2.73-19.82.1-7,.21-14.33,3.32-17.43S70.51,56.9,77.55,56.8c6.75-.1,13.72-.21,19.82-2.73,6.35-2.63,11.52-7.59,16.52-12.38S124,32,128,32s9.15,4.92,14.11,9.69,10.17,9.75,16.52,12.38c6.1,2.52,13.07,2.63,19.82,2.73,7,.1,14.33.21,17.43,3.32s3.22,10.39,3.32,17.43c.1,6.75.21,13.72,2.73,19.82,2.63,6.35,7.59,11.52,12.38,16.52S224,124,224,128,219.08,137.15,214.31,142.11ZM173.66,98.34a8,8,0,0,1,0,11.32l-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35A8,8,0,0,1,173.66,98.34Z"/></svg>
+          <h3>Linting</h3>
+          <p><kbd>⌥</kbd> <kbd>⇧</kbd> <kbd>F</kbd> fixes spacing, headings and lists in one undoable step. A <code>.neonlint.toml</code> sets rules per folder.</p>
+        </div>
+        <div>
+          <svg aria-hidden="true" viewBox="0 0 256 256" fill="currentColor"><path d="M224,128a96,96,0,0,1-96,96V32A96,96,0,0,1,224,128Z" opacity="0.2"/><path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24ZM40,128a88.11,88.11,0,0,1,80-87.63V215.63A88.11,88.11,0,0,1,40,128Zm96,87.63V40.37a88,88,0,0,1,0,175.26Z"/></svg>
+          <h3>Light and dark</h3>
+          <p>Themes follow the system. Pick separate fonts and sizes for the editor and the preview.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="install">
+    <div class="wrap install">
+      <div>
+        <div class="head">
+          <h2 class="display">Install Neon</h2>
+          <p>Free for macOS 11 or later, on Apple Silicon and Intel.</p>
+        </div>
+        <ol class="steps">
+          <li><span>Download <a href="https://github.com/michaelmjhhhh/neon/releases/latest">the latest release</a>.</span></li>
+          <li><span>Open the disk image and drag Neon to Applications.</span></li>
+        </ol>
+        <p class="more">Neon is signed and notarized, so macOS opens it without a warning. It updates itself and refuses any update that is not signed.</p>
+      </div>
+      <div class="cmds">
+        <div>
+          <p>Check that a download was built by the release workflow:</p>
+          <div class="term">
+            <pre id="verify"><span class="p">$ </span>gh attestation verify Neon-0.21.0-macos.dmg --repo michaelmjhhhh/neon</pre>
+            <button class="copy" type="button" data-copy="verify">Copy</button>
+          </div>
+        </div>
+        <div>
+          <p>Or build it from source, with Xcode and <a href="https://rustup.rs">rustup</a> installed:</p>
+          <div class="term">
+            <pre id="build"><span class="p">$ </span>git clone https://github.com/michaelmjhhhh/neon
+<span class="p">$ </span>cd neon &amp;&amp; cargo run --release</pre>
+            <button class="copy" type="button" data-copy="build">Copy</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section closing">
+    <div class="wrap">
+      <picture>
+        <source srcset="assets/icon-512.webp" type="image/webp">
+        <img class="app-icon" src="assets/icon-512.png" width="128" height="128" alt="Neon app icon" loading="lazy" decoding="async">
+      </picture>
+      <h2 class="display">Start writing</h2>
+      <p>Open a folder of Markdown files and Neon picks up from there.</p>
+      <a class="btn" href="https://github.com/michaelmjhhhh/neon/releases/latest">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M7 1h2v8.6l3-3 1.4 1.4L8 13.4 2.6 8 4 6.6l3 3zM2 14h12v2H2z"/></svg>
+        Download for macOS
+      </a>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <p>
+      <svg viewBox="240 220 545 576" aria-hidden="true">
+        <path fill="#FE581E" d="M245 771V226.2L703 624.4V247h16v412.5L261 261.3V771z"/>
+        <path fill="#D14419" d="M275 771V292l458 398.2V247h16v478.4L291 327.2V771z"/>
+        <path fill="#AA3415" d="M305 771V357.9l458 398.2V247h16v544.2L321 393V771z"/>
+      </svg>
+      Neon is open source under the Apache 2.0 license.
+    </p>
+    <nav aria-label="Project">
+      <a href="https://github.com/michaelmjhhhh/neon">Source</a>
+      <a href="https://github.com/michaelmjhhhh/neon/releases">Releases</a>
+      <a href="https://github.com/michaelmjhhhh/neon/blob/main/CHANGELOG.md">Changelog</a>
+      <a href="https://github.com/michaelmjhhhh/neon/blob/main/docs/linting.md">Linting rules</a>
+    </nav>
+  </div>
+</footer>
+
+<script>
+(function () {
+  function esc(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  var INLINE = /(\*\*[^*\n]+\*\*)|(\*[^*\s][^*\n]*\*)|(`[^`\n]+`)|(==[^=\n]+==)|(\[\[[^\]\n]+\]\])|(\[[^\]\n]+\]\([^)\s]+\))/g;
+
+  function scan(s, onText, onToken) {
+    var re = new RegExp(INLINE.source, 'g'), out = '', i = 0, m;
+    while ((m = re.exec(s))) {
+      out += onText(s.slice(i, m.index));
+      var kind = m[1] ? 'b' : m[2] ? 'i' : m[3] ? 'c' : m[4] ? 'hl' : m[5] ? 'w' : 'l';
+      out += onToken(kind, m[0]);
+      i = re.lastIndex;
+    }
+    return out + onText(s.slice(i));
+  }
+
+  // Syntax colors for one source line.
+  function hlInline(s) {
+    return scan(s, esc, function (kind, t) {
+      if (kind === 'b') return '<span class="t-mk">**</span><span class="t-b">' + esc(t.slice(2, -2)) + '</span><span class="t-mk">**</span>';
+      if (kind === 'i') return '<span class="t-mk">*</span><span class="t-i">' + esc(t.slice(1, -1)) + '</span><span class="t-mk">*</span>';
+      if (kind === 'hl') return '<span class="t-mk">==</span><span class="t-hl">' + esc(t.slice(2, -2)) + '</span><span class="t-mk">==</span>';
+      if (kind === 'c') return '<span class="t-c">' + esc(t) + '</span>';
+      return '<span class="t-l">' + esc(t) + '</span>';
+    });
+  }
+
+  function hlLine(line, inFence) {
+    if (/^\s*```/.test(line) || inFence) return '<span class="t-fence">' + esc(line) + '</span>';
+    var m;
+    if ((m = /^(#{1,6})(\s.*|)$/.exec(line))) return '<span class="t-mk">' + m[1] + '</span><span class="t-h">' + hlInline(m[2]) + '</span>';
+    if ((m = /^(\s*(?:[-*+]|\d+[.)]))(\s\[[ xX]\])?(\s.*|)$/.exec(line))) {
+      return '<span class="t-mk">' + esc(m[1]) + '</span>' + (m[2] ? '<span class="t-mk">' + m[2] + '</span>' : '') + hlInline(m[3]);
+    }
+    if ((m = /^(>\s?)(\[![\w-]+\])?(.*)$/.exec(line))) {
+      return '<span class="t-mk">' + esc(m[1]) + '</span>' + (m[2] ? '<span class="t-mk">' + esc(m[2]) + '</span>' : '') + hlInline(m[3]);
+    }
+    if (/^\s*\|/.test(line)) return esc(line).replace(/\|/g, '<span class="t-dim">|</span>').replace(/(-{3,})/g, '<span class="t-dim">$1</span>');
+    if (/^(-{3,}|\*{3,})\s*$/.test(line)) return '<span class="t-dim">' + esc(line) + '</span>';
+    return hlInline(line);
+  }
+
+  // Rendered inline Markdown.
+  function inline(s) {
+    return scan(s, esc, function (kind, t) {
+      if (kind === 'b') return '<strong>' + inline(t.slice(2, -2)) + '</strong>';
+      if (kind === 'i') return '<em>' + inline(t.slice(1, -1)) + '</em>';
+      if (kind === 'hl') return '<mark>' + inline(t.slice(2, -2)) + '</mark>';
+      if (kind === 'c') return '<code>' + esc(t.slice(1, -1)) + '</code>';
+      if (kind === 'w') {
+        var name = t.slice(2, -2).split('|');
+        return '<a class="wikilink" href="#" tabindex="-1">' + esc(name[1] || name[0]) + '</a>';
+      }
+      var m = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(t);
+      var href = /^(https?:|#|mailto:)/i.test(m[2]) ? m[2] : '#';
+      return '<a href="' + esc(href) + '" target="_blank" rel="noopener">' + inline(m[1]) + '</a>';
+    });
+  }
+
+  var LIST = /^(\s*)([-*+]|\d+[.)])\s(\[[ xX]\]\s?)?(.*)$/;
+  var TABLE_SEP = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+
+  function cells(line) {
+    return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(function (c) { return c.trim(); });
+  }
+
+  function parse(text) {
+    var lines = text.split('\n'), out = [], i = 0, n = lines.length;
+    while (i < n) {
+      var line = lines[i], start = i, html, heading = null, m;
+      if (!line.trim()) { i++; continue; }
+      if (/^\s*```/.test(line)) {
+        var lang = line.trim().slice(3), body = [];
+        i++;
+        while (i < n && !/^\s*```/.test(lines[i])) body.push(lines[i++]);
+        i++;
+        html = '<pre><code' + (lang ? ' data-lang="' + esc(lang) + '"' : '') + '>' + esc(body.join('\n')) + '</code></pre>';
+      } else if ((m = /^(#{1,6})\s+(.*)$/.exec(line))) {
+        var lv = m[1].length, txt = m[2].replace(/\s+#+\s*$/, '');
+        heading = { level: lv, text: txt };
+        html = '<h' + lv + '>' + inline(txt) + '</h' + lv + '>';
+        i++;
+      } else if (/^(-{3,}|\*{3,})\s*$/.test(line)) {
+        html = '<hr>';
+        i++;
+      } else if (/^\s*\|/.test(line) && i + 1 < n && TABLE_SEP.test(lines[i + 1])) {
+        html = '<table><thead><tr>' + cells(line).map(function (c) { return '<th>' + inline(c) + '</th>'; }).join('') + '</tr></thead><tbody>';
+        i += 2;
+        while (i < n && /^\s*\|/.test(lines[i])) {
+          html += '<tr>' + cells(lines[i]).map(function (c) { return '<td>' + inline(c) + '</td>'; }).join('') + '</tr>';
+          i++;
+        }
+        html += '</tbody></table>';
+      } else if (LIST.test(line)) {
+        var ordered = /^\s*\d/.test(line), items = [], tasks = false;
+        while (i < n && (m = LIST.exec(lines[i]))) {
+          if (m[3]) tasks = true;
+          items.push(m);
+          i++;
+        }
+        var tag = ordered ? 'ol' : 'ul';
+        html = '<' + tag + (tasks ? ' class="tasks"' : '') + '>' + items.map(function (it) {
+          if (tasks) {
+            var done = it[3] && /x/i.test(it[3]);
+            return '<li class="' + (done ? 'done' : '') + '"><span class="box" role="img" aria-label="' + (done ? 'Done' : 'Not done') + '"></span><span>' + inline(it[4]) + '</span></li>';
+          }
+          return '<li>' + inline(it[4]) + '</li>';
+        }).join('') + '</' + tag + '>';
+      } else if (/^>/.test(line)) {
+        var q = [];
+        while (i < n && /^>/.test(lines[i])) q.push(lines[i++].replace(/^>\s?/, ''));
+        var c = /^\[!([\w-]+)\]\s*(.*)$/.exec(q[0]);
+        if (c) {
+          var title = c[2] || c[1].charAt(0).toUpperCase() + c[1].slice(1);
+          var rest = q.slice(1).join(' ').trim();
+          html = '<div class="callout"><p class="callout-title">' + inline(title) + '</p>' + (rest ? '<p>' + inline(rest) + '</p>' : '') + '</div>';
+        } else {
+          html = '<blockquote><p>' + inline(q.join(' ')) + '</p></blockquote>';
+        }
+      } else {
+        var p = [];
+        while (i < n && lines[i].trim() && !/^(#{1,6}\s|>|\s*```|\s*\|)/.test(lines[i]) && !LIST.test(lines[i])) p.push(lines[i++].trim());
+        if (!p.length) { p.push(line.trim()); i++; }
+        html = '<p>' + inline(p.join(' ')) + '</p>';
+      }
+      out.push({ start: start, end: i - 1, html: html, heading: heading });
+    }
+    return out;
+  }
+
+  function mount(win) {
+    var src = win.querySelector('textarea');
+    var linesEl = win.querySelector('.lines');
+    var md = win.querySelector('.md');
+    var follow = win.querySelector('.follow');
+    var editor = win.querySelector('.editor');
+    var preview = win.querySelector('.preview');
+    var posEl = win.querySelector('[data-pos]');
+    var wordsEl = win.querySelector('[data-words]');
+    var outline = win.querySelector('.outline');
+    var blocks = [], lastText = null, current = -1;
+
+    function caretLine() {
+      return src.value.slice(0, src.selectionStart).split('\n').length - 1;
+    }
+
+    function render() {
+      var text = src.value;
+      if (text !== lastText) {
+        lastText = text;
+        var lines = text.split('\n'), inFence = false, html = '';
+        for (var i = 0; i < lines.length; i++) {
+          var fence = /^\s*```/.test(lines[i]);
+          html += '<div class="line"><span class="n">' + (i + 1) + '</span><span class="t">' + (hlLine(lines[i], inFence && !fence) || '​') + '</span></div>';
+          if (fence) inFence = !inFence;
+        }
+        linesEl.innerHTML = html;
+        current = -1;
+        blocks = parse(text);
+        md.innerHTML = blocks.map(function (b, k) { return b.html.replace(/^<(\w+)/, '<$1 data-b="' + k + '"'); }).join('');
+        if (outline) {
+          outline.innerHTML = blocks.filter(function (b) { return b.heading; }).map(function (b) {
+            return '<button type="button" class="l' + b.heading.level + '" data-line="' + b.start + '">' + esc(b.heading.text.replace(/[*=`]/g, '')) + '</button>';
+          }).join('');
+        }
+        var words = text.replace(/[#>*`=|\[\]()_-]+/g, ' ').match(/\S+/g);
+        var count = words ? words.length : 0;
+        wordsEl.textContent = count + (count === 1 ? ' word' : ' words');
+      }
+      track();
+    }
+
+    function track() {
+      var ln = caretLine(), focused = document.activeElement === src;
+      var before = src.value.slice(0, src.selectionStart);
+      posEl.textContent = 'Ln ' + (ln + 1) + ', Col ' + (before.length - before.lastIndexOf('\n'));
+      var rows = linesEl.children;
+      if (rows[current]) rows[current].classList.remove('is-current');
+      if (focused && rows[ln]) rows[ln].classList.add('is-current');
+      current = ln;
+
+      var hit = -1, section = -1;
+      for (var k = 0; k < blocks.length; k++) {
+        if (blocks[k].start > ln) break;
+        if (blocks[k].heading) section = blocks[k].start;
+        if (ln <= blocks[k].end) { hit = k; break; }
+      }
+      if (outline) {
+        Array.prototype.forEach.call(outline.children, function (b) {
+          b.classList.toggle('on', +b.getAttribute('data-line') === section);
+        });
+      }
+      var el = hit >= 0 ? md.querySelector('[data-b="' + hit + '"]') : null;
+      if (el && focused) {
+        follow.style.top = el.offsetTop + 'px';
+        follow.style.height = el.offsetHeight + 'px';
+        follow.classList.add('on');
+        // The preview follows the cursor, as in Neon's Split layout.
+        var top = el.offsetTop, view = preview.clientHeight;
+        if (preview.scrollHeight > view + 1 && (top < preview.scrollTop || top + el.offsetHeight > preview.scrollTop + view)) {
+          preview.scrollTop = Math.max(0, top - view / 3);
+        }
+      } else {
+        follow.classList.remove('on');
+      }
+    }
+
+    function insert(text) {
+      if (!document.execCommand || !document.execCommand('insertText', false, text)) {
+        src.setRangeText(text, src.selectionStart, src.selectionEnd, 'end');
+        render();
+      }
+    }
+
+    // Lists continue themselves, as in Neon.
+    src.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter' || e.shiftKey || e.altKey || e.metaKey || e.ctrlKey || e.isComposing) return;
+      if (src.selectionStart !== src.selectionEnd) return;
+      var v = src.value, pos = src.selectionStart;
+      var lineStart = v.lastIndexOf('\n', pos - 1) + 1;
+      var m = /^(\s*)([-*+]|(\d+)([.)]))\s(\[[ xX]\]\s)?(.*)$/.exec(v.slice(lineStart, pos));
+      if (!m) return;
+      e.preventDefault();
+      if (!m[6].trim()) {
+        src.setSelectionRange(lineStart, pos);
+        insert('');
+        return;
+      }
+      var marker = m[3] ? (parseInt(m[3], 10) + 1) + m[4] : m[2];
+      insert('\n' + m[1] + marker + ' ' + (m[5] ? '[ ] ' : ''));
+    });
+
+    src.addEventListener('input', render);
+    src.addEventListener('focus', track);
+    src.addEventListener('blur', track);
+    document.addEventListener('selectionchange', function () {
+      if (document.activeElement === src) track();
+    });
+
+    if (outline) {
+      outline.addEventListener('click', function (e) {
+        var b = e.target.closest('button');
+        if (!b) return;
+        var line = +b.getAttribute('data-line');
+        var offset = src.value.split('\n').slice(0, line).join('\n').length + (line ? 1 : 0);
+        src.focus({ preventScroll: true });
+        src.setSelectionRange(offset, offset);
+        var row = linesEl.children[line];
+        if (row) editor.scrollTop = Math.max(0, row.offsetTop - 16);
+        track();
+      });
+    }
+
+    var buttons = win.querySelectorAll('.layouts button');
+    Array.prototype.forEach.call(buttons, function (b) {
+      b.addEventListener('click', function () {
+        win.setAttribute('data-layout', b.getAttribute('data-layout'));
+        Array.prototype.forEach.call(buttons, function (o) { o.setAttribute('aria-pressed', String(o === b)); });
+        track();
+      });
+    });
+
+    render();
+    return {
+      load: function (text) {
+        src.value = text;
+        editor.scrollTop = 0;
+        preview.scrollTop = 0;
+        render();
+      }
+    };
+  }
+
+  mount(document.getElementById('hero-window'));
+
+  var samples = {
+    slash: {
+      file: 'reading-list.md',
+      text: '## Reading list\n\nInserted with `/table 3x3`, then filled in:\n\n| Title | Author | Read |\n| --- | --- | --- |\n| The Elements of Typographic Style | Bringhurst | yes |\n| Thinking with Type | Lupton | no |\n\nThen `/bullet 2` for notes:\n\n- Measure: 45 to 75 characters\n- Leading: about 1.4 times the size'
+    },
+    lists: {
+      file: 'release.md',
+      text: '## Release checklist\n\n1. Update the changelog\n2. Tag the release\n3. Publish the appcast\n\n## Before shipping\n\n- [x] Sign and notarize the build\n- [x] Attach SHA256SUMS\n- [ ] Put the cursor at the end of this line and press Enter'
+    },
+    notes: {
+      file: 'design-review.md',
+      text: '## Design review\n\n> [!note] Decision\n> Ship the outline sidebar in ==0.20==, with section guides.\n\nThe heading count goes away. See [[Roadmap#Sidebar]] for what comes next.\n\n> [!question] Open question\n> Should the outline follow the cursor in Preview too?'
+    },
+    code: {
+      file: 'parsing.md',
+      text: '## Parse off the main thread\n\nThe preview reparses in the background, so typing never waits on it.\n\n```rust\nlet task = cx.background_spawn(async move {\n    markdown::parse(&text)\n});\n```\n\nOnly the blocks an edit changed are laid out again.'
+    }
+  };
+  var tour = mount(document.getElementById('tour-window'));
+  var tourFile = document.getElementById('tour-file');
+  var tabs = document.querySelectorAll('.tour-list [role="tab"]');
+  var tourWin = document.getElementById('tour-window');
+  function pick(tab) {
+    var s = samples[tab.getAttribute('data-sample')];
+    Array.prototype.forEach.call(tabs, function (t) {
+      t.setAttribute('aria-selected', String(t === tab));
+      t.tabIndex = t === tab ? 0 : -1;
+    });
+    tourWin.setAttribute('aria-labelledby', tab.id);
+    tourFile.textContent = s.file;
+    tour.load(s.text);
+  }
+  Array.prototype.forEach.call(tabs, function (t, i) {
+    t.addEventListener('click', function () { pick(t); });
+    t.addEventListener('keydown', function (e) {
+      var next = { ArrowRight: i + 1, ArrowDown: i + 1, ArrowLeft: i - 1, ArrowUp: i - 1, Home: 0, End: tabs.length - 1 }[e.key];
+      if (next === undefined) return;
+      e.preventDefault();
+      var target = tabs[(next + tabs.length) % tabs.length];
+      target.focus();
+      pick(target);
+    });
+  });
+  pick(tabs[0]);
+
+  // Copy buttons.
+  Array.prototype.forEach.call(document.querySelectorAll('[data-copy]'), function (b) {
+    b.addEventListener('click', function () {
+      var pre = document.getElementById(b.getAttribute('data-copy'));
+      var text = pre.textContent.split('\n').map(function (l) { return l.replace(/^\$ /, ''); }).join('\n');
+      function done() { b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy'; }, 1600); }
+      function select() {
+        var r = document.createRange();
+        r.selectNodeContents(pre);
+        var s = window.getSelection();
+        s.removeAllRanges();
+        s.addRange(r);
+        b.textContent = 'Press ⌘C';
+      }
+      try { navigator.clipboard.writeText(text).then(done, select); } catch (err) { select(); }
+    });
+  });
+})();
+</script>
+</body>
+</html>
