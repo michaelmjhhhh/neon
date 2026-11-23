@@ -25,11 +25,6 @@ const ALIASES: &[(&str, &str)] = &[
     ("shell", "bash"),
     ("shellscript", "bash"),
     ("zsh", "bash"),
-    ("h", "c"),
-    ("cc", "cpp"),
-    ("cxx", "cpp"),
-    ("hpp", "cpp"),
-    ("hh", "cpp"),
     ("patch", "diff"),
     ("golang", "go"),
     ("htm", "html"),
@@ -41,7 +36,6 @@ const ALIASES: &[(&str, &str)] = &[
     ("TypeScript", "typescript"),
     ("mts", "typescript"),
     ("cts", "typescript"),
-    ("mk", "make"),
     ("py3", "python"),
     ("python3", "python"),
     ("pyi", "python"),
@@ -56,17 +50,12 @@ const ALIASES: &[(&str, &str)] = &[
 /// `JSON`; the editor matches fence names as written.
 const NAMES: &[&str] = &[
     "bash",
-    "c",
-    "cpp",
-    "css",
     "diff",
     "go",
     "html",
     "java",
     "javascript",
     "json",
-    "lua",
-    "make",
     "python",
     "rust",
     "sql",
@@ -77,9 +66,7 @@ const NAMES: &[&str] = &[
 ];
 
 /// Short names GPUI Kit already resolves, but only in lowercase.
-const SHORT_NAMES: &[&str] = &[
-    "sh", "js", "ts", "py", "rs", "yml", "jsonc", "scss", "c++", "makefile",
-];
+const SHORT_NAMES: &[&str] = &["sh", "js", "ts", "py", "rs", "yml", "jsonc"];
 
 /// Teach the shared language registry the names in [`ALIASES`] and the
 /// capitalized forms of every grammar. The editor's Markdown highlighter
@@ -289,10 +276,12 @@ mod tests {
             "Python",
             "shell",
             "JSON",
-            "c++",
             "TypeScript",
         ] {
             assert!(grammar_for(name).is_some(), "{name} has no grammar");
+        }
+        for name in ["c", "cpp", "c++", "css", "lua", "make"] {
+            assert_eq!(grammar_for(name), None, "{name} is not built in");
         }
         assert_eq!(grammar_for("zsh").as_deref(), Some("bash"));
         assert_eq!(grammar_for("text"), None);
