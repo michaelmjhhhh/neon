@@ -33,6 +33,10 @@ Groups, in this order:
 
 - Syntax colors for C, C++, CSS, Lua and Make code blocks; they show as plain text. Neon is about 4.4 MB smaller for each processor type (Apple Silicon, Intel).
 
+### Performance
+
+- Memory taken to show a long code block or table in the preview is given back once it is no longer shown; before, up to 60 MB stayed until the window closed.
+
 ## [0.21.0] - 2026-11-16
 
 ### Added
