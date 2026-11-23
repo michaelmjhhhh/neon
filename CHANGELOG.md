@@ -37,6 +37,7 @@ Groups, in this order:
 
 - Memory taken to show a long code block or table in the preview is given back once it is no longer shown; before, up to 60 MB stayed until the window closed.
 - Code blocks in the preview no longer keep the last block's syntax tree after their colors are found.
+- The DMG download is about a third smaller.
 
 ## [0.21.0] - 2026-11-16
 

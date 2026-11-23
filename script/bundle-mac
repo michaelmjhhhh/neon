@@ -199,7 +199,9 @@ ln -s /Applications "$staging/Applications"
 # the helper from the previous run's image still holds the old DMG.
 for attempt in 1 2 3 4 5; do
     rm -f "$dist/$dmg_name"
-    hdiutil create -volname "Neon" -srcfolder "$staging" -format UDZO "$dist/$dmg_name" && break
+    # LZMA (ULMO) makes the DMG about a third smaller than zlib (UDZO); it
+    # opens on macOS 10.15 and later, and Neon needs macOS 11.
+    hdiutil create -volname "Neon" -srcfolder "$staging" -format ULMO "$dist/$dmg_name" && break
     if [ "$attempt" -eq 5 ]; then
         exit 1
     fi
