@@ -97,6 +97,9 @@ taffy_tree = ["dep:slotmap"]
 name = "taffy"
 path = "src/lib.rs"
 
+# Patched for Neon: the release's [[example]] targets are left out with
+# their examples/ directory, and LICENSE is the upstream file at v0.13.0.
+
 [dependencies.arrayvec]
 version = "0.7"
 default-features = false

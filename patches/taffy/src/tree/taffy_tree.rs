@@ -611,17 +611,6 @@ impl<NodeContext> TaffyTree<NodeContext> {
 
     /// Drops all nodes in the tree
     pub fn clear(&mut self) {
-        // Patched for Neon: GPUI clears its tree after every frame. Once a
-        // frame needed far more nodes than the one just cleared, give the
-        // storage back instead of keeping it sized for that frame. A
-        // 1,000-row table holds about 10 MB here.
-        let (len, capacity) = (self.nodes.len(), self.nodes.capacity());
-        if capacity > 4096 && len < capacity / 4 {
-            let config = self.config;
-            *self = Self::with_capacity(len.max(16) * 2);
-            self.config = config;
-            return;
-        }
         self.nodes.clear();
         self.children.clear();
         self.parents.clear();

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Arc, Mutex, Once};
 
-use gpui_kit::base::input::{Point, Rope, RopeExt as _};
+use gpui_kit::base::input::{Rope, RopeExt as _};
 use gpui_kit::component::highlighter::{HighlightTheme, LanguageRegistry, SyntaxHighlighter};
 use gpui_kit::{HighlightStyle, SharedString};
 use markdown::{BlockKind, CodeBlock, MarkdownDocument};
@@ -210,14 +210,14 @@ impl CodeHighlights {
 #[derive(Default)]
 pub(crate) struct Highlighters(Mutex<HashMap<SharedString, SyntaxHighlighter>>);
 
-/// The tokens of `code`, parsed by `highlighter` in place of the text it
-/// held before.
+/// The tokens of `code`, parsed by a highlighter that holds no text.
 fn highlight(
     highlighter: &mut SyntaxHighlighter,
     code: &str,
     theme: &HighlightTheme,
 ) -> Vec<(Range<usize>, HighlightStyle)> {
-    replace_text(highlighter, Rope::from(code));
+    // Every highlighter is left empty below, so this inserts into empty text.
+    highlighter.update(None, &Rope::from(code), None);
     let tokens = highlighter
         .styles(&(0..code.len()), theme)
         .into_iter()
@@ -226,24 +226,23 @@ fn highlight(
     // Only the compiled queries are worth keeping between blocks. The text
     // and its tree would stay until the next block of this language, several
     // megabytes for a long one.
-    replace_text(highlighter, Rope::new());
+    empty(highlighter);
     tokens
 }
 
-/// Parse `new` in place of all of the highlighter's text. No part of the old
-/// tree is reused, since the new text is unrelated code.
-fn replace_text(highlighter: &mut SyntaxHighlighter, new: Rope) {
+/// Replace all of the highlighter's text with nothing.
+fn empty(highlighter: &mut SyntaxHighlighter) {
     let old = highlighter.text();
-    let point = |point: Point| tree_sitter::Point::new(point.row, point.column);
+    let end = old.offset_to_point(old.len());
     let edit = tree_sitter::InputEdit {
         start_byte: 0,
         old_end_byte: old.len(),
-        new_end_byte: new.len(),
+        new_end_byte: 0,
         start_position: tree_sitter::Point::new(0, 0),
-        old_end_position: point(old.offset_to_point(old.len())),
-        new_end_position: point(new.offset_to_point(new.len())),
+        old_end_position: tree_sitter::Point::new(end.row, end.column),
+        new_end_position: tree_sitter::Point::new(0, 0),
     };
-    highlighter.update(Some(edit), &new, None);
+    highlighter.update(Some(edit), &Rope::new(), None);
 }
 
 #[cfg(test)]
