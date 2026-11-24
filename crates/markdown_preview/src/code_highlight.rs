@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Arc, Mutex, Once};
 
-use gpui_kit::base::input::{Point, Rope, RopeExt as _};
+use gpui_kit::base::input::{Rope, RopeExt as _};
 use gpui_kit::component::highlighter::{HighlightTheme, LanguageRegistry, SyntaxHighlighter};
 use gpui_kit::{HighlightStyle, SharedString};
 use markdown::{BlockKind, CodeBlock, MarkdownDocument};
@@ -210,32 +210,39 @@ impl CodeHighlights {
 #[derive(Default)]
 pub(crate) struct Highlighters(Mutex<HashMap<SharedString, SyntaxHighlighter>>);
 
-/// The tokens of `code`, parsed by `highlighter` in place of the text it
-/// held before.
+/// The tokens of `code`, parsed by a highlighter that holds no text.
 fn highlight(
     highlighter: &mut SyntaxHighlighter,
     code: &str,
     theme: &HighlightTheme,
 ) -> Vec<(Range<usize>, HighlightStyle)> {
-    // The new text replaces all of the old, so no part of the old tree is
-    // reused for unrelated code.
-    let old = highlighter.text();
-    let new = Rope::from(code);
-    let point = |point: Point| tree_sitter::Point::new(point.row, point.column);
-    let edit = tree_sitter::InputEdit {
-        start_byte: 0,
-        old_end_byte: old.len(),
-        new_end_byte: new.len(),
-        start_position: tree_sitter::Point::new(0, 0),
-        old_end_position: point(old.offset_to_point(old.len())),
-        new_end_position: point(new.offset_to_point(new.len())),
-    };
-    highlighter.update(Some(edit), &new, None);
-    highlighter
+    // Every highlighter is left empty below, so this inserts into empty text.
+    highlighter.update(None, &Rope::from(code), None);
+    let tokens = highlighter
         .styles(&(0..code.len()), theme)
         .into_iter()
         .filter(|(_, style)| *style != HighlightStyle::default())
-        .collect()
+        .collect();
+    // Only the compiled queries are worth keeping between blocks. The text
+    // and its tree would stay until the next block of this language, several
+    // megabytes for a long one.
+    empty(highlighter);
+    tokens
+}
+
+/// Replace all of the highlighter's text with nothing.
+fn empty(highlighter: &mut SyntaxHighlighter) {
+    let old = highlighter.text();
+    let end = old.offset_to_point(old.len());
+    let edit = tree_sitter::InputEdit {
+        start_byte: 0,
+        old_end_byte: old.len(),
+        new_end_byte: 0,
+        start_position: tree_sitter::Point::new(0, 0),
+        old_end_position: tree_sitter::Point::new(end.row, end.column),
+        new_end_position: tree_sitter::Point::new(0, 0),
+    };
+    highlighter.update(Some(edit), &Rope::new(), None);
 }
 
 #[cfg(test)]
@@ -412,6 +419,29 @@ mod tests {
                     "{form} has no grammar; is its feature enabled?"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn a_kept_highlighter_lets_go_of_the_last_block() {
+        let highlighters = Highlighters::default();
+        let long = "let value = 1;\n".repeat(500);
+        let source = format!("```rust\n{long}```\n\n```python\nx = 1\n```\n");
+        let highlights = CodeHighlights::compute(
+            &MarkdownDocument::parse(&source),
+            &CodeHighlights::default(),
+            &highlighters,
+            HighlightTheme::default_dark(),
+            || false,
+        )
+        .unwrap();
+        assert_eq!(highlights.blocks.len(), 2);
+        let highlighters = highlighters.0.lock().unwrap();
+        assert_eq!(highlighters.len(), 2);
+        for highlighter in highlighters.values() {
+            assert!(highlighter.is_empty());
+            let root = highlighter.tree().map(|tree| tree.root_node());
+            assert!(root.is_none_or(|root| root.descendant_count() <= 2));
         }
     }
 

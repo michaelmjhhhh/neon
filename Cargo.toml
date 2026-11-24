@@ -64,5 +64,14 @@ strip = true
 # block 0.1.6, the last release, declares a static of an empty enum, which a
 # future Rust will reject (rust#74840). GPUI pulls it in through cocoa and
 # metal. patches/block is that release with only the type changed.
+#
+# taffy 0.13.0's `TaffyTree::clear` keeps every node's context. GPUI clears
+# the tree each frame and stores text measure closures as contexts, so the
+# shaped text of the largest frame so far stayed alive: 60 MB after showing
+# a 5,000-line code block, until the window closed. patches/taffy is that
+# release with `clear` also dropping the contexts, its examples left out
+# and its upstream LICENSE added. taffy 0.14.0 has the same bug, so a
+# GPUI Kit that moves to another taffy version needs this patch moved too.
 [patch.crates-io]
 block = { path = "patches/block" }
+taffy = { path = "patches/taffy" }
