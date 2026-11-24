@@ -280,12 +280,23 @@ mod tests {
         ] {
             assert!(grammar_for(name).is_some(), "{name} has no grammar");
         }
-        for name in ["c", "cpp", "c++", "css", "lua", "make"] {
-            assert_eq!(grammar_for(name), None, "{name} is not built in");
-        }
         assert_eq!(grammar_for("zsh").as_deref(), Some("bash"));
         assert_eq!(grammar_for("text"), None);
         assert_eq!(grammar_for("no-such-language"), None);
+    }
+
+    /// These grammars are left out to keep the binary small (C++ alone is
+    /// 3.4 MB); this fails if one comes back, such as through a feature
+    /// another crate turns on. Update the list when adding one on purpose.
+    #[test]
+    fn left_out_grammars_are_not_built_in() {
+        register_languages();
+        for name in [
+            "c", "h", "cpp", "c++", "cc", "cxx", "hpp", "hh", "css", "scss", "lua", "make",
+            "makefile", "mk",
+        ] {
+            assert_eq!(grammar_for(name), None, "{name} is built in");
+        }
     }
 
     #[test]
