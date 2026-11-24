@@ -29,6 +29,10 @@ Groups, in this order:
 
 ## [Unreleased]
 
+### Removed
+
+- Syntax colors for C, C++, CSS, Lua and Make code blocks; they show as plain text. Neon is about 4.4 MB smaller for each processor type (Apple Silicon, Intel).
+
 ## [0.21.0] - 2026-11-16
 
 ### Added
